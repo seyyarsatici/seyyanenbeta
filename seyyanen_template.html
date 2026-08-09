@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Seyyanen Diagnostik Raporu</title>
+  <style>
+    body { font-family: "Segoe UI", Arial, sans-serif; margin: 24px; color: #1f2937; background: #f8fafc; }
+    h1 { color: #111827; margin-bottom: 16px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .card { border: 1px solid #d1d5db; border-radius: 8px; padding: 12px; background: #ffffff; }
+    .title { font-weight: 700; margin-bottom: 8px; color: #374151; }
+    @media (max-width: 900px) { .row { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <h1>Seyyanen ECU Diagnostik Raporu</h1>
+  <div class="row">
+    <div class="card">
+      <div class="title">Ateşleme Değerlendirmesi</div>
+      <div>{{atesleme_yorum}}</div>
+    </div>
+    <div class="card">
+      <div class="title">Yakıt Değerlendirmesi</div>
+      <div>{{yakit_yorum}}</div>
+    </div>
+    <div class="card">
+      <div class="title">Hava Değerlendirmesi</div>
+      <div>{{hava_yorum}}</div>
+    </div>
+    <div class="card">
+      <div class="title">Soğutma Değerlendirmesi</div>
+      <div>{{sogutma_yorum}}</div>
+    </div>
+  </div>
+  <div style="margin-top:16px;">
+    {{base64_grafikler}}
+  </div>
+</body>
+</html>

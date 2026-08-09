@@ -1,0 +1,16 @@
+OBDMID (Hex),TID (Hex),Açıklama (Description),Formül / Çözünürlük
+A2,0B,Silindir 1 - Son 10 Döngü Tekleme Sayısı,1 count / bit
+A2,0C,Silindir 1 - Anlık Sürüş Tekleme Sayısı,1 count / bit
+A3,0B,Silindir 2 - Son 10 Döngü Tekleme Sayısı,1 count / bit
+A3,0C,Silindir 2 - Anlık Sürüş Tekleme Sayısı,1 count / bit
+A4,0B,Silindir 3 - Son 10 Döngü Tekleme Sayısı,1 count / bit
+A4,0C,Silindir 3 - Anlık Sürüş Tekleme Sayısı,1 count / bit
+A5,0B,Silindir 4 - Son 10 Döngü Tekleme Sayısı,1 count / bit
+A5,0C,Silindir 4 - Anlık Sürüş Tekleme Sayısı,1 count / bit
+B2,F0,DPF (Partikül Filtresi) Verimliliği,0.01 kPa / bit
+B2,F1,DPF Rejenerasyon Sıklığı (Gram),0.01 g / bit
+B2,F2,DPF Rejenerasyon Sıcaklık Alt Limiti,0.1 °C / bit (Signed)
+31,A0,EGR Yavaş Tepki Testi (Artan Akış),0.01 % / bit
+31,A4,Yetersiz EGR Akış Testi,0.1 count / bit
+35,9A,Egzantrik (VVT) Yavaş Tepki Testi,0.01° / bit
+35,9B,Egzantrik (VVT) Hedef Sapma Hatası,0.01° / bit

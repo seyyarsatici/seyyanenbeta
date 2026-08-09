@@ -1,0 +1,315 @@
+ terminal:
+
+python main.py
+
+ℹ️  Font modu: Helvetica (Standart) - Türkçe temizleme aktif.
+
+C:\Users\chnyg\OneDrive\Belgeler\py\seyyanen\raporlayici.py:135: FutureWarning:
+
+
+All support for the `google.generativeai` package has ended. It will no longer be receiving
+
+updates or bug fixes. Please switch to the `google.genai` package as soon as possible.
+
+See README for more details:
+
+
+https://github.com/google-gemini/deprecated-generative-ai-python/blob/main/README.md
+
+
+  import google.generativeai as genai
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+
+║                 AUTO-EXPERT: V92 - Production Ready                  ║
+
+╚══════════════════════════════════════════════════════════════════════╝
+
+
+📡 Mevcut Portlar:
+
+  1. COM4 - Bluetooth bağlantısı üzerinden Standart Seri (COM4)
+
+  2. COM3 - Bluetooth bağlantısı üzerinden Standart Seri (COM3)
+
+Seçim (1-2 veya 'q' çıkış): 2
+
+🚀 Bağlantı Başlatılıyor: COM3
+
+⏳ Deneniyor: Otomatik (Önerilen)...
+
+   ✅ BAĞLANDI: Otomatik (Önerilen)
+
+   ℹ️  Protokol Detayı: AUTO, ISO 15765-4 (CAN 11/500)
+
+   🚀 CAN Protokolü - Turbo Modu Aktif
+
+   🔍 Sensörler Taranıyor (V106 - Gold Master Blind Scan)...
+
+   ✨ 37 Sensör Başarıyla Keşfedildi!
+
+   ✨ Aracın Yanıt Verdiği 37 Sensör Analize Alındı!
+
+Araç Hazırlanıyor...
+
+
+──────────────────────────────────────────────────
+
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+
+║                  PRE-FLIGHT CHECK - SİSTEM KONTROLÜ                  ║
+
+╚══════════════════════════════════════════════════════════════════════╝
+
+
+╔════════════════════════════════════════════════════════════════════╗
+
+║ SENSÖR DURUMU                            DURUM                      ║
+
+╠════════════════════════════════════════════════════════════════════╣
+
+║ RPM Sensörü                              [✓] HAZIR     ║
+
+║ MAP Sensörü (Hava Basıncı)               [✓] HAZIR     ║
+
+║ ECT Sensörü (Motor Sıcaklığı)            [✓] HAZIR     ║
+
+║ TPS Sensörü (Gaz Kelebeği)               [✓] HAZIR     ║
+
+║ STFT (Kısa Süreli Yakıt)                 [✓] HAZIR     ║
+
+║ LTFT (Uzun Süreli Yakıt)                 [✓] HAZIR     ║
+
+╚════════════════════════════════════════════════════════════════════╝
+
+
+⚠️  UYARI: 3 adet arıza kodu tespit edildi!
+
+   └─ P0261
+
+   └─ C1662
+
+   └─ B8228
+
+
+══════════════════════════════════════════════════════════════════════
+
+║ SİSTEM HAZIR ║ UYARI: ARIZA KODLARI MEVCUT
+
+══════════════════════════════════════════════════════════════════════
+
+
+
+======================================================
+
+  ARAC KIMLIGI — ONAY BEKLENIYOR
+
+======================================================
+
+  VIN          : W0LTS311
+
+  Motor Kodu   : BILINMIYOR  (Veritabaninda bulunamadi)
+
+  Marka/Motor  : BILINMIYOR (Varsayılan Dizel)
+
+  Yakit Tipi   : Dizel
+
+  Max RPM      : 4800
+
+  Redline      : 4500 RPM
+
+  Rolanti      : 800 RPM
+
+  Hedef ECT    : 88 °C
+
+======================================================
+
+[Enter] Onayla  [D] Duzelt  [M] Manuel gir :
+
+Profil onaylandi.
+
+
+Test LPG'de mi YAPILIYOR? (e/h, Enter=Hayir):
+
+
+Arac Agirligi (kg, Varsayilan 1350): 1800
+
+Arac agirlik: 1800 kg
+
+
+Kasa Tipi Secimi:
+
+   1. Sedan (Cd: 0.28, Alan: 2.2 m2)
+
+   2. Hatchback (Cd: 0.32, Alan: 2.1 m2)
+
+   3. SUV / Pickup (Cd: 0.38, Alan: 2.6 m2)
+
+   4. Spor (Cd: 0.25, Alan: 1.9 m2)
+
+   5. Ticari / Van (Cd: 0.42, Alan: 2.8 m2)
+
+Secim (1-5, Varsayilan 1=Sedan):
+
+Sedan secildi (Cd: 0.28)
+
+
+⏱️ Test Süresi (Varsayılan 1200sn = 20dk, Enter bas geç):
+
+
+🛑 TEST BASLIYOR (1200 Saniye = 20 dakika)...
+
+
+──────────────────────────────────────────────────
+
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+
+║                       KOEO MODU - KONTAK AÇIK                        ║
+
+╚══════════════════════════════════════════════════════════════════════╝
+
+╔═════════════════════════════════════════════════════════════╗
+
+║ DURUM         : Kontak Açık, Motor Kapalı                   ║
+
+║ BEKLENİYOR    : Marş Butonuna Basın                         ║
+
+║ AKÜ VOLTAJ    : 13.5V (İYİ)                    ║
+
+║ GEÇİŞ NEDENİ  : Sistem başlatıldı, kontak açık ║
+
+╚═════════════════════════════════════════════════════════════╝
+
+⏳ 1194sn | KOEO     |    0 RPM [░░░░░░░░░░░░░░░░░░░░] | ECT: 59°C | TRIM: %+0.0
+
+──────────────────────────────────────────────────
+
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+
+║                ISINMA MODU - MOTOR TEMPERATURE RISING                ║
+
+╚══════════════════════════════════════════════════════════════════════╝
+
+╔════════════════════════════════════════════════════════════════════════╗
+
+║ DURUM         : Motor Isınıyor                                         ║
+
+║ HEDEF SICAKLIK: 88°C                                                   ║
+
+║ ŞU ANKI SICAKLIK: 59°C [█████████████░░░░░░░] %67                      ║
+
+║ GEÇİŞ NEDENİ  : Motor calisti (RPM > 700), isinma basladi ║
+
+╚════════════════════════════════════════════════════════════════════════╝
+
+⏳  847sn | WARMUP   | 2650 RPM [▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░] | ECT: 82°C | TRIM: %+0.0
+
+──────────────────────────────────────────────────
+
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+
+║                   NORMAL ÇALIŞMA - RÖLANTI ÖLÇÜMÜ                    ║
+
+╚══════════════════════════════════════════════════════════════════════╝
+
+╔════════════════════════════════════════════════════════════════╗
+
+║ DURUM         : Motor Normal Sıcaklıkta                        ║
+
+║ ÖLÇ.YAPILIYOR : Rölanti Stabilitesi, Yakıt Sapması             ║
+
+║ BEKLENİYOR    : Sabit Rölanti Koşulları                        ║
+
+║ GEÇİŞ NEDENİ  : ECT hedef sıcaklığa ulaştı (83°C) ║
+
+╚════════════════════════════════════════════════════════════════╝
+
+⏳  681sn | HOT      |  771 RPM [▓▓▓░░░░░░░░░░░░░░░░░] | ECT: 85°C | TRIM: %+0.0
+
+⚠️  Test kullanıcı tarafından durduruldu.
+
+
+═══════════════════════════════════════════════════════════════════════════════════════════════
+
+PARÇA                | ÖLÇÜLEN         | REFERANS        | DURUM
+
+═══════════════════════════════════════════════════════════════════════════════════════════════
+
+Akü (Marş)           | 13.50 V         | > 9.6 V         | IYI
+
+Alternatör           | 13.69 V         | 13.2-14.8V      | NORMAL
+
+Ateşleme/Stabilite   | Vibrasyon 73.3  | <20             | SERT TEKLEME
+
+Termostat/ECT        | 86 C            | 80-105 C        | NORMAL
+
+MAP Sensörü          | 94 kPa          | 20-100 kPa      | NORMAL
+
+Emme Havası (IAT)    | 11 C            | Ortam + 10-30   | NORMAL
+
+Yakit Ayari (Trim)   | %0.0            | +/- %10         | NORMAL
+
+Motor Yükü           | %61             | Max > %80       | DÜŞÜK
+
+Turbo Basıncı        | 20 kPa          | Pozitif         | BASIYOR
+
+Arıza Kaydı (DTC)    | 3 Adet          | 0               | ARIZALI
+
+═══════════════════════════════════════════════════════════════════════════════════════════════
+
+
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+
+║                          GENEL KARNE ÖZETİ                           ║
+
+╚══════════════════════════════════════════════════════════════════════╝
+
+
+╔══════════════════════════════════════════════════╗
+
+║               İYİ (Ufak Bakım Gerekebilir)               ║
+
+║                  PUAN: 75/100                  ║
+
+╚══════════════════════════════════════════════════╝
+
+
+
+════════════════════════════════════════════════════════════
+
+📊 AŞAMALI SÜRÜŞ ANALİZİ
+
+════════════════════════════════════════════════════════════
+
+KOEO       | Süre: 0.1sn    | Durum: İyi
+
+           └─ Başlangıç Voltajı: 13.5V
+
+WARMUP     | Süre: 13.4sn   | Durum: Hızlı
+
+           └─ Isınma Hızı: 103.0 °C/dk
+
+HOT        | Süre: 6.4sn    | Durum: Tekleme
+
+           └─ Rölanti Sapma: 73 RPM
+
+════════════════════════════════════════════════════════════
+
+
+⚠️  Sensor Uyarisi: Dikkat: Bazi emisyon sensorleri bu arac profilinde kilitli olabilir, tehis temel verilerle yapilmistir. Okunamayan sensorler: MAF (Hava Akis Olceri).
+
+
+✅ JSON Rapor Kaydedildi: C:\Users\chnyg\OneDrive\Belgeler\py\seyyanen\Ekspertiz_BILINMIYOR_20260301_181410\Detayli_Rapor.json
+
+❌ Rapor Hatası: unsupported operand type(s) for +: 'int' and 'NoneType' 

@@ -1,0 +1,29 @@
+Name,ShortName,ModeAndPID,Equation,Min Value,Max Value,Units,Header,startDiagnostic,stopDiagnostic
+COM Reset/Learn Completion Command,Learn Finish,AE288000000000,,,,,"7,00E+00",,
+COM Idle Speed Correction +10,Idle Corr +10,3B4689,,,,,"7,00E+00",,
+COM Idle Speed Correction +20,Idle Corr +20,3B468D,,,,,"7,00E+00",,
+COM Idle Speed Correction 0,Idle Corr 0,3B467F,,,,,"7,00E+00",,
+COM Small Quantity Injection Learn,SQI Learn,AE1B8000000000,,,,,"7,00E+00",,
+COM Neutral Gear Learn,Neutral Learn,AE200000000200,,,,,"7,00E+00",,
+COM Clutch Pedal Learn,Clutch Learn,AE200000000000,,,,,"7,00E+00",,
+COM Fuel Pressure Regulator Learn,FPR Learn,AE1A0080000000,,,,,"7,00E+00",,
+COM Crankshaft Sensor CASE Learn,CASE Learn,AE240001000000,,,,,"7,00E+00",,AE288000000000
+COM AdBlue Data Reset,AdB Reset,AE240000400000,,,,,"7,00E+00",,AE288000000000
+COM DPF Differential Pressure Sensor Reset,DPF Diff Res,AE240010000000,,,,,"7,00E+00",,AE288000000000
+COM Exhaust Gas Temp Sensor Reset,EGT Sens Res,AE240008000000,,,,,"7,00E+00",,AE288000000000
+COM Learned Values Reset,Adapters Res,AE190100000000,,,,,"7,00E+00",,
+COM Catalyst Reset,Cat Reset,AE240040000000,,,,,"7,00E+00",,AE288000000000
+COM NOx Catalyst Reset,NOx Cat Res,AE240000800000,,,,,"7,00E+00",,AE288000000000
+COM Idle Regulator Reset,IAC Reset,AE141000000000,,,,,"7,00E+00",,AE288000000000
+COM DPF Reset,DPF Reset,AE240080000000,,,,,"7,00E+00",,AE288000000000
+COM AdBlue Level Reset,AdB Lvl Res,AE240000100000,,,,,"7,00E+00",,AE288000000000
+COM Engine Oil Life Reset,Oil Life Res,3B6DFF,,,,,"7,00E+00",,
+COM DPF Forced Regeneration,DPF Regen,AE24C000000000,,,,,"7,00E+00",,
+COM Battery Data Reset,Batt Res,AE3A0202000000,,,,,241,ATCRA641,ATCRA7E8
+COM Battery Data Reset Off,Batt Res Off,AE3A0200000000,,,,,241,ATCRA641,ATCRA7E8
+COM EPB Calibration,EPB Calib,AE0120,,,,,254,ATCRA654,ATCRA7E8
+COM ABS Steering Angle Sensor Learn,SAS Learn,AE024040000000,,,,,243,ATCRA643,ATCRA7E8
+COM ABS Brake Pedal Learn,Brk Ped Lrn,AE020808000000 ,,,,,243,ATCRA643,ATCRA7E8
+COM ABS Accelerometer Learn,Accel Learn,AE022020000000 ,,,,,243,ATCRA643,ATCRA7E8
+COM A20DTH DPF Regeneration,DPF Regen,AE0F0000300000,,,,,"7,00E+00",,
+COM BCM Brake Pedal Learn,BCM Brk Lrn,AE050101000000,,,,,241,ATCRA641,ATCRA7E8

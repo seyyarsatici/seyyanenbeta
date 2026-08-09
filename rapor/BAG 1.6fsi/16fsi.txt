@@ -1,0 +1,566 @@
+python main.py
+📄 PDF modülü (raporlayici.py) bulunamadı, rapor sadece JSON olarak kaydedilecek.
+ℹ️  Font modu: Helvetica (Standart) - Türkçe temizleme aktif.
+C:\Users\chnyg\OneDrive\Belgeler\py\seyyanen\raporlayici.py:154: FutureWarning:
+
+All support for the `google.generativeai` package has ended. It will no longer be receiving
+updates or bug fixes. Please switch to the `google.genai` package as soon as possible.
+See README for more details:
+
+https://github.com/google-gemini/deprecated-generative-ai-python/blob/main/README.md
+
+  import google.generativeai as genai
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                 AUTO-EXPERT: V92 - Production Ready                  ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+📡 Mevcut Portlar:
+  1. COM4 - Bluetooth bağlantısı üzerinden Standart Seri (COM4)
+  2. COM3 - Bluetooth bağlantısı üzerinden Standart Seri (COM3)
+Seçim (1-2 veya 'q' çıkış): 2
+🚀 Bağlantı Başlatılıyor: COM3
+⏳ Deneniyor: Otomatik (Önerilen)...
+   ✅ BAĞLANDI: Otomatik (Önerilen)
+   ℹ️  Protokol Detayı: AUTO, ISO 14230-4 (KWP 5BAUD)
+   🐢 KWP/ISO - Sabır Modu Aktif
+   🔍 Sensörler Taranıyor (V106 - Gold Master Blind Scan)...
+   ✨ 23 Sensör Başarıyla Keşfedildi!
+   ✨ Aracın Yanıt Verdiği 23 Sensör Analize Alındı!
+Araç Hazırlanıyor...
+
+──────────────────────────────────────────────────
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                  PRE-FLIGHT CHECK - SİSTEM KONTROLÜ                  ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+╔════════════════════════════════════════════════════════════════════╗
+║ SENSÖR DURUMU                            DURUM                      ║
+╠════════════════════════════════════════════════════════════════════╣
+║ RPM Sensörü                              [✓] HAZIR     ║
+║ MAP Sensörü (Hava Basıncı)               [✓] HAZIR     ║
+║ ECT Sensörü (Motor Sıcaklığı)            [✓] HAZIR     ║
+║ TPS Sensörü (Gaz Kelebeği)               [✓] HAZIR     ║
+║ STFT (Kısa Süreli Yakıt)                 [✓] HAZIR     ║
+║ LTFT (Uzun Süreli Yakıt)                 [✓] HAZIR     ║
+╚════════════════════════════════════════════════════════════════════╝
+
+⚠️  UYARI: 1 adet arıza kodu tespit edildi!
+   └─ P5380
+
+══════════════════════════════════════════════════════════════════════
+║ SİSTEM HAZIR ║ UYARI: ARIZA KODLARI MEVCUT
+══════════════════════════════════════════════════════════════════════
+
+
+======================================================
+  ARAC KIMLIGI — ONAY BEKLENIYOR
+======================================================
+  VIN          : BILINMIYOR
+  Motor Kodu   : BILINMIYOR  (Veritabaninda bulunamadi)
+  Marka/Motor  : BILINMIYOR (Varsayılan Dizel)
+  Yakit Tipi   : Dizel
+  Max RPM      : 4800
+  Redline      : 4500 RPM
+  Rolanti      : 800 RPM
+  Hedef ECT    : 88 °C
+======================================================
+[Enter] Onayla  [D] Duzelt  [M] Manuel gir : m
+
+=== MANUEL MOTOR PROFİLİ GİRİŞİ ===
+Bilmediğiniz alanları boş bırakabilirsiniz (Enter).
+
+  Motor Kodu (orn: Z18XER) [BILINMIYOR]:
+  Marka (orn: OPEL) [BILINMIYOR]:
+  Motor Aciklamasi (orn: 1.6 16V) [---]:
+  Yakit (1=Benzin 2=Dizel 3=Turbo) [1]:
+  Max RPM [6500]:
+  Redline RPM [6175]:
+  Rolanti RPM [750]:
+  Hedef Su Sicakligi (C) [90]:
+  Silindir Capi - Bore (mm) [0]:
+  Piston Stroku - Stroke (mm) [0]:
+  Silindir Adedi [4]:
+  Motor Hacmi (cc) [0]:
+  Kompresyon Orani (orn: 10.5) [0]:
+
+======================================================
+  ARAC KIMLIGI — ONAY BEKLENIYOR
+======================================================
+  VIN          : BILINMIYOR
+  Motor Kodu   : BILINMIYOR  (Veritabaninda bulunamadi)
+  Marka/Motor  : BILINMIYOR ---
+  Yakit Tipi   : Benzin (Atm)
+  Max RPM      : 6500
+  Redline      : 6175 RPM
+  Rolanti      : 750 RPM
+  Hedef ECT    : 90 °C
+======================================================
+[Enter] Onayla  [D] Duzelt  [M] Manuel gir :
+Profil onaylandi.
+
+Test LPG'de mi YAPILIYOR? (e/h, Enter=Hayir): h
+
+Arac Agirligi (kg, Varsayilan 1350): 1600
+Arac agirlik: 1600 kg
+
+Kasa Tipi Secimi:
+   1. Sedan (Cd: 0.28, Alan: 2.2 m2)
+   2. Hatchback (Cd: 0.32, Alan: 2.1 m2)
+   3. SUV / Pickup (Cd: 0.38, Alan: 2.6 m2)
+   4. Spor (Cd: 0.25, Alan: 1.9 m2)
+   5. Ticari / Van (Cd: 0.42, Alan: 2.8 m2)
+Secim (1-5, Varsayilan 1=Sedan): 1
+Sedan secildi (Cd: 0.28)
+
+⏱️ Test Süresi (Varsayılan 1200sn = 20dk, Enter bas geç):
+
+🛑 TEST BASLIYOR (1200 Saniye = 20 dakika)...
+
+──────────────────────────────────────────────────
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                       KOEO MODU - KONTAK AÇIK                        ║
+╚══════════════════════════════════════════════════════════════════════╝
+╔═════════════════════════════════════════════════════════════╗
+║ DURUM         : Kontak Açık, Motor Kapalı                   ║
+║ BEKLENİYOR    : Marş Butonuna Basın                         ║
+║ AKÜ VOLTAJ    : 13.5V (İYİ)                    ║
+║ GEÇİŞ NEDENİ  : Sistem başlatıldı, kontak açık ║
+╚═════════════════════════════════════════════════════════════╝
+⏳ 1177sn | KOEO     |    0 RPM [░░░░░░░░░░░░░░░░░░░░] | ECT: 58°C | TRIM: %+0.0
+──────────────────────────────────────────────────
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                ISINMA MODU - MOTOR TEMPERATURE RISING                ║
+╚══════════════════════════════════════════════════════════════════════╝
+╔════════════════════════════════════════════════════════════════════════╗
+║ DURUM         : Motor Isınıyor                                         ║
+║ HEDEF SICAKLIK: 90°C                                                   ║
+║ ŞU ANKI SICAKLIK: 57°C [████████████░░░░░░░░] %63                      ║
+║ GEÇİŞ NEDENİ  : Motor calisti (RPM > 700), isinma basladi ║
+╚════════════════════════════════════════════════════════════════════════╝
+⏳ 1017sn | WARMUP   | 2410 RPM [▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░] | ECT: 48°C | TRIM: %+0.0
+──────────────────────────────────────────────────
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                    PERFORMANS TESTİ - YÜK ALTINDA                    ║
+╚══════════════════════════════════════════════════════════════════════╝
+╔═══════════════════════════════════════════════════════════════╗
+║ DURUM         : Performans Testi Aktif                        ║
+║ TAHMİNİ YÜK  : %95 ⚡ (Relatif)                   ║
+║ ÖLÇ.YAPILIYOR : Maksimum RPM, Güç Kaybı Analizi               ║
+║ GEÇİŞ NEDENİ  : Yüksek LOAD tespit edildi (%100) ║
+╚═══════════════════════════════════════════════════════════════╝
+
+⚠️  DİKKAT: MOTOR SOĞUK! YÜKSEK DEVİR RİSKLİ! (ECT: 48°C)
+⏳ 1010sn | LOAD     | 2911 RPM [▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░] | TPS: %26 | ECT: 48°C | TRIM: %+5.5 ⚡ %100
+──────────────────────────────────────────────────
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                ISINMA MODU - MOTOR TEMPERATURE RISING                ║
+╚══════════════════════════════════════════════════════════════════════╝
+╔════════════════════════════════════════════════════════════════════════╗
+║ DURUM         : Motor Isınıyor                                         ║
+║ HEDEF SICAKLIK: 90°C                                                   ║
+║ ŞU ANKI SICAKLIK: 48°C [██████████░░░░░░░░░░] %53                      ║
+║ GEÇİŞ NEDENİ  : Motor calisti (RPM > 700), isinma basladi ║
+╚════════════════════════════════════════════════════════════════════════╝
+⏳ 1002sn | WARMUP   | 3996 RPM [▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░] | ECT: 48°C | TRIM: %+0.0
+──────────────────────────────────────────────────
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                    PERFORMANS TESTİ - YÜK ALTINDA                    ║
+╚══════════════════════════════════════════════════════════════════════╝
+╔═════════════════════════════════════════════════════════════╗
+║ DURUM         : Performans Testi Aktif                      ║
+║ TAHMİNİ YÜK  : %95 ⚡ (Relatif)                 ║
+║ ÖLÇ.YAPILIYOR : Maksimum RPM, Güç Kaybı Analizi             ║
+║ GEÇİŞ NEDENİ  : Yüksek TPS tespit edildi (%87) ║
+╚═════════════════════════════════════════════════════════════╝
+
+⚠️  DİKKAT: MOTOR SOĞUK! YÜKSEK DEVİR RİSKLİ! (ECT: 48°C)
+⏳  995sn | LOAD     | 3245 RPM [▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░] | TPS: %87 | ECT: 48°C | TRIM: %-0.8 ⚡ %100
+⚠️  DİKKAT: MOTOR SOĞUK! YÜKSEK DEVİR RİSKLİ! (ECT: 48°C)
+⏳  988sn | LOAD     | 2789 RPM [▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░] | TPS: %11 | ECT: 48°C | TRIM: %+0.0 ⚡ %100
+⚠️  DİKKAT: MOTOR SOĞUK! YÜKSEK DEVİR RİSKLİ! (ECT: 49°C)
+⏳  982sn | LOAD     | 1316 RPM [▓▓▓▓▓░░░░░░░░░░░░░░░] | TPS: %18 | ECT: 49°C | TRIM: %-7.8 ⚡ %100
+──────────────────────────────────────────────────
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                ISINMA MODU - MOTOR TEMPERATURE RISING                ║
+╚══════════════════════════════════════════════════════════════════════╝
+╔════════════════════════════════════════════════════════════════════════╗
+║ DURUM         : Motor Isınıyor                                         ║
+║ HEDEF SICAKLIK: 90°C                                                   ║
+║ ŞU ANKI SICAKLIK: 50°C [███████████░░░░░░░░░] %55                      ║
+║ GEÇİŞ NEDENİ  : Motor calisti (RPM > 700), isinma basladi ║
+╚════════════════════════════════════════════════════════════════════════╝
+⏳  943sn | WARMUP   | 2193 RPM [▓▓▓▓▓▓▓▓▓░░░░░░░░░░░] | ECT: 51°C | TRIM: %+0.0
+──────────────────────────────────────────────────
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                    PERFORMANS TESTİ - YÜK ALTINDA                    ║
+╚══════════════════════════════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════════════╗
+║ DURUM         : Performans Testi Aktif                       ║
+║ TAHMİNİ YÜK  : %95 ⚡ (Relatif)                  ║
+║ ÖLÇ.YAPILIYOR : Maksimum RPM, Güç Kaybı Analizi              ║
+║ GEÇİŞ NEDENİ  : Yüksek LOAD tespit edildi (%95) ║
+╚══════════════════════════════════════════════════════════════╝
+
+⚠️  DİKKAT: MOTOR SOĞUK! YÜKSEK DEVİR RİSKLİ! (ECT: 51°C)
+⏳  936sn | LOAD     | 1981 RPM [▓▓▓▓▓▓▓▓░░░░░░░░░░░░] | TPS: %11 | ECT: 51°C | TRIM: %+0.0 ⚡ %100
+──────────────────────────────────────────────────
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                ISINMA MODU - MOTOR TEMPERATURE RISING                ║
+╚══════════════════════════════════════════════════════════════════════╝
+╔════════════════════════════════════════════════════════════════════════╗
+║ DURUM         : Motor Isınıyor                                         ║
+║ HEDEF SICAKLIK: 90°C                                                   ║
+║ ŞU ANKI SICAKLIK: 51°C [███████████░░░░░░░░░] %56                      ║
+║ GEÇİŞ NEDENİ  : Motor calisti (RPM > 700), isinma basladi ║
+╚════════════════════════════════════════════════════════════════════════╝
+⏳  916sn | WARMUP   | 1237 RPM [▓▓▓▓▓░░░░░░░░░░░░░░░] | ECT: 53°C | TRIM: %+0.8
+──────────────────────────────────────────────────
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                    PERFORMANS TESTİ - YÜK ALTINDA                    ║
+╚══════════════════════════════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════════════╗
+║ DURUM         : Performans Testi Aktif                       ║
+║ TAHMİNİ YÜK  : %95 ⚡ (Relatif)                  ║
+║ ÖLÇ.YAPILIYOR : Maksimum RPM, Güç Kaybı Analizi              ║
+║ GEÇİŞ NEDENİ  : Yüksek LOAD tespit edildi (%93) ║
+╚══════════════════════════════════════════════════════════════╝
+
+⚠️  DİKKAT: MOTOR SOĞUK! YÜKSEK DEVİR RİSKLİ! (ECT: 54°C)
+⏳  908sn | LOAD     |  947 RPM [▓▓▓▓░░░░░░░░░░░░░░░░] | TPS: %12 | ECT: 54°C | TRIM: %-3.1 ⚡ %100
+──────────────────────────────────────────────────
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                ISINMA MODU - MOTOR TEMPERATURE RISING                ║
+╚══════════════════════════════════════════════════════════════════════╝
+╔════════════════════════════════════════════════════════════════════════╗
+║ DURUM         : Motor Isınıyor                                         ║
+║ HEDEF SICAKLIK: 90°C                                                   ║
+║ ŞU ANKI SICAKLIK: 54°C [████████████░░░░░░░░] %60                      ║
+║ GEÇİŞ NEDENİ  : Motor calisti (RPM > 700), isinma basladi ║
+╚════════════════════════════════════════════════════════════════════════╝
+⏳  883sn | WARMUP   | 1113 RPM [▓▓▓▓░░░░░░░░░░░░░░░░] | ECT: 57°C | TRIM: %-0.8
+──────────────────────────────────────────────────
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                    PERFORMANS TESTİ - YÜK ALTINDA                    ║
+╚══════════════════════════════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════════════╗
+║ DURUM         : Performans Testi Aktif                       ║
+║ TAHMİNİ YÜK  : %95 ⚡ (Relatif)                  ║
+║ ÖLÇ.YAPILIYOR : Maksimum RPM, Güç Kaybı Analizi              ║
+║ GEÇİŞ NEDENİ  : Yüksek LOAD tespit edildi (%89) ║
+╚══════════════════════════════════════════════════════════════╝
+
+⚠️  DİKKAT: MOTOR SOĞUK! YÜKSEK DEVİR RİSKLİ! (ECT: 57°C)
+⏳  876sn | LOAD     | 2244 RPM [▓▓▓▓▓▓▓▓▓░░░░░░░░░░░] | TPS: %15 | ECT: 57°C | TRIM: %+3.9 ⚡ %100
+──────────────────────────────────────────────────
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                ISINMA MODU - MOTOR TEMPERATURE RISING                ║
+╚══════════════════════════════════════════════════════════════════════╝
+╔════════════════════════════════════════════════════════════════════════╗
+║ DURUM         : Motor Isınıyor                                         ║
+║ HEDEF SICAKLIK: 90°C                                                   ║
+║ ŞU ANKI SICAKLIK: 57°C [████████████░░░░░░░░] %63                      ║
+║ GEÇİŞ NEDENİ  : Motor calisti (RPM > 700), isinma basladi ║
+╚════════════════════════════════════════════════════════════════════════╝
+⏳  856sn | WARMUP   | 1221 RPM [▓▓▓▓▓░░░░░░░░░░░░░░░] | ECT: 59°C | TRIM: %-3.1
+──────────────────────────────────────────────────
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                    PERFORMANS TESTİ - YÜK ALTINDA                    ║
+╚══════════════════════════════════════════════════════════════════════╝
+╔═══════════════════════════════════════════════════════════════╗
+║ DURUM         : Performans Testi Aktif                        ║
+║ TAHMİNİ YÜK  : %95 ⚡ (Relatif)                   ║
+║ ÖLÇ.YAPILIYOR : Maksimum RPM, Güç Kaybı Analizi               ║
+║ GEÇİŞ NEDENİ  : Yüksek LOAD tespit edildi (%100) ║
+╚═══════════════════════════════════════════════════════════════╝
+
+⚠️  DİKKAT: MOTOR SOĞUK! YÜKSEK DEVİR RİSKLİ! (ECT: 59°C)
+⏳  849sn | LOAD     | 1566 RPM [▓▓▓▓▓▓░░░░░░░░░░░░░░] | TPS: %24 | ECT: 59°C | TRIM: %+8.6 ⚡ %100
+──────────────────────────────────────────────────
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                ISINMA MODU - MOTOR TEMPERATURE RISING                ║
+╚══════════════════════════════════════════════════════════════════════╝
+╔════════════════════════════════════════════════════════════════════════╗
+║ DURUM         : Motor Isınıyor                                         ║
+║ HEDEF SICAKLIK: 90°C                                                   ║
+║ ŞU ANKI SICAKLIK: 60°C [█████████████░░░░░░░] %66                      ║
+║ GEÇİŞ NEDENİ  : Motor calisti (RPM > 700), isinma basladi ║
+╚════════════════════════════════════════════════════════════════════════╝
+⏳  841sn | WARMUP   | 4440 RPM [▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░] | ECT: 60°C | TRIM: %+7.8
+──────────────────────────────────────────────────
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                    PERFORMANS TESTİ - YÜK ALTINDA                    ║
+╚══════════════════════════════════════════════════════════════════════╝
+╔═════════════════════════════════════════════════════════════╗
+║ DURUM         : Performans Testi Aktif                      ║
+║ TAHMİNİ YÜK  : %95 ⚡ (Relatif)                 ║
+║ ÖLÇ.YAPILIYOR : Maksimum RPM, Güç Kaybı Analizi             ║
+║ GEÇİŞ NEDENİ  : Yüksek TPS tespit edildi (%77) ║
+╚═════════════════════════════════════════════════════════════╝
+
+⚠️  DİKKAT: MOTOR SOĞUK! YÜKSEK DEVİR RİSKLİ! (ECT: 61°C)
+⏳  834sn | LOAD     | 3432 RPM [▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░] | TPS: %77 | ECT: 61°C | TRIM: %-0.8 ⚡ %100
+──────────────────────────────────────────────────
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                ISINMA MODU - MOTOR TEMPERATURE RISING                ║
+╚══════════════════════════════════════════════════════════════════════╝
+╔════════════════════════════════════════════════════════════════════════╗
+║ DURUM         : Motor Isınıyor                                         ║
+║ HEDEF SICAKLIK: 90°C                                                   ║
+║ ŞU ANKI SICAKLIK: 62°C [█████████████░░░░░░░] %68                      ║
+║ GEÇİŞ NEDENİ  : Motor calisti (RPM > 700), isinma basladi ║
+╚════════════════════════════════════════════════════════════════════════╝
+⏳  820sn | WARMUP   | 1123 RPM [▓▓▓▓░░░░░░░░░░░░░░░░] | ECT: 63°C | TRIM: %+2.3
+──────────────────────────────────────────────────
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                    PERFORMANS TESTİ - YÜK ALTINDA                    ║
+╚══════════════════════════════════════════════════════════════════════╝
+╔═════════════════════════════════════════════════════════════╗
+║ DURUM         : Performans Testi Aktif                      ║
+║ TAHMİNİ YÜK  : %95 ⚡ (Relatif)                 ║
+║ ÖLÇ.YAPILIYOR : Maksimum RPM, Güç Kaybı Analizi             ║
+║ GEÇİŞ NEDENİ  : Yüksek TPS tespit edildi (%87) ║
+╚═════════════════════════════════════════════════════════════╝
+
+⚠️  DİKKAT: MOTOR SOĞUK! YÜKSEK DEVİR RİSKLİ! (ECT: 63°C)
+⏳  813sn | LOAD     | 1052 RPM [▓▓▓▓░░░░░░░░░░░░░░░░] | TPS: %87 | ECT: 63°C | TRIM: %+1.6 ⚡ %100
+──────────────────────────────────────────────────
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                ISINMA MODU - MOTOR TEMPERATURE RISING                ║
+╚══════════════════════════════════════════════════════════════════════╝
+╔════════════════════════════════════════════════════════════════════════╗
+║ DURUM         : Motor Isınıyor                                         ║
+║ HEDEF SICAKLIK: 90°C                                                   ║
+║ ŞU ANKI SICAKLIK: 64°C [██████████████░░░░░░] %71                      ║
+║ GEÇİŞ NEDENİ  : Motor calisti (RPM > 700), isinma basladi ║
+╚════════════════════════════════════════════════════════════════════════╝
+⏳  793sn | WARMUP   | 2404 RPM [▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░] | ECT: 65°C | TRIM: %-0.8
+──────────────────────────────────────────────────
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                    PERFORMANS TESTİ - YÜK ALTINDA                    ║
+╚══════════════════════════════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════════════╗
+║ DURUM         : Performans Testi Aktif                       ║
+║ TAHMİNİ YÜK  : %95 ⚡ (Relatif)                  ║
+║ ÖLÇ.YAPILIYOR : Maksimum RPM, Güç Kaybı Analizi              ║
+║ GEÇİŞ NEDENİ  : Yüksek LOAD tespit edildi (%96) ║
+╚══════════════════════════════════════════════════════════════╝
+
+⚠️  DİKKAT: MOTOR SOĞUK! YÜKSEK DEVİR RİSKLİ! (ECT: 65°C)
+⏳  785sn | LOAD     | 1480 RPM [▓▓▓▓▓▓░░░░░░░░░░░░░░] | TPS: %10 | ECT: 65°C | TRIM: %+0.8 ⚡ %100
+⚠️  DİKKAT: MOTOR SOĞUK! YÜKSEK DEVİR RİSKLİ! (ECT: 65°C)
+⏳  779sn | LOAD     | 1349 RPM [▓▓▓▓▓░░░░░░░░░░░░░░░] | TPS: %29 | ECT: 65°C | TRIM: %+4.7 ⚡ %100
+──────────────────────────────────────────────────
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                ISINMA MODU - MOTOR TEMPERATURE RISING                ║
+╚══════════════════════════════════════════════════════════════════════╝
+╔════════════════════════════════════════════════════════════════════════╗
+║ DURUM         : Motor Isınıyor                                         ║
+║ HEDEF SICAKLIK: 90°C                                                   ║
+║ ŞU ANKI SICAKLIK: 65°C [██████████████░░░░░░] %72                      ║
+║ GEÇİŞ NEDENİ  : Motor calisti (RPM > 700), isinma basladi ║
+╚════════════════════════════════════════════════════════════════════════╝
+⏳  765sn | WARMUP   | 3091 RPM [▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░] | ECT: 66°C | TRIM: %+0.0
+──────────────────────────────────────────────────
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                    PERFORMANS TESTİ - YÜK ALTINDA                    ║
+╚══════════════════════════════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════════════╗
+║ DURUM         : Performans Testi Aktif                       ║
+║ TAHMİNİ YÜK  : %95 ⚡ (Relatif)                  ║
+║ ÖLÇ.YAPILIYOR : Maksimum RPM, Güç Kaybı Analizi              ║
+║ GEÇİŞ NEDENİ  : Yüksek LOAD tespit edildi (%94) ║
+╚══════════════════════════════════════════════════════════════╝
+
+⚠️  DİKKAT: MOTOR SOĞUK! YÜKSEK DEVİR RİSKLİ! (ECT: 66°C)
+⏳  757sn | LOAD     | 2838 RPM [▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░] | TPS: %14 | ECT: 66°C | TRIM: %+2.3 ⚡ %100
+──────────────────────────────────────────────────
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                ISINMA MODU - MOTOR TEMPERATURE RISING                ║
+╚══════════════════════════════════════════════════════════════════════╝
+╔════════════════════════════════════════════════════════════════════════╗
+║ DURUM         : Motor Isınıyor                                         ║
+║ HEDEF SICAKLIK: 90°C                                                   ║
+║ ŞU ANKI SICAKLIK: 66°C [██████████████░░░░░░] %73                      ║
+║ GEÇİŞ NEDENİ  : Motor calisti (RPM > 700), isinma basladi ║
+╚════════════════════════════════════════════════════════════════════════╝
+⏳  750sn | WARMUP   | 2327 RPM [▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░] | ECT: 66°C | TRIM: %+0.0
+──────────────────────────────────────────────────
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                    PERFORMANS TESTİ - YÜK ALTINDA                    ║
+╚══════════════════════════════════════════════════════════════════════╝
+╔═══════════════════════════════════════════════════════════════╗
+║ DURUM         : Performans Testi Aktif                        ║
+║ TAHMİNİ YÜK  : %95 ⚡ (Relatif)                   ║
+║ ÖLÇ.YAPILIYOR : Maksimum RPM, Güç Kaybı Analizi               ║
+║ GEÇİŞ NEDENİ  : Yüksek LOAD tespit edildi (%100) ║
+╚═══════════════════════════════════════════════════════════════╝
+
+⚠️  DİKKAT: MOTOR SOĞUK! YÜKSEK DEVİR RİSKLİ! (ECT: 66°C)
+⏳  743sn | LOAD     |  872 RPM [▓▓▓░░░░░░░░░░░░░░░░░] | TPS: %59 | ECT: 66°C | TRIM: %-0.8 ⚡ %100
+⚠️  DİKKAT: MOTOR SOĞUK! YÜKSEK DEVİR RİSKLİ! (ECT: 66°C)
+⏳  736sn | LOAD     | 3225 RPM [▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░] | TPS: %36 | ECT: 66°C | TRIM: %+3.1 ⚡ %100
+──────────────────────────────────────────────────
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                ISINMA MODU - MOTOR TEMPERATURE RISING                ║
+╚══════════════════════════════════════════════════════════════════════╝
+╔════════════════════════════════════════════════════════════════════════╗
+║ DURUM         : Motor Isınıyor                                         ║
+║ HEDEF SICAKLIK: 90°C                                                   ║
+║ ŞU ANKI SICAKLIK: 67°C [██████████████░░░░░░] %74                      ║
+║ GEÇİŞ NEDENİ  : Motor calisti (RPM > 700), isinma basladi ║
+╚════════════════════════════════════════════════════════════════════════╝
+⏳  723sn | WARMUP   | 1044 RPM [▓▓▓▓░░░░░░░░░░░░░░░░] | ECT: 67°C | TRIM: %-5.5
+──────────────────────────────────────────────────
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                    PERFORMANS TESTİ - YÜK ALTINDA                    ║
+╚══════════════════════════════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════════════╗
+║ DURUM         : Performans Testi Aktif                       ║
+║ TAHMİNİ YÜK  : %95 ⚡ (Relatif)                  ║
+║ ÖLÇ.YAPILIYOR : Maksimum RPM, Güç Kaybı Analizi              ║
+║ GEÇİŞ NEDENİ  : Yüksek LOAD tespit edildi (%98) ║
+╚══════════════════════════════════════════════════════════════╝
+
+⚠️  DİKKAT: MOTOR SOĞUK! YÜKSEK DEVİR RİSKLİ! (ECT: 68°C)
+⏳  716sn | LOAD     |  885 RPM [▓▓▓░░░░░░░░░░░░░░░░░] | TPS: %69 | ECT: 68°C | TRIM: %+0.8 ⚡ %100
+──────────────────────────────────────────────────
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                ISINMA MODU - MOTOR TEMPERATURE RISING                ║
+╚══════════════════════════════════════════════════════════════════════╝
+╔════════════════════════════════════════════════════════════════════════╗
+║ DURUM         : Motor Isınıyor                                         ║
+║ HEDEF SICAKLIK: 90°C                                                   ║
+║ ŞU ANKI SICAKLIK: 69°C [███████████████░░░░░] %76                      ║
+║ GEÇİŞ NEDENİ  : Motor calisti (RPM > 700), isinma basladi ║
+╚════════════════════════════════════════════════════════════════════════╝
+⏳  708sn | WARMUP   | 2340 RPM [▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░] | ECT: 69°C | TRIM: %+0.0
+──────────────────────────────────────────────────
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                    PERFORMANS TESTİ - YÜK ALTINDA                    ║
+╚══════════════════════════════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════════════╗
+║ DURUM         : Performans Testi Aktif                       ║
+║ TAHMİNİ YÜK  : %95 ⚡ (Relatif)                  ║
+║ ÖLÇ.YAPILIYOR : Maksimum RPM, Güç Kaybı Analizi              ║
+║ GEÇİŞ NEDENİ  : Yüksek LOAD tespit edildi (%89) ║
+╚══════════════════════════════════════════════════════════════╝
+
+⚠️  DİKKAT: MOTOR SOĞUK! YÜKSEK DEVİR RİSKLİ! (ECT: 69°C)
+⏳  701sn | LOAD     | 1676 RPM [▓▓▓▓▓▓▓░░░░░░░░░░░░░] | TPS: %10 | ECT: 69°C | TRIM: %+0.0 ⚡ %100
+⚠️  DİKKAT: MOTOR SOĞUK! YÜKSEK DEVİR RİSKLİ! (ECT: 69°C)
+⏳  694sn | LOAD     | 1666 RPM [▓▓▓▓▓▓▓░░░░░░░░░░░░░] | TPS: %87 | ECT: 69°C | TRIM: %-0.8 ⚡ %100
+──────────────────────────────────────────────────
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                ISINMA MODU - MOTOR TEMPERATURE RISING                ║
+╚══════════════════════════════════════════════════════════════════════╝
+╔════════════════════════════════════════════════════════════════════════╗
+║ DURUM         : Motor Isınıyor                                         ║
+║ HEDEF SICAKLIK: 90°C                                                   ║
+║ ŞU ANKI SICAKLIK: 69°C [███████████████░░░░░] %76                      ║
+║ GEÇİŞ NEDENİ  : Motor calisti (RPM > 700), isinma basladi ║
+╚════════════════════════════════════════════════════════════════════════╝
+⏳  601sn | WARMUP   |  704 RPM [▓▓░░░░░░░░░░░░░░░░░░] | ECT: 77°C | TRIM: %-11.7
+⚠️  Test kullanıcı tarafından durduruldu.
+
+═══════════════════════════════════════════════════════════════════════════════════════════════
+PARÇA                | ÖLÇÜLEN         | REFERANS        | DURUM
+═══════════════════════════════════════════════════════════════════════════════════════════════
+Akü (Marş)           | 13.50 V         | > 9.6 V         | IYI
+Alternatör           | 13.79 V         | 13.2-14.8V      | NORMAL
+Ateşleme/Stabilite   | Vibrasyon 0.0   | <20             | SAGLAM
+Termostat/ECT        | 77 C            | 80-105 C        | NORMAL
+MAP Sensörü          | 48 kPa          | 20-100 kPa      | NORMAL
+Emme Havası (IAT)    | 39 C            | Ortam + 10-30   | NORMAL
+Gaz Kelebeği         | %21             | 0-100           | TEPKİ VAR
+[S106] Yakit Ayari (Trim) | %-2.3           | +/- %10         | NORMAL
+Motor Yükü           | %100            | Max > %80       | YÜK ALTINDA
+Arıza Kaydı (DTC)    | 1 Adet          | 0               | ARIZALI
+═══════════════════════════════════════════════════════════════════════════════════════════════
+
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║                          GENEL KARNE ÖZETİ                           ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+╔══════════════════════════════════════════════════╗
+║               MÜKEMMEL (Sorunsuz)                ║
+║                  PUAN: 94/100                  ║
+╚══════════════════════════════════════════════════╝
+
+
+════════════════════════════════════════════════════════════
+📊 AŞAMALI SÜRÜŞ ANALİZİ
+════════════════════════════════════════════════════════════
+KOEO       | Süre: 0.3sn    | Durum: İyi
+           └─ Başlangıç Voltajı: 13.5V
+WARMUP     | Süre: 7.0sn    | Durum: Hızlı
+           └─ Isınma Hızı: 171.4 °C/dk
+LOAD       | Süre: 1.8sn    | Durum: Kabul Edilebilir
+           └─ Max RPM: 3432.0
+           └─ Tahmini Güç Kaybı: %5
+════════════════════════════════════════════════════════════
+
+⚠️  Sensor Uyarisi: Dikkat: Bazi emisyon sensorleri bu arac profilinde kilitli olabilir, tehis temel verilerle yapilmistir. Okunamayan sensorler: MAF (Hava Akis Olceri).
+
+✅ JSON Rapor Kaydedildi: C:\Users\chnyg\OneDrive\Belgeler\py\seyyanen\Ekspertiz_BILINMIYOR_20260302_185731\Detayli_Rapor.json
+✅ PDF Raporu Oluşturuldu: C:\Users\chnyg\OneDrive\Belgeler\py\seyyanen\Ekspertiz_BILINMIYOR_20260302_185731\Rapor_BILINMIYOR_---_20260302_185731.pdf

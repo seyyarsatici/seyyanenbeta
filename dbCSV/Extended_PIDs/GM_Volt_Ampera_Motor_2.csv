@@ -1,0 +1,40 @@
+Name," ""ShortName"""," ""ModeAndPID"""," ""Equation"""," ""Min Value"""," ""Max Value"""," ""Units"""," ""Header"""," ""startDiagnostic"""," ""stopDiagnostic"""," ""scale""",minimumRefreshDelayMillis
+IAT2,IAT2,0x2203ca,A-40,0,60,°C,Auto,,,1,0
+Knock Sensor,Knock,0x220404,A,0,60,Count,Auto,,,1,0
+Left Front Tire Pressure,LF TP,0x222813,(((256*A)+B)/3+22/3)*0.145,0,70,PSI,726,,,1,0
+Left Rear Tire Pressure,LR TP,0x222815,(((256*A)+B)/3+22/3)*0.145,0,70,PSI,726,,,1,0
+Right Front Tire Pressure,RF TP,0x222814,(((256*A)+B)/3+22/3)*0.145,0,70,PSI,726,,,1,0
+Right Rear Tire Pressure,RR TP,0x222816,(((256*A)+B)/3+22/3)*0.145,0,70,PSI,726,,,1,0
+Throttle Position (Actual),TP A,0x22093c,((A*256)+B)*(100/8192),0,100,°,Auto,,,1,0
+Throttle Position (Desired),TP D,0x22091a,((A*256)+B)*(100/8192),0,100,°,Auto,,,1,0
+Transmission Temp,TransTmp,0x221e1c,(((signed(A)*256)+B)*(9/8)+320)/10,0,200,°F,Auto,,,1,0
+Average Battery Module Voltage,AvM,0x224841,((((A*256)+B)*(1/10)+0)/100),0,50,Volts,0,,,1,0
+Battery Age,age,0x224810,((((A*256)+B)*(1/20)+0)/10),0,100,Months,0,,,1,0
+Battery Modules,VVM,0x22483f,((((A*256)+B)*(1/10)+0)/100),0,100,Volts,0,,,1,0
+Contactor Voltage Negative,CVN,0x224806,((((A*256)+B)*(1/1)+0)/10),0,300,Volts,0,,,1,0
+Contactor Voltage Positive,CVP,0x224805,((((A*256)+B)*(1/1)+0)/10),0,300,Volts,0,,,1,0
+Engine run time,TmE,0x22f41f,((((A*256)+B)*(25/16)+0)/100),0,1000,Mins,0,,,1,0
+HV Current,AMP,0x22480b,((((Signed(A)*256)+B)*(1/5)+0)/10),-300,300,Amps,0,,,1,0
+HV Negative Leakage Voltage,HvNLV,0x224804,INT16(A:B)*0.001,0,100,Volts,,,,1,0
+HV Positive Leakage Voltage,HvPLV,0x224803,INT16(A:B)*0.001,0,100,Volts,,,,1,0
+HVB Age,HvbAge,0x224810,INT16(A:B)*0.005,0,320,Months,,,,1,0
+HVB Average Module Voltage,HvbAvgModV,0x224841,INT16(A:B)*0.001,0,10,Volts,7.00E+04,,,1,0
+HVB Coolant Inlet Temperature,HvbCIT,0x224846,(A-50)*1.8+32,-50,400,°F,,,,1,0
+HVB Minimum Module Voltage,HvbMinModV,0x224840,INT16(A:B)*0.001,0,10,Volts,7.00E+04,,,1,0
+HVB State of Charge,HvbSoc,0x224801,INT16(A:B)*0.002,0,100,%,,,,1,0
+HVB Temperature,HvbT,0x224800,(A-50)*1.8+32,-50,400,°F,,,,1,0
+HVB Temperature Range,HvbTR,0x224808,(C-50)*1.8+32,-50,300,°F,,,,1,0
+HVB Temperature Range Average,HvbAve,0x224808,(D-50)*1.8+32,-50,300,°F,,,,1,0
+HVB Temperature Range Maximum,HvbMaxT,0x224808,(A-50)*1.8+32,-50,300,°F,,,,1,0
+HVB Temperature Range Minimum,HvbMinT,0x224808,(B-50)*1.8+32,-50,300,°F,,,,1,0
+Hybrid Battery Current High Range,CHR,0x224809,((((A*256)+B)*(1/1)+0)/100),0,300,Amps,0,,,1,0
+Hybrid Battery Minimum Battery Module Voltage,MBV,0x224840,((((A*256)+B)*(1/10)+0)/100),0,100,Volts,0,,,1,0
+Main ECU Voltage Supply,ECU,0x22dd02,((A*(1/1)+0)/10),0,100,Volts,0,,,1,0
+Maximum Discharge Power Limit,MxD,0x224815,((A*(25/1)+0)/100),0,300,kW,0,,,1,0
+Maxium Temperature Range,MAX,0x224808,((B*(9/5)-40)),0,100,°F,0,,,1,0
+Minimum Temperature Range,MIN,0x224808,((A*(9/5)-40)),0,300,°F,0,,,1,0
+Motor Inverter Voltage,MIV,0x22481d,((((A*256)+B)*(1/1)+0)/10),0,350,Volts,0,,,1,0
+Negative Leakage Voltage,NLV,0x224804,((((A*256)+B)*(1/10)+0)/100),0,100,Volts,0,,,1,0
+Octane Adjust Ratio,OAR,0x2203e8,(Signed(A)*256+B)/16384,-2,2,,,,,1,0
+Outside Temperature,AIR,0x22dd05,((A*(9/5)-40)),0,100,°F,0,,,1,0
+Positive Leakage Voltage,PLV,0x224803,((((A*256)+B)*(1/10)+0)/100),0,100,Volts,0,,,1,0

@@ -1,0 +1,18 @@
+﻿"Name","ShortName","ModeAndPID","Equation","Min Value","Max Value","Units","Header"
+"AJ133 Engine Oil Temp","Engine Oil Temp","2203F3","A-40","-40","120","deg C","7E0"
+"AJ133 Engine Oil Volume","Engine Oil Vol","2203F2","A/10","0","25.5","L","7E0"
+"AJ133 Gearbox Temp","Gearbox Oil Temp","221E69","A-40","-40","120","deg C","7E1"
+"AJ133 Locking Diff Oil Temp","Rear Diff Temp","221E8A","A-40","-40","150","deg C","795"
+"AJ133 Oil Level","Measured Oil Level","2203E6","A","0","255","mm","7E0"
+"AJ133 Boost","Boost","22033E","A","0","255","kPa","7E0"
+"AJ133 IAT2","IAT2","220520","A","0","999","deg.C","7E0"
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,242 @@
+Name,ShortName,ModeAndPID,Equation,Min Value,Max Value,Units,Header,startDiagnostic,stopDiagnostic,Scale
+B16DTH TCM Temperature,TCM Temp,22280D,A-40,-40,215,C,"7,00E+01",,,1
+B16DTH Barometric Pressure,Baro Press,220033,A,0,255,kpa,"7,00E+00",,,1
+B16DTH Battery Voltage High Resolution,Batt Volt HR,222472,(A*256+B)*0.0005,0,32.7,V,"7,00E+00",,,1
+B16DTH Battery State of Functionality SoF,Batt SoF,222477,A/20,0,12.8,V,"7,00E+00",,,1
+B16DTH Battery State of Charge SoC,Batt SoC,222479,A*100/255,0,100,%,"7,00E+00",,,1
+B16DTH Battery State of Health SoH,Batt SoH,222478,A*100/255,0,100,%,"7,00E+00",,,1
+B16DTH Battery Temperature,Batt Temp,222476,A-40,-40,215,C,"7,00E+00",,,1
+B16DTH Battery Current,Batt Curr,222475,(A*256+B - (BIT(A:7)*65535))/16,-2048,2048,A,"7,00E+00",,,1
+B16DTH Brake Vacuum Pressure,Brake Vac,22150D,A*0.0405,0,10.33,kPa,"7,00E+00",,,1
+B16DTH Brake Vacuum Sensor,Vac Sens,221157,A/51,0,5,V,"7,00E+00",,,1
+B16DTH Cooling Fan Relay 3,Fan Rly 3,22147B,BIT(A:7),0,1,,"7,00E+00",,,1
+B16DTH Cooling Fan Speed,Fan Speed,221122,LOOKUP(A:'НЕИЗВ':128=1:64=2:32=3:0=0),0,3,,"7,00E+00",,,
+B16DTH Swirl Flap Desired,Swirl Des,"2,22E+09",A*100/255,0,100,%,"7,00E+00",,,1
+B16DTH Water in Fuel,Water Fuel,"2,22E+05",BIT(A:6),0,1,,"7,00E+00",,,1
+B16DTH Water in Fuel Indicator,WIF Ind,"2,22E+05",BIT(A:7),0,1,,"7,00E+00",,,1
+B16DTH Idle Time,Idle Time,2213B5,A*256+B,0,65535,sec.,"7,00E+00",,,
+B16DTH Engine Run Time Since Start,Eng Run Time,2211A1,A*256+B,0,65535,sec.,"7,00E+00",,,1
+B16DTH Total ECU Run Time,ECU Run Time,222068,(A*16777216+B*65536+C*256+D)/3600,0,4000000000,Hours,"7,00E+00",,,1
+B16DTH Alternator Rotor Excitation,Alt Excit,22114D,A*100/255,0,100,%,"7,00E+00",,,1
+B16DTH Alternator Desired Voltage,Alt Des Volt,221C47,A*0.1,0,25,V,"7,00E+00",,,1
+B16DTH Alternator Command,Alt Cmd,2213C8,A*100/255,0,100,%,"7,00E+00",,,1
+B16DTH Barometric Pressure Sensor,Baro Sens,222007,A/51,0,5,V,"7,00E+00",,,1
+B16DTH Gear Engaged Sensor,Gear Sens,22289C,A*100/255,0,100,%,"7,00E+00",,,1
+B16DTH Gear Engaged Status,Gear Stat,22289D,LOOKUP(A:'неизветсно':0='нейтраль':1='передача':2='неисправность'),0,2,,"7,00E+00",,,1
+B16DTH Mass Air Flow Sensor,MAF,220010,(A*256+B)*0.01,0,655,g/s,"7,00E+00",,,1
+B16DTH Mass Air Flow Frequency,MAF Hz,2212DA,A*256+B,0,65535,Hz,"7,00E+00",,,1
+B16DTH Particulate Matter Sensor (uA),PM Sens uA,223371,(A*256+B)*0.01,0,6000,uA,"7,00E+00",,,1
+B16DTH PM Sensor Initial Temperature,PM Temp Init,223375,(A*256+B)*0.1-40,-40,1000,C,"7,00E+00",,,1
+B16DTH PM Sensor Regeneration,PM Regen,223638,BIT(A:7),0,1,,"7,00E+00",,,
+B16DTH PM Sensor Temperature,PM Temp,223372,(A*256+B)*0.1-40,-40,650,C,"7,00E+00",,,1
+B16DTH Engine Load,Eng Load,220004,A*100/255,0,100,%,"7,00E+00",,,1
+B16DTH Engine RPM,RPM,22000C,(A*256+B)*0.25,0,8000,rpm,"7,00E+00",,,1
+B16DTH Distance Since MIL Clear,Dist MIL Clr,220021,256*A+B,0,65535,km,"7,00E+00",,,1
+B16DTH Throttle Position Desired,Thr Des,2220DB,A*100/255,0,100,%,"7,00E+00",,,1
+B16DTH Throttle Motor Command,Thr Cmd,2232A9,SIGNED(A),-100,100,%,"7,00E+00",,,1
+B16DTH Throttle Sensor Voltage,Thr Sens,2220DD,A/51,0,5,V,"7,00E+00",,,1
+B16DTH Throttle Position,Thr Pos,2220DC,A*100/255,0,100,%,"7,00E+00",,,1
+B16DTH Desired Idle RPM,Idle Des,2211C9,A*8,0,2048,rpm,"7,00E+00",,,1
+B16DTH Ignition 1 Voltage,Ign 1 Volt,221141,A*0.1,0,25.5,V,"7,00E+00",,,1
+B16DTH Ignition 1 Signal,Ign 1 Sig,2220D0,BIT(A:6),0,1,,"7,00E+00",,,1
+B16DTH Immobilizer Response Time,Immo Resp,22205C,A*256+B,0,65535,ms,"7,00E+00",,,1
+B16DTH Immobilizer Code Accepted,Immo Code,22155B,BIT(A:7),0,1,,"7,00E+00",,,1
+B16DTH Immobilizer Auto Learn Counter,Immo Learn,22155C,A,0,255,,"7,00E+00",,,1
+B16DTH Immobilizer Query Counter,Immo Query,2290D2,A,0,255,,"7,00E+00",,,1
+B16DTH Immobilizer Programming Counter,Immo Prog,2290D1,A,0,255,,"7,00E+00",,,1
+B16DTH Immobilizer Auto Learn Timer,Immo Lrn Tmr,22155D,A*10,0,2550,sec.,"7,00E+00",,,1
+B16DTH Immobilizer Lockout Timer,Immo Lock,229005,A*256+B,0,65535,ms,"7,00E+00",,,1
+B16DTH Power Limitation History,Pwr Limit,222070,LOOKUP(A:'НЕИЗВ.':0='НЕТ':1='ПЕД.ГАЗА.НЕИСПР':2='ВЕНТ.ОХЛ.НЕИСПР':3='ЗАЩ.ОТ_ПЕРЕГР.МОТ':4='ТЕМП.МАСЛА_ВЫСОК.':5='УД.ОГРАН.СКОР':6='ОШИБКА_КАЛ.ДВИГ':7='СРОК_РЕС.МАСЛА':8='ТНВД.НЕИСПР':9='ДАВЛ.НАД.ВНЕ_ДИАП':10='ДМРВ_НЕИСПР':11='DPF_ОШИБКА':12='ADBLUE_НЕИСПР':13='ADBLUE_МАЛО':14='ТЕМП.ТРАНСМ.ВЫС':15='ТЕМП.ОЖ_ВЫС':16='ТЕМП.ТОПЛВЫС':17='ТЕМП.ВПУСК.ВЫС':18='ADBLUE_КАЧ-ВО':19='ADBLUE_СИС.ИСПОРЧ':23='ДАВЛ.МАСЛА.НЕИСПР':24='КОЛЕНВАЛ_ДАТ.НЕИСР':25='РАСПРЕДВАЛ_НЕИСПР'),0,255,,"7,00E+00",,,
+B16DTH Distance Since DTC Clear,Dist DTC Clr,220031,A*256+B,0,65535,km,"7,00E+00",,,1
+B16DTH Piston Cooling Oil Valve Command,Pist Clg Vlv,2227F1,BIT(A:7),0,1,,"7,00E+00",,,1
+B16DTH Water Pump Clutch Command,Pump Clutch,222362,1-BIT(A:7),0,1,,"7,00E+00",,,1
+B16DTH Ignition Relay Command,Ign Rly Cmd,221130,BIT(A:5),0,1,,"7,00E+00",,,1
+B16DTH Starter Command,Start Cmd,22136B,BIT(A:7),0,1,,"7,00E+00",,,1
+B16DTH Idle Speed Correction,Idle Corr,1A46,A-127,-127,128,rpm,"7,00E+00",,,
+B16DTH Cruise Control On,Cruise On,222067,BIT(A:7),0,1,,"7,00E+00",,,1
+B16DTH Lambda 1 Heater Command,Lmb1 Htr Cmd,22147F,A*100/255,0,100,%,"7,00E+00",,,1
+B16DTH Lambda 1 O2 Concentration,Lmb1 O2,2220FD,(A*256+B)/1945-12,-12,21.7,%,"7,00E+00",,,1
+B16DTH Lambda 1 Heater On,Lmb1 Htr On,22146A,BIT(A:7),0,1,,"7,00E+00",,,1
+B16DTH Lambda 1 Equivalence Ratio,Lambda 1,220034,(A*256+B)/32768,0,2,Lambda,"7,00E+00",,,1
+B16DTH Oil Pressure,Oil Press,221C1B,A*4,1,1020,kpa,"7,00E+00",,,1
+B16DTH Oil Pressure Alt,Oil Pr Alt,222345,A*4,0,1000,kPa,"7,00E+00",,,
+B16DTH Oil Pressure Sensor Voltage,Oil Sens V,22115C,A/51,0,5,V,"7,00E+00",,,1
+B16DTH Oil Pressure Sensor Alt,Oil Sens Alt,222344,A/51,0,5,V,"7,00E+00",,,
+B16DTH Oil Pressure Control Solenoid,Oil Solenoid,223318,BIT(A:7),0,1,,"7,00E+00",,,1
+B16DTH Engine Oil Life Remaining,Oil Life,1A6D,B*100/255,0,100,%,"7,00E+00",,,1
+B16DTH Engine Hours,Eng Hours,017F,(E+256*D+65536*C+16777216*B)/3600,0,30000,Hours,"7,00E+00",,,1
+B16DTH Idle Hours,Idle Hours,017F,(I+256*H+65536*G+16777216*F)/3600,0,30000,Hours,"7,00E+00",,,1
+B16DTH Fuel Heater On,Fuel Htr On,2220ED ,BIT(A:7),0,1,,"7,00E+00",,,1
+B16DTH Intake Manifold Absolute Pressure,MAP,22000B,A*300/255,0,255,kPa,"7,00E+00",,,1
+B16DTH Boost Pressure,Boost,22208A,(A*256+B)/32,0,300,kpa,"7,00E+00",,,1
+B16DTH Boost Pressure Sensor Voltage,Boost Sens V,222000,A/51,0,5,V,"7,00E+00",,,1
+B16DTH Desired Boost Pressure,Boost Des,22328A,(A*256+B)*0.01,0,655,kPa,"7,00E+00",,,1
+B16DTH Intake Manifold Vacuum,Vacuum,222001,A,0,50,kpa,"7,00E+00",,,1
+B16DTH ECU Voltage,ECU Volt,220042,(A*256+B)*0.001,0,20,V,"7,00E+00",,,1
+B16DTH Ignition Relay Voltage,Ign Rly Volt,22148D,A*0.1,0,25.5,V,"7,00E+00",,,1
+B16DTH ECU 5V Reference 1,ECU 5V 1,221478,A*0.021607843,0,5.51,V,"7,00E+00",,,1
+B16DTH ECU 5V Reference 2,ECU 5V 2,221479,A*0.021607843,0,5.51,V,"7,00E+00",,,1
+B16DTH ECU 5V Reference 3,ECU 5V 3,222056,A*0.021607843,0,5.51,V,"7,00E+00",,,1
+B16DTH ECU 5V Reference 4,ECU 5V 4,222057,A*0.021607843,0,5.51,V,"7,00E+00",,,1
+B16DTH Low Oil Pressure Warning,Low Oil Pr,221127,BIT(A:7),0,1,,"7,00E+00",,,1
+B16DTH Small Quantity Learn Failure Reason,SQL Fail,2233CF,LOOKUP(A:'НЕИЗВ.':0='НЕТ':1='АТМ.ДАВЛ.МАЛО':2='ВКЛЮЧ.ПЕРЕДАЧА':3='СКОРОСТЬ_НЕ_0':4='НАЖ.ПЕД.ГАЗА':5='НАПР.ЗАЖ.ВНЕ_ДИАП':6='СИГН.ГЕН. ВНЕ_ДИАП':7='СКОР.ДВИГ.НЕСТАБ':8='ДАВЛ.ТОПЛ.ВНЕ_ДИАП':9='БАЛАНС_ЦИЛ.ВНЕ_ДИАП':10='БОЛЬШ.НАГР.ДВИГ':11='DPF_РЕГЕНЕР':12='ТЕМП.ОЖ_ВНЕ_ДИАП':13='ТЕМП.ВПУСК.ВНЕ_ДИАП':14='ТЕМП.ТОПЛ.ВНЕ_ДИАП':15='ВКЛ.ВЕНТ.ОХЛ':16='НЕОБУЧ.РЕГ.ПОТЛ':17='ФОРС.НЕ_ЗАПРОГР':18='НЕ_ЗАПУЩ.ДВИГ':19='ОШИБКИ':20='ВРЕМЯ_РАБ.ДВИГ':21='ТЕМП.ТРАНСМ.ВНЕ_ДИАП':22='ГЕНЕР.НЕ_ЗАПРОГР':23='СЦЕПЛ.НАЖАТО':24='ОБОГРЕВ_САЛОНА'),0,255,,"7,00E+00",,,
+B16DTH Small Quantity Learn Status,SQL Status,2223A3,LOOKUP(A:'НЕИЗВ':1='ОБУЧЕНИЕ':3='ОБУЧЕНО'),0,255,,"7,00E+00",,,
+B16DTH Small Quantity Learn Step,SQL Step,2223A4,A,0,255,,"7,00E+00",,,
+B16DTH Fuel Pressure Regulator Learn Status,FPR Status,2220EC,LOOKUP(A:'НЕОБУЧ.':128='ОБУЧЕНО':64='ОБУЧЕНИЕ'),0,1,,"7,00E+00",,,
+B16DTH Engine Odometer,Eng Odo,1ADF,A*1024+B*4+C/64,0,1000000,km,"7,00E+00",,,1
+B16DTH Accelerator Pedal Threshold D,Pedal Thr D,22323B,A/51,0,5,V,"7,00E+00",,,1
+B16DTH Accelerator Pedal Threshold E,Pedal Thr E,22323C,A/51,0,5,V,"7,00E+00",,,1
+B16DTH Accelerator Pedal Position,Pedal Pos,22131F,(A*256+B)/51.2,0,100,%,"7,00E+00",,,1
+B16DTH Accelerator Pedal Signal D,Pedal Sig D,2212BD,A*100/255,0,100,%,"7,00E+00",,,1
+B16DTH Accelerator Pedal Signal E,Pedal Sig E,2212BC,A*100/255,0,100,%,"7,00E+00",,,1
+B16DTH Clutch Pedal Sensor Voltage,Clutch Sens,22201B,A/51,0,5,V,"7,00E+00",,,1
+B16DTH Clutch Pedal Position,Clutch Pos,22201F,A*100/255,0,100,%,"7,00E+00",,,1
+B16DTH Clutch Pedal Pressed Threshold,Clutch Thr P,22201C,A/51,0,5,V,"7,00E+00",,,1
+B16DTH Clutch Pedal Released Threshold,Clutch Thr R,22201E,A/51,0,5,V,"7,00E+00",,,1
+B16DTH Brake Pedal Pressed,Brake Press,221124,BIT(A:3),0,1,,"7,00E+00",,,1
+B16DTH Brake Pedal Firm Pressed,Brake Firm,221124,BIT(A:5),0,1,,"7,00E+00",,,1
+B16DTH Water Pump HV Test,Pump HV,222362,LOOKUP(BIT(A:0)+BIT(A:1)*2:A:0=АВАРИЯ':1='НЕ_ЗАП':2='НЕИЗВ':3='ОК'),0,3,,"7,00E+00",,,
+B16DTH Water Pump Open Test,Pump Open,222362,LOOKUP(BIT(A:2)+BIT(A:3)*2:A:0=АВАРИЯ':1='НЕ_ЗАП':2='НЕИЗВ':3='ОК'),0,3,,"7,00E+00",,,
+B16DTH Water Pump LV Test,Pump LV,222362,LOOKUP(BIT(A:4)+BIT(A:5)*2:A:0=АВАРИЯ':1='НЕ_ЗАП':2='НЕИЗВ':3='ОК'),0,3,,"7,00E+00",,,
+B16DTH Engine Calibration Verification,Eng Cal OK,2220EE,BIT(A:7),0,1,,"7,00E+00",,,1
+B16DTH Warm-ups Since DTC Clear,Warmups,220030,A,0,256,inch,"7,00E+00",,,1
+B16DTH Camshaft Speed Sensor,Cam Sens,221420,A*256+B,0,65535,ppm,"7,00E+00",,,1
+B16DTH Fuel Injection Mode,Inj Mode,2220AB,LOOKUP(A:'Неизвестный':0='Нормальный':1='ВОСПЛАМ_ОДНОР_СМ_ОТ_СЖАТИЯ':2='DPF_РЕГЕН_ВЫСОК_О2':3='Обуч_малым_дозам':4='DPF_РЕГЕН_НИЗК_О2':5='NOx_продувка_NOx':6='NOx_продувка_SOx_бедной_смесью':7='NOx_продувка_SOx_богатой_смесью':8='8=NOx_НАГРЕВ_1':9='NOx_НАГРЕВ_1':10='NOx_НАГРЕВ_2'),0,10,,"7,00E+00",,,1
+B16DTH Power Mode,Power Mode,22207E,A,0,10,,"7,00E+00",,,1
+B16DTH Glow Plug 1 Command,Glow 1 Cmd,2220C7,A*100/255,0,100,%,"7,00E+00",,,1
+B16DTH Glow Plug 1 Resistance,Glow 1 Res,223070,(A*256+B)*0.001,0,65.54,Ohm,"7,00E+00",,,1
+B16DTH Glow Plug 2 Command,Glow 2 Cmd,2220C8,A*100/255,0,100,%,"7,00E+00",,,1
+B16DTH Glow Plug 2 Resistance,Glow 2 Res,223071,(A*256+B)*0.001,0,65.54,Ohm,"7,00E+00",,,1
+B16DTH Glow Plug 3 Command,Glow 3 Cmd,2220C9,A*100/255,0,100,%,"7,00E+00",,,1
+B16DTH Glow Plug 3 Resistance,Glow 3 Res,223072,(A*256+B)*0.001,0,65.54,Ohm,"7,00E+00",,,1
+B16DTH Glow Plug 4 Command,Glow 4 Cmd,2220CA,A*100/255,0,100,%,"7,00E+00",,,1
+B16DTH Glow Plug 4 Resistance,Glow 4 Res,223073,(A*256+B)*0.001,0,65.54,Ohm,"7,00E+00",,,1
+B16DTH Glow Plugs Test Passed,Glow Test,2220CF,BIT(A:6),0,1,,"7,00E+00",,,1
+B16DTH High Resolution Speed,Speed HR,221942,(A*256+B)*0.0042698,0,300,km/h,"7,00E+00",,,1
+B16DTH VIN Programming Counter,VIN Prog,2290D6,A,0,255,,"7,00E+00",,,1
+B16DTH Exhaust Gas Temperature EGT 1,EGT 1,22303A,(A*256+B)*0.1-40,-40,1000,C,"7,00E+00",,,1
+B16DTH Exhaust Gas Temperature EGT 2,EGT 2,22303B,(A*256+B)*0.1-40,-40,1000,C,"7,00E+00",,,1
+B16DTH Exhaust Gas Temperature EGT 3,EGT 3,2230A9,(A*256+B)*0.1-40,-40,600,C,"7,00E+00",,,1
+B16DTH Cylinder Head Temperature,Head Temp,2223A0,A-40,-40,215,C,"7,00E+00",,,1
+B16DTH Engine Oil Temperature,Oil Temp,221154,A-40,-40,215,C,"7,00E+00",,,1
+B16DTH Ambient Air Temperature,Amb Temp,220046,A-40,-40,215,C,"7,00E+00",,,1
+B16DTH Ambient Air Temperature Alt,Amb Alt,22232C,A-40,-40,215,C,"7,00E+00",,,1
+B16DTH Engine Coolant Temperature ECT,ECT,220005,A-40,-40,215,C,"7,00E+00",,,1
+B16DTH Intake Air Temperature IAT 1,IAT 1,22000F,A-40,-40,215,C,"7,00E+00",,,1
+B16DTH Intake Air Temperature IAT 2,IAT 2,222006,A-40,-40,215,C,"7,00E+00",,,1
+B16DTH Fuel Temperature,Fuel Temp,223218,A-40,-40,215,C,"7,00E+00",,,1
+B16DTH Astra J Fuel Tank Capacity,Tank Astra J,22132A,56-((A*256+B-286)*0.01548),0,56,L,"7,00E+00",,,
+B16DTH Zafira Fuel Tank Capacity,Tank Zafira,22132A,58-MAX((A*256+B-485)*0.0287:(A*256+B-875)*0.0598),0,58,L,"7,00E+00",,,1
+B16DTH Fuel Rail Pressure,Rail Press,220023,(A*256+B)*0.01,0,655,MPa,"7,00E+00",,,1
+B16DTH Fuel Pressure Sensor Voltage,Fuel Sens V,22309C,A/51,0,5,V,"7,00E+00",,,1
+B16DTH Fuel Level Sensor,Fuel Level,221155,A/51,0,5,V,"7,00E+00",,,1
+B16DTH Desired Fuel Rail Pressure,Rail Des,22308A,(A*256+B)*0.01,0,655,MPa,"7,00E+00",,,1
+B16DTH Fuel Heater Relay Command,Fuel Htr Rly,2220ED,BIT(A:7),0,1,,"7,00E+00",,,
+B16DTH Fuel Pressure Regulator Command,FPR Cmd,22147C,A*100/255,0,100,%,"7,00E+00",,,1
+B16DTH Astra J Fuel Level Remaining,Lvl Astra J,22132A,(A*256+B-286)*0.01548,0,56,L,"7,00E+00",,,
+B16DTH OBD Fuel Level Remaining,Lvl OBD,012F,A-34,0,58,L,"7,00E+00",,,1
+B16DTH Zafira Fuel Level Remaining,Lvl Zafira,22132A,MAX((A*256+B-485)*0.0287:(A*256+B-875)*0.0598),0,58,L,"7,00E+00",,,1
+B16DTH Fuel Pump Relay,Fuel Pump,22136C,BIT(A:7),0,1,,"7,00E+00",,,
+B16DTH Turbo Vane Position Sensor,Turbo Vane S,222043,A/51,0,5,V,"7,00E+00",,,1
+B16DTH Turbo Vane Desired Position,Turbo Des,221540,A*100/255,0,100,%,"7,00E+00",,,1
+B16DTH Turbo Vane Solenoid Command,Turbo Vlv,222041,A*100/255,0,100,%,"7,00E+00",,,1
+B16DTH Turbo Vane Actual Position,Turbo Pos,221543,A*100/255,0,100,%,"7,00E+00",,,1
+B16DTH Injector 1 Pulse Width,Inj 1 Pulse,2220AC,(A*256+B)*0.001,0,66,ms,"7,00E+00",,,1
+B16DTH Injector 1 Balance Rate,Inj 1 Bal,22162F,((A*256+B)-32768)/64,-10,10,,"7,00E+00",,,1
+B16DTH Injector 1 Injection Angle,Inj 1 Ang,2220B4,(A*256+B - (BIT(A:7)*65536))*0.1,-90,90,degree,"7,00E+00",,,1
+B16DTH Injector 2 Pulse Width,Inj 2 Pulse,2220AD,(A*256+B)*0.001,0,66,ms,"7,00E+00",,,1
+B16DTH Injector 2 Balance Rate,Inj 2 Bal,221630,((A*256+B)-32768)/64,-10,10,,"7,00E+00",,,1
+B16DTH Injector 2 Injection Angle,Inj 2 Ang,2220B5,(A*256+B - (BIT(A:7)*65536))*0.1,-90,90,degree,"7,00E+00",,,1
+B16DTH Injector 3 Pulse Width,Inj 3 Pulse,2220AE,(A*256+B)*0.001,0,66,ms,"7,00E+00",,,1
+B16DTH Injector 3 Balance Rate,Inj 3 Bal,221631,((A*256+B)-32768)/64,-10,10,,"7,00E+00",,,1
+B16DTH Injector 3 Injection Angle,Inj 3 Ang,2220B6,(A*256+B - (BIT(A:7)*65536))*0.1,-90,90,degree,"7,00E+00",,,1
+B16DTH Injector 4 Pulse Width,Inj 4 Pulse,2220AF,(A*256+B)*0.001,0,66,ms,"7,00E+00",,,1
+B16DTH Injector 4 Balance Rate,Inj 4 Bal,221632,((A*256+B)-32768)/64,-10,10,,"7,00E+00",,,1
+B16DTH Injector 4 Injection Angle,Inj 4 Ang,2220B7,(A*256+B - (BIT(A:7)*65536))*0.1,-90,90,degree,"7,00E+00",,,1
+B16DTH A/C Pressure Sensor Voltage,A/C Sens V,221144,A/51,0,5,V,"7,00E+00",,,1
+B16DTH A/C Refrigerant Pressure High,A/C Press,221564,A*14,0,3570,kpa,"7,00E+00",,,1
+B16DTH A/C Compressor Clutch Command,A/C Clutch,221123,BIT(A:7),0,1,,"7,00E+00",,,1
+B16DTH AdBlue SCR Efficiency,AdB SCR Eff,2233B6,A*100/255,0,100,%,"7,00E+00",,,1
+B16DTH AdBlue Pressure,AdB Press,2230D4,A*4-100,-100,924,kPa,"7,00E+00",,,1
+B16DTH AdBlue Pressure Sensor Voltage,AdB Sens V,223352,A/51,0,5,V,"7,00E+00",,,1
+B16DTH AdBlue SCR Load,AdB SCR Load,2233B7,A*0.08,0,20.4,g,"7,00E+00",,,1
+B16DTH AdBlue SCR Desired Load,AdB Des Load,2233B8,A*0.08,0,20.4,g,"7,00E+00",,,1
+B16DTH AdBlue Desired Pressure,AdB Des Pr,22341F,A*4-100,-100,924,kPa,"7,00E+00",,,1
+B16DTH AdBlue Injector Command,AdB Inj Cmd,22342B,(A*256+B)*0.001,0,65,ms,"7,00E+00",,,1
+B16DTH AdBlue Relay Command,AdB Rly Cmd,22341D,BIT(A:7),0,1,,"7,00E+00",,,1
+B16DTH AdBlue Tank Heater On,AdB Htr On,223424,BIT(A:7),0,1,,"7,00E+00",,,1
+B16DTH AdBlue Tank Heater Current,AdB Htr Curr,223426,A*0.1,0,25,A,"7,00E+00",,,1
+B16DTH AdBlue Line Heater On,AdB Line On,223424,BIT(A:6),0,1,,"7,00E+00",,,1
+B16DTH AdBlue Line Heater Current,AdB Line Cur,223428,A*0.1,0,25,A,"7,00E+00",,,1
+B16DTH AdBlue Supply Voltage Error,AdB Volt Err,223420,BIT(A:7),0,1,,"7,00E+00",,,1
+B16DTH AdBlue Pump Command,AdB Pump Cmd,22341E,A*100/255,0,100,%,"7,00E+00",,,1
+B16DTH AdBlue Range Remaining,AdB Range,22342F,A*256+B,0,65535,km,"7,00E+00",,,1
+B16DTH AdBlue Pump Speed,AdB Pump Spd,223422,(A*256+B - (BIT(A:7)*65536))/8,0,65535,ppm,"7,00E+00",,,1
+B16DTH AdBlue Average Consumption,AdB Consump,223348,(A*256+B)*0.001,0,65.5,g/km,"7,00E+00",,,
+B16DTH AdBlue Tank Frozen Status,AdB Frozen,223429,A,0,10,,"7,00E+00",,,1
+B16DTH AdBlue Temperature,AdB Temp,2230D5,A-40,-40,215,C,"7,00E+00",,,1
+B16DTH AdBlue Pump Desired Speed,AdB Pump Des,22342D,(A*256+B - (BIT(A:7)*65536))/8,0,65535,ppm,"7,00E+00",,,1
+B16DTH AdBlue Level,AdB Level,2230D7,A*100/255,0,100,%,"7,00E+00",,,1
+B16DTH AdBlue Level Sensor Voltage,AdB Lvl Sens,223430,A*5/255,0,5,V,"7,00E+00",,,1
+B16DTH AdBlue Level Warning,AdB Lvl Wrn,2230DA,A,0,5,Level,"7,00E+00",,,1
+B16DTH AdBlue Catalyst Efficiency,AdB Cat Eff,2233B5,SIGNED(A),-100,100,%,"7,00E+00",,,1
+B16DTH Check Engine MIL,Check Engine,222020,BIT(A:7),0,1,,"7,00E+00",,,1
+B16DTH DPF Time Since Last Regen,DPF Time Reg,2220F3,(A*256+B)*8/60,0,10000,min,"7,00E+00",,,
+B16DTH DPF Calculated Flow Resistance,DPF Res Flow,2220F5,A*0.01,0,2.55,kPa,"7,00E+00",,,1
+B16DTH DPF Differential Pressure,DPF Diff Pr,2220F4,SIGNED(A),-128,127,kPa,"7,00E+00",,,1
+B16DTH DPF Differential Pressure Sensor,DPF Diff Sns,223035,A*5/255,0,5,V,"7,00E+00",,,1
+B16DTH DPF Soot Accumulation,DPF Soot %,22336A,A,0,100,%,"7,00E+00",,,1
+B16DTH DPF Inhibit: Time Since Last Attempt,DPF Inh Time,2220F1,BIT(B:3),0,1,,"7,00E+00",,,
+B16DTH DPF Inhibit: Low Fuel Level,DPF Inh Fuel,2220F1,BIT(A:2),0,1,,"7,00E+00",,,
+B16DTH DPF Inhibit: Deceleration Fuel Cut-off,DPF Inh Decel,2220F1,BIT(B:2),0,1,,"7,00E+00",,,
+B16DTH DPF Inhibit: Engine Overheating,DPF Inh Temp,2220F1,BIT(B:0),0,1,,"7,00E+00",,,
+B16DTH DPF Inhibit: Max Time Exceeded,DPF Inh MaxT,2220F1,BIT(A:5),0,1,,"7,00E+00",,,
+B16DTH DPF Inhibit: Max Post-Injection Time,DPF Inh Post,2220F1,BIT(B:7),0,1,,"7,00E+00",,,
+B16DTH DPF Inhibit: Max Steady State Time,DPF Inh Std,2220F1,BIT(B:6),0,1,,"7,00E+00",,,
+B16DTH DPF Inhibit: Regen Already Complete,DPF Inh Done,2220F1,BIT(B:4),0,1,,"7,00E+00",,,
+B16DTH DPF Inhibit: High Turbo Intake Temp,DPF Inh Turb,2220F1,BIT(A:3),0,1,,"7,00E+00",,,
+B16DTH DPF Inhibit: High Fuel Temp,DPF Inh FuelT,2220F1,BIT(B:1),0,1,,"7,00E+00",,,
+B16DTH DPF Inhibit: Low Speed/Load,DPF Inh Load,2220F1,BIT(A:1),0,1,,"7,00E+00",,,
+B16DTH DPF Inhibit: Stored DTCs,DPF Inh DTC,2220F1,BIT(A:0),0,1,,"7,00E+00",,,
+B16DTH DPF Inhibit: Pre-Cat Temp Out of Range,DPF Inh CatT,2220F1,BIT(A:6),0,1,,"7,00E+00",,,
+B16DTH DPF Inhibit: DPF Temp Out of Range,DPF Inh DPF T,2220F1,BIT(A:7),0,1,,"7,00E+00",,,
+B16DTH DPF Inhibit: Engine Speed Out of Range,DPF Inh RPM,2220F1,BIT(B:5),0,1,,"7,00E+00",,,
+B16DTH DPF Inhibit: Excessive Idle Time,DPF Inh Idle,2220F1,BIT(A:4),0,1,,"7,00E+00",,,
+B16DTH DPF Distance Since Last Regen,DPF Last Reg,223039,A*256+B,0,65535,km,"7,00E+00",,,1
+B16DTH DPF Regeneration Process,DPF Regen,2220F2,A,0,255,,"7,00E+00",,,
+B16DTH DPF Average Distance Between Regens,DPF Avg Dist,2220F7,A*256+B,0,65535,km,"7,00E+00",,,1
+B16DTH DPF Average Regen Duration,DPF Avg Time,2220F9,A*8,0,2040,sec.,"7,00E+00",,,1
+B16DTH DPF Average Regen Temperature,DPF Avg Temp,2220F8,(A*256+B)*0.1-40,-40,6514,C,"7,00E+00",,,1
+B16DTH DPF Regeneration Status,DPF Status,2220FA,LOOKUP(A:'НЕИЗВ.':0='НЕТ_ЗАПР':1=1:2=2:3=3:4=4:5=5:6=6:7='ЗАВЕРШЕН':8='НЕУДАЧН':9='ПРЕРВАН':10='СНИЖЕНИЕ':11='СНИЖЕНИЕ'),0,11,stat,"7,00E+00",,,1
+B16DTH EGR Position Sensor,EGR Pos,221152,A*100/255,0,100,%,"7,00E+00",,,1
+B16DTH EGR Position Sensor Voltage,EGR Sens V,22114B,A/51,0,5,V,"7,00E+00",,,1
+B16DTH EGR Desired Position,EGR Des,22002C,A*100/255,0,100,%,"7,00E+00",,,1
+B16DTH EGR Valve Command,EGR Cmd,2232A8,SIGNED(A),-100,100,%,"7,00E+00",,,1
+B16DTH EGR Minimum Position,EGR Min,2211BB,A*100/255,0,100,%,"7,00E+00",,,1
+B16DTH EGR Position Deviation,EGR Dev,22002D,A*100/128-100,-100,100,%,"7,00E+00",,,1
+B16DTH NOx 1 Concentration,NOx 1 Conc,2230BE,(A*256+B)*0.1,0,6536,ppm,"7,00E+00",,,1
+B16DTH NOx 1 O2 Concentration,NOx 1 O2,2230BC,(A*256+B)/1945-12,-12,21.7,%,"7,00E+00",,,1
+B16DTH NOx 1 Voltage OK,NOx 1 OK,2230BF,BIT(A:3),0,1,,"7,00E+00",,,1
+B16DTH NOx 1 Heater Resistance,NOx 1 Htr,2230BD,(A*256+B)*0.00256,0,168,ohm,"7,00E+00",,,1
+B16DTH NOx 2 Concentration,NOx 2 Conc,2230C3,(A*256+B)*0.1,0,6536,ppm,"7,00E+00",,,1
+B16DTH NOx 2 O2 Concentration,NOx 2 O2,2230C1,(A*256+B)/1945-12,-12,21.7,%,"7,00E+00",,,1
+B16DTH NOx 2 Voltage OK,NOx 2 OK,2230C4,BIT(A:3),0,1,,"7,00E+00",,,1
+B16DTH NOx 2 Heater Resistance,NOx 2 Htr,2230C2,(A*256+B)*0.00256,0,168,ohm,"7,00E+00",,,1
+B16DTH OverSpeed MAF Logged,OS MAF Log,222064,(A*256+B)*0.01,0,65.54,g/s,"7,00E+00",,,1
+B16DTH OverSpeed Detected,OS Detect,22321F,BIT(A:7),0,1,,"7,00E+00",,,1
+B16DTH OverSpeed Value,OS Value,22205F,(A*256+B)*0.25,0,16384,rpm,"7,00E+00",,,1
+B16DTH OverSpeed Max Value,OS Max,22205E,(A*256+B)*0.25,0,16384,rpm,"7,00E+00",,,1
+B16DTH OverSpeed Total Time,OS Time,223220,(A*256+B)*10,0,655350,ms,"7,00E+00",,,1
+B16DTH OverSpeed Odometer Logged,OS Odo Log,222065,(A*256+B)*5,0,327675,km,"7,00E+00",,,1
+B16DTH OverSpeed Pedal Logged,OS Ped Log,222061,A*100/255,0,100,%,"7,00E+00",,,1
+B16DTH OverSpeed Gear Logged,OS Gear Log,222063,LOOKUP(A:A+1:6='N':7='R':8='ERROR'),-1,6,,"7,00E+00",,,1
+B16DTH OverSpeed Vehicle Speed,OS Speed,222060,A,0,255,km/h,"7,00E+00",,,1
+B16DTH OverSpeed Counter,OS Counter,223210,A,0,255,,"7,00E+00",,,1
+B16DTH Crankshaft Speed Sensor Test,Crank Sens,221421,A*256+B,0,6000,rpm,"7,00E+00",,,
+B16DTH Boost Gauge Pressure Test,Boost Gauge,"2,22E+06",(A*256+B)*0.01,0,655,kPa,"7,00E+00",,,
+B16DTH Intake Vacuum Alt Test,Vac Alt,22208B,(A*256+B)/32,0,100,kpa,"7,00E+00",,,
+B16DTH Fuel Pump Relay Test,Pump Rly,221131,BIT(A:2),0,1,,"7,00E+00",,,
+B16DTH BCM Odometer,BCM Odo,1ADF,A*1024+B*4+C/64,0,1000000,km,241,ATCRA641,ATCRA7E8,1
+B16DTH DPF Regen Active,Regen Active,3E,A,0,255,,"7,00E+00",,,1
+B16DTH Vehicle Speed,Vehicle Spd,22000D,A,0,255,km/h,"7,00E+00",,,1
+Tester Present,TesterPresent,3E,A,0,100,,"7,00E+00",,,

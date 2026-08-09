@@ -1,0 +1,195 @@
+,ShortName,ModeAndPID,Equation,Min Value,Max Value,Units,OBD Header
+!Control Module Voltage,Cont. Mod. Volt,220042,(A*256+B)/1000,0,15,V,7E0
+!Engine Coolant Temp,Coolant Temp,220005,(A-40),-40,200,C,7E0
+!Engine Oil Temp,Oil Temp,221154,(A-40),-40,200,C,7E0
+!Fuel Level,Fuel Level,22002F,A*100/255,0,100,%,7E0
+!Fuel Remaining,Fuel Remaining,22002F,(A/255)*9.3122,0,9.3,Gallons,7E0
+!Hybrid Pack Remaining (SOC),SOC,22005B,A*100/255,0,100,%,7E0
+!Speed kmh,Speed,22000D,A,0,200,kmh,7E0
+?? (not Torque Delivered),M1A 2D B1,221A2D,(Signed(A)*256+b),0,960,V,7E0
+?H2 13 AF,t,2213AF,(Signed(A)*256+b),-32000,32000,V,7E0
+?M ECM 20 3F B1,M20 3F B1,22203F,(Signed(A)*256+b),-32000,32000,B1,7E0
+?M ECM 20 7E B1,M20 7E B1,22207E,(Signed(A)*256+b),-32000,32000,B1,7E0
+?M ECM 28 10 B1,M28 10 B1,222810,(Signed(A)*256+b),-32000,32000,B1,7E0
+*M Commanded Throttle Pos,Commanded Throttle Pos,22004C,A*100/255,0,100,%,7E0
+*M Engine Torque,Engine Torque,22203F,((256*A)+B)/4,0,200,Nm,7E0
+*M Fuel System Status,M11 31 B1,221131,A,0,255,B1,7E0
+*M Intake Air Temp IAT,IAT,22000F,(A-40)/2,-20,100,C,7E0
+*M Long Term Fuel Trip Bank 2,M15 73 B1,221573,100*A/255,0,100,%,7E0
+*M Long Term Fuel Trip Bank1,M15 72 B1,221572,100*A/255,0,100,%,7E0
+*M Short Term Fuel Trip Bank1,M15 70 B1,22 15 70,100*A/255,0,100,%,7E0
+*M Short Term Fuel Trip Bank2,M15 71 B1,221571,100*A/255,0,100,%,7E0
+*M Spark Advance,Spark Advance,22000E,A/2-64,-64,64,Deg,7E0
+mileage,Engine RPM,22000C,(A*256+B)/4,0,8192,rpm,7E0
+n,Speed,22000D,A*.6132,0,110,mph,7E0
+,Intake MAP,22000B,A,0,256,kPa,7E0
+!! HV Discharge Amps,HV Amps,222414,(Signed(A)*256+b)/20,-100,100,A,7E1
+!! HV Volts,HV Volts,222429,(Signed(A)*256+b)/64,0,400,V,7E1
+!! MGA Current,MGA A,222883,(Signed(A)*256+b)/20,-100,100,A,7E1
+!! MGA Voltage,MGA V,222885,((A)*256+b)/100,0,400,V,7E1
+!! MGB Current,MGB A,222884,(Signed(A)*256+b)/20,-100,100,A,7E1
+!! MGB Voltage,MGB V,222886,((A)*256+b)/100,0,400,V,7E1
+!EV km this Cycle,Trip EV km,222487,((Signed(A)*256+b))/100,0,100,km,7E1
+!EV Miles this Cycle,Trip EV mi,222487,((Signed(A)*256+b))/160.9,0,100,m,7E1
+!PRNDL,PRNDL,222889,A,0,8,,7E1
+? unknown Volt?,H1 28 BE,2228BE,(A)*256+b)/10,0,400,V,7E1
+??H1 Gear Ratio 19a1,H1 Gear Ratio,2219A1,(Signed(A)*256+b),-32000,32000,V,7E1
+??H1 Output Shaft Speed 1942,H1 ShaftRPM,221942,((Signed(A)*256+b))/4,0,8192,RPM,7E1
+?H1 1C 2F,H1 1C 2F,221C2F,(Signed(A)*256+b),-32000,32000,V,7E1
+?H1 1C 30,H1 1C 30,221C30,(Signed(A)*256+b),-32000,32000,V,7E1
+?H1 1C 36,H1 1C 36,221C36,(Signed(A)*256+b),-32000,32000,V,7E1
+?H1 1C 37,H1 1C 37,221C37,(Signed(A)*256+b),-32000,32000,V,7E1
+?H1 24 11,H1 24 11,222411,(Signed(A)*256+b),-32000,32000,V,7E1
+?H1 24 16,H1 24 16,222416,(Signed(A)*256+b),-32000,32000,V,7E1
+?H1 24 17,H1 24 17,222417,(Signed(A)*256+b),-32000,32000,V,7E1
+?H1 24 2B,H1 24 2B,22242B,(Signed(A)*256+b),-16000,16000,V,7E1
+?H1 28 78,H1 28 78,222878,(Signed(A)*256+b),-32000,32000,V,7E1
+?H1 28 81,H1 28 81,222881,(Signed(A)*256+b),-32000,32000,V,7E1
+?H1 28 82,H1 28 82,222882,(Signed(A)*256+b),-32000,32000,V,7E1
+?H1 28 AF,H1 28 AF,2228AF,(Signed(A)*256+b),-32000,32000,V,7E1
+?H1 28 B0,H1 28 B0,2228B0,(Signed(A)*256+b),-32000,32000,V,7E1
+?H1 28 BC,H1 28 BC,2228BC,(Signed(A)*256+b),-32000,32000,V,7E1
+?H1 28 BD,H1 28 BD,2228BD,(Signed(A)*256+b),-32000,32000,V,7E1
+?H1 28 E8,H1 28 E8,2.23E+11,(Signed(A)*256+b),-32000,32000,V,7E1
+?H1 40 D0,H1 40 D0,2240D0,(Signed(A)*256+b),-32000,32000,V,7E1
+*Brake Tq,Brake Tq,22242C,(Signed(A)*256+b)/4,0,32000,nm,7E1
+*Transmission Pressure,Trans Pressure,222862,(Signed(A)*256+b),0,20000,,7E1
+BRAKE,H1 24 34,222434,(A*256+b)/64,0,420,V,7E1
+!Tran Temp,Tran Temp,221940,(A-40),-40,215,C,7E2
+?Clutch Slip C1 (Ring),C1(Ring) Slip,222851,(Signed(A)*256+b)/4,-8192,8192,RPM,7E2
+?TCM 19 9E 1byte,T 19 9E 1b,22199E,(Signed(A)*256+b),-32000,32000,V,7E2
+?TCM 1A 18,T 1A 18 1b,221A18,(Signed(A)*256+b),-32000,32000,V,7E2
+?TCM 1A 1F,T 1A 1F 1b,221A1F,(Signed(A)*256+b),-32000,32000,V,7E2
+?TCM 28 54,T 28 54 1b,222854,(Signed(A)*256+b),-32000,32000,V,7E2
+*Clutch C2 Slip,C2 Slip,222853,(Signed(A)*256+b)/4,-8192,8192,RPM,7E2
+*Clutch C3 Slip,C3 Slip,2219D4,(Signed(A)*256+b)/4,-8192,8192,RPM,7E2
+*Transmission ISS  19 41,Tran ISS,221941,((Signed(A)*256+b))/4,-32000,32000,RPM,7E2
+/:{>/;',T 28 52 1b,222852,(Signed(A)*256+b),-32000,32000,V,7E2
+!Charger AC Current,ChargerAmpsIn,224369,A*.2,0,50,A,7E4
+!Charger AC Voltage,ChargerVoltsIn,224368,A*2,0,512,V,7E4
+!Charger HV Current,ChargeAmp,22436C,((Signed(A)*256+b))/20,0,20,A,7E4
+!Charger HV Power,ChargeWatt,224373,(Signed(A)*256+b),0,3000,W,7E4
+!Charger HV Voltage,ChargeVolt 43 6B,22436B,((Signed(A)*256+b))/2,0,400,V,7E4
+!HV Battery Temp,Bat Temp,22434F,(A-40),-20,100,C,7E4
+!Last Charge AC Wh,LastCharge Wh,22437D,((A*256+b))*10,0,20000,Wh,7E4
+!Power Electronics Cooling Temp,OATemp,46,(A-40),-40,100,C,7E4
+,Ele.Temp,221C43,(A-40),-20,100,C,7E4
+? Onboard LVolt Charg V,LV Charge V,224374,(Signed(A)*256+b),-32000,32000,V,7E4
+??H2 Amp from VICM,H2 43 56,224356,(Signed(A)*256+b)/20,-100,100,A,7E4
+??HV  43 2E,H2 43 2E,22432E,(Signed(A)*256+b),-16000,16000,V,7E4
+?H2 40 E7,H2 40 E7,2.24E+10,(Signed(A)*256+b),-32000,32000,V,7E4
+?H2 43 2B,H2 43 2B,22432B,(Signed(A)*256+b),-32000,32000,V,7E4
+?H2 43 58,H2 43 58,224358,(Signed(A)*256+b),-32000,32000,V,7E4
+?H2 43 5A,H2 43 5A,22435A,(Signed(A)*256+b),-32000,32000,V,7E4
+?H2 43 5D,H2 43 5D,22435D,(Signed(A)*256+b),-32000,32000,V,7E4
+?H2 43 6D,H2 43 6D,22436D,(Signed(A)*256+b),-32000,32000,V,7E4
+?H2 43 6E,H2 43 6E,22436E,(Signed(A)*256+b),-32000,32000,V,7E4
+?H2 43 6F,H2 43 6F,22436F,(Signed(A)*256+b),-32000,32000,V,7E4
+?H2 43 7F,H2 43 7F,22437F,(Signed(A)*256+b),-32000,32000,V,7E4
+?H2 43 B0,H2 43 B0,2243B0,(Signed(A)*256+b),-32000,32000,V,7E4
+?H2 43 BB,H2 43 BB,2243BB,(Signed(A)*256+b),-32000,32000,V,7E4
+?H2 82 B2,H2 82 B2,2282B2,(Signed(A)*256+b),-32000,32000,V,7E4
+?H2 82 B5,H2 82 B5,2282B5,(Signed(A)*256+b),-32000,32000,V,7E4
+?H2 82 B7,H2 82 B7,2282B7,(Signed(A)*256+b),-32000,32000,V,7E4
+?H2 83 34,H2 83 34,228334,(Signed(A)*256+b),-32000,32000,V,7E4
+?H2 83 5A,H2 83 5A,22835A,(Signed(A)*256+b),-32000,32000,V,7E4
+?H2 83 5C,H2 83 5C,22835C,(Signed(A)*256+b),-32000,32000,V,7E4
+?H2 90 5C,H2 90 5C,22905C,(Signed(A)*256+b),-32000,32000,V,7E4
+*Bat Coolant Pump RPM,CoolPumpRpm,2241B2,(Signed(A)*256+b),0,5000,RPM,7E4
+*Bat Coolant Valve,CoolValve,2241B4,(A),0,255,?,7E4
+*Bat heat,Bat Heat,2241B6,(Signed(A)*256+b),0,5000,W,7E4
+*Charging Limit?,H2 41 B7,2241B7,(Signed(A)*256+b),0,32000,W,7E4
+*H2 Volt from VICM?,H2 43 2D,22432D,(Signed(A)*256+b)/2,0,400,V,7E4
+*M AC High Side Pressure,M15 64 B1,221564,A,0,255,kPa,7E4
+,OAT Filtered,22801F,((A-40)/8),-20,50,C,7E4
+*Outside Temp Filtered,OAT Raw,22801E,((A-40)/8),-20,50,C,7E4
+,LV Charge Amps 43 7E,22437E,(Signed(A)*256+b)/20,-100,100,A,7E4
+",Last change: 3.07.2013",,,,,,,[p
+,ShortName,ModeAndPID,Equation,Min Value,Max Value,Units,OBD Header
+",, Incorrect coefficient may be. Need correct! (Max 12V)",,,,,,,
+",, Incorrect coefficient may be. Need correct! (Max 5V)",,,,,,,
+",, Incorrect Formula may be. Need correct!",,,,,,,
+",,, Value ""45"" must change to your Fuel Tank Volume",,,,,,,
+",,,,,, Sensors voltage",,,,,,,
+",,0-Stop,1-Starting,2-Idle,3-load up,4-load down,5-Coast down",,,,,,,
+",Author compilation for Torque: wosk",,,,,,,
+",Coolant Temperature2,ECT,210c,O/255*192-49,-50,140,C,",,,,,,,
+",Speed3 Rough,Speed3,210c,H,0,255,km/h,",,,,,,,
+",Support: Sirius D42, Daewoo, Chevrolet Kalos/Aveo/Lacetti",,,,,,,
+!! Inst. kPower,Inst P (kW),,[222429]*[222414]/1000,-100,100,kW,
+!! Inst. kW/km,kW/km/h,32000,[222429]*[222414]/([22000D])/1000,-10,10,kW/km/h,
+!! Inst. kW/miles per hour,kW/mph,,[222429]*[222414]*.6132/([22000D])/1000,-10,10,kW/mph,
+!! Inst. Miles per hour/kW,mph/kW,,([22000D])*1000/([222429]*[222414]*.6132),-10,10,mph/kW,
+!! Inst. Power,Inst P (W),,[222429]*[222414],-4096,4096,W,
+!! Inst. W/ miles per hour,W/mph,,[222429]*[222414]*.6132/([22000D]),-1000,1000,W/mph,
+!! Inst. W/km per hour,W/km/h,,[222429]*[222414]/([22000D]),-1000,1000,W/km/h,
+!! MGA kPower,MGA kW,,[222885]*[222883]/1000,-40,40,kW,
+!! MGA Power,MGA W,,,-4000,4000,W,
+!! MGB kPower,MGB kW,,[222886]*[222884]/1000,-40,40,kW,
+!! MGB Power,MGB W,,[222886]*[222884],-4000,4000,W,
+!! SOC (Usable),SOC-U,015B,(A-54)/1.67,-10,100,%,
+!! SOC(Raw),SOC-R,015B,A*100/255,0,100,%,
+!!Inst km per hour /kW,km/h/kW,,([22000D])*1000/[222429]*[222414],-10,10,km/h/kW,
+* kWh Used (2011/2012),kWh,015B,10.4*(1-(((A*100/255)-21.5)/65.0)),0,10.4,kWh,
+*M Engine Torque m1,Engine Torque m1,163,((256*A)+B),0,2000,Nm,
+0,kWh,015B,10.9*(1-(((A*100/255)-18.9)/65.0)),0,10.9,kWh,
+"02S1Heater,O2S1H,2104,I/255*100,0,100,%,",,,,,,,
+"02S2Heater,O2S2H,2104,M/255*100,0,100,%,",,,,,,,
+"Accel not pressed,notAccel,210d,{E:0},0,1,,",,,,,,,
+"Air Conditioner Pressure,ACP,2102,AB*12,0,3100,kPa,",,,,,,,
+"Automatic Gearbox Mode,AGM,2102,W,0,255,,",,,,,,,
+"Barometric Pressure,BARO,2102,H/255*119,0,119,kPa,",,,,,,,
+"Coltage Coolant Temperature,VoltECT,2101,(A*256+B)/205,0,5,V,",,,,,,,
+"Coolant Temperature,ЕСТ,2102,A/255*192-49,-50,140,C,",,,,,,,
+"Correction of injection time,CorrInj,2102,(T*256+U)/250,0,65535,ms,",,,,,,,
+"Desired Idle,NeedIdleRPM,210d,M*256+N,500,1500,rpm,",,,,,,,
+"Desired Ignition timing,DesIT,2103,(G-64)/2.677,-30,72,deg,",,,,,,,
+"Desired Throttle Position,DesireTPS,2102,AE,0,255,steps,",,,,,,,
+"Drive mode,drive,210c,{A:0},0,1,PN/Drive,",,,,,,,
+"Engine speed,RPM,2102,F*256+G,0,9000,rpm,",,,,,,,
+"Engine State,EngState,210c,AF,0,5,,",,,,,,,
+"Evoparator Duty Cycle Blow,Evo,2102,X/255*100,0,100,%,",,,,,,,
+"Exhaust Gas Recirculation Flow,EGR,2102,Y/255*100,0,100,%,",EGR,2102,Y/255*100,0,100,%,
+"FL Wheel Speed,FLSpeed,210b,AA,0,255,km/h,",,,,,,,
+"Fuel level,FuelAvg,210b,X/4,0,60,L,",,,,,,,
+"Full load,FullLoad,210B,{H:0},0,1,0ff/On,",,,,,,,
+"Gate A/C,A/C,210B,{R:0},0,1,0ff/On,",,,,,,,
+"GAte Fan Hi Speed,FanHi,210B,{T:0},0,1,0ff/On,",,,,,,,
+"Gate Fan Low Speed,FanLow,210B,{S:0},0,1,0ff/On,",,,,,,,
+"Gate Fuel Pump,FuelPump,210B,{A:0},0,1,0ff/On,",,,,,,,
+"Gate O2 Heater,HeatO2S,210B,{B:0},0,1,0ff/On,",,,,,,,
+"Idle,EngIdle,210b,{C:0},0,1,Off/on,",,,,,,,
+"Ignition timing Cyl1,IT1,2103,(192-A)/2.677,-30,72,deg,",,,,,,,
+"Ignition timing Cyl2,IT2,2103,(192-B)/2.677,-30,72,deg,",,,,,,,
+"Ignition timing Cyl3,IT3,2103,(192-C)/2.677,-30,72,deg,",,,,,,,
+"Ignition timing Cyl4,IT4,2103,(192-D)/2.677,-30,72,deg,",,,,,,,
+"Injection duration current,InjDur,2102,(P*256+Q)/250,0,0,ms,",,,,,,,
+"Injection duration on start,InjDurSt,2102,(N*256+O)/62.5,0,1050,ms,",,,,,,,
+"Injection off,InjOff,210b,{G:0},0,1,Off/on,",,,,,,,
+1,,,,,,,
+"Instant Fuel Percent,Fuel%,2102,Z/255*100,0,100,%,",,,,,,,
+"Intake Air Temperature,IAT,2102,B/255*192-49,-50,140,C,",,,,,,,
+"Long Term Fuel Trim,LTFT,2105,(signed(G)*256+F))/327.67,-50,50,%,",,,,,,,
+"Manifold Absolute Pressure,МАР,2102,J/255*119,0,119,kPa,",,,,,,,
+"Manual Gear №,Gear,2102,V,0,5,,",,,,,,,
+"Mass Airflow,MAF,2102,(L*256+M)/47,0,1400,mg/t,",,,,,,,
+"Name,ShortName,ModeAndPID,Equation,Min Value,Max Value,Units,Header",,,,,,,
+"Real Throttle Position,RealTPS,2102,AC,0,255,steps,",,,,,,,
+"Short Term Fuel Trim O2S1,STFT1,2104,(signed(S)*256+R))/327.67,-50,50,%,",,,,,,,
+"Short Term Fuel Trim O2S2,STFT2,2104,(signed(W)*256+V))/327.67,-50,50,%,",,,,,,,
+"Signal Throtle Position,SignalTPS,2106,C/255*100,0,100,%,",,,,,,,
+"Speed,Speed,2102,E,0,255,km/h,",,,,,,,
+"Throtle Closed,ThrClosed,210B,{I:0},0,1,0ff/On,",,,,,,,
+"Throttle Position,TPS,2102,C/255*100,0,100,%,",,,,,,,
+"Time from the start engine,EngRunTime,2117,(I*256+J)/10,0,6553.5,sec,",,,,,,,
+"Torque Converter Clutch Automatic Gear,Clutch,210B,{U:0},0,1,0ff/On,",,,,,,,
+"TwinPort Size,TwinPort,210B,{Q:0},0,1,Small/Long,",,,,,,,
+"Voltage Air Conditioner Refrigerant Pressure,VoltACRP,2101,(AC*256+AD)/205,0,0,V,",,,,,,,
+"Voltage Fueal Gauge Sending Unit,VoltFGSU,2101,(AA*256+AB)/205,0,12,V,",,,,,,,
+"Voltage Fuel Level,VoltFuel,2102,Z/255*5,0,5,V,",,,,,,,
+"Voltage Idle Air Control,VoltIAC,2101,(E*256+F)/205,0,5,V,",,,,,,,
+"Voltage Intake Air Temperature,VoltIAT,2101,(C*256+D)/205,0,0,V,",,,,,,,
+"Voltage Knock Sensor,KnockSens,2101,(G*256+H)/205,0,0,V,",,,,,,,
+"Voltage O2 Sensor1,O2S1,2104,(C*256+B)*4.88,0,319810,mV,",,,,,,,
+"Voltage O2 Sensor2,O2S2,2104,(G*256+F)*4.88,0,319810,mV,",,,,,,,
+"Voltage,Volt,2102,D/8.88,0,16,V,",,,,,,,

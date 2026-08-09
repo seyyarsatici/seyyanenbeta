@@ -1,0 +1,9 @@
+Name,ShortName,ModeAndPID,Equation,Min Value,Max Value,Units,Header,startDiagnostic,stopDiagnostic,Scale
+B20DTH Fan Command,Fan Cmd,221641,A*100/255,0,100,%,"7,00E+00",,,
+B20DTH Radiator Temperature,Rad Temp,22205A,A-40,-40,215,C,"7,00E+00",,,
+B20DTH Intake Start Temperature,Intake Start Temp,222005,A-40,-40,215,C,"7,00E+00",,,
+B20DTH Cylinder 1 Pressure,Cyl 1 Press,2232AC,A*100,0,654,kPa,"7,00E+00",,,
+B20DTH Cylinder 4 Pressure,Cyl 4 Press,2232AF,A*100,0,654,kPa,"7,00E+00",,,
+B20DTH Cylinder 1-4 Correction,Cyl 1-4 Corr,1A18,A,0,255,,"7,00E+00",,,
+B20DTH Fuel Pressure Regulator 1 Command,Fuel Reg 1 Cmd,222087,BIT(A:7),0,1,,"7,00E+00",,,
+B20DTH Fuel Pressure Regulator 2 Command,Fuel Reg 2 Cmd,223240,A*100/255,0,100,%,"7,00E+00",,,

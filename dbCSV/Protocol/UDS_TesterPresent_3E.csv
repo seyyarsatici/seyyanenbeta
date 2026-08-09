@@ -1,0 +1,2 @@
+"Name","ShortName","ModeAndPID","Equation","Min Value","Max Value","Units","Header","startDiagnostic","stopDiagnostic","Scale"
+"Поддержание связи TesterPresent","TesterPresent","3E","A","0","100","","7E0","",""

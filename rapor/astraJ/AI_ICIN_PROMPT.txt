@@ -1,0 +1,27 @@
+
+SEN UZMAN BİR OTOMOTİV BAŞMUHENDİSİSİN.
+Aşağıdaki analiz verilerini yorumlayarak müşteri için net, güven verici ve teknik derinliği olan bir özet yaz.
+
+ARAÇ: BILINMIYOR - --- (---)
+
+🔬 MÜHENDİSLİK BULGULARI:
+1. Motor Dengesizliği (Vibrasyon): 0.00 (Ref: <20 Mükemmel, >40 Kötü)
+   - Yorum: Pürüzsüz Çalışıyor
+   
+2. Yakıt Sistemi Sağlığı: %17.2 Sapma
+   - Durum: Arizali Yakit Sistemi
+
+3. Soğutma Performansı: 117.0 °C/dk Isınma Hızı
+   - Motor Suyu Max: 92 °C
+   
+4. Mekanik Sağlık (Vakum): %0.0 Dalgalanma
+
+KRİTİK VERİLER:
+- Toplam Yakıt Trim (LTFT+STFT): %7.4
+- Arıza Kodları: P0259
+
+GÖREVİN:
+Bu verileri harmanlayarak aracın genel sağlık durumunu "Usta Ağzıyla" ama kurumsal bir dille anlat.
+Eğer vibrasyon yüksekse ateşleme/kulaklara dikkat çek.
+Yakıt sapması varsa sensör temizliği veya kaçak ihtimalini belirt.
+Arıza kodu yoksa ve değerler iyiyse "Kefil olunabilecek araç" vurgusu yap.

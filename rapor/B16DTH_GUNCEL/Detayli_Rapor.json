@@ -1,0 +1,589 @@
+{
+    "Kimlik": {
+        "VIN": "W0LGM5E31G1114739",
+        "Marka": "OPEL",
+        "Yil": "2016",
+        "MotorKodu": null,
+        "Motor": "(M5E...) — Tanımsız",
+        "ProfilBulundu": false,
+        "YakitSistemi": "Dizel"
+    },
+    "Skor": 85,
+    "Tarih": "Sun Mar 15 16:03:14 2026",
+    "Versiyon": "V92 - Production Ready",
+    "TestSuresi": 80,
+    "AracAgirligi": 1350,
+    "Aero": {
+        "name": "Sedan",
+        "Cd": 0.28,
+        "Area": 2.2
+    },
+    "GercekSensorSayisi": 39,
+    "IsLPG": false,
+    "AracProfili": {
+        "Tip": "DIESEL",
+        "MaxRPM": 4800,
+        "Redline": 4500,
+        "IdleRPM": 800,
+        "HedefECT": 88,
+        "MotorKodu": "BILINMIYOR",
+        "Bore": 0.0,
+        "Stroke": 0.0,
+        "Displacement": 0.0,
+        "Kompresyon": 0.0,
+        "Kaynak": "Varsayılan — Onay Gerekli"
+    },
+    "Analiz": {
+        "FIZIKSEL": {
+            "VibrasyonIndeksi": 0,
+            "IsinmaVerimi": 0,
+            "VakumStabilitesi": 0,
+            "ToplamYakitSapmasi": 0,
+            "VolHacimselVerimlilik": null
+        },
+        "IGN": {
+            "Parca": "Ateşleme/Stabilite",
+            "Olculen": "Vibrasyon 0.0",
+            "Referans": "<20",
+            "Puan": 100,
+            "Durum": "SAGLAM"
+        },
+        "MAP": {
+            "Parca": "MAP Sensörü",
+            "Olculen": "85 kPa",
+            "Referans": "20-100 kPa",
+            "Puan": 100,
+            "Durum": "NORMAL"
+        },
+        "MAF": {
+            "Parca": "MAF Sensörü",
+            "Olculen": "10.4 g/s",
+            "Referans": "Rölanti: 2-6 g/s",
+            "Puan": 100,
+            "Durum": "OKUNDU"
+        },
+        "FUEL_TRIM": {
+            "Parca": "[S106] Yakit Ayari (Trim)",
+            "Olculen": "DIZEL - N/A",
+            "Referans": "Desteklenmiyor",
+            "Puan": 100,
+            "Durum": "DIESEL - TRIM DESTEKLENMIYOR"
+        },
+        "FRP": {
+            "Parca": "Enjektör Basıncı",
+            "Olculen": "25015.5 kPa",
+            "Referans": "Yüksek Basınç",
+            "Puan": 100,
+            "Durum": "NORMAL"
+        },
+        "ENG_LOAD": {
+            "Parca": "Motor Yükü",
+            "Olculen": "%17",
+            "Referans": "Max > %80",
+            "Puan": 60,
+            "Durum": "DÜŞÜK"
+        },
+        "DTC": {
+            "Parca": "Arıza Kaydı (DTC)",
+            "Olculen": "2 Adet",
+            "Referans": "0",
+            "Puan": 40,
+            "Durum": "ARIZALI"
+        }
+    },
+    "Asamalar": {
+        "WARMUP": {
+            "Sure": 1.1,
+            "IsinmaHizi": "0.0 °C/dk",
+            "Durum": "Yavaş",
+            "BaslangicZaman": 7.012535333633423,
+            "BitisZaman": 0
+        }
+    },
+    "Log": [
+        {
+            "RPM": 769.5,
+            "SPEED": 0,
+            "MAP": 86,
+            "LOAD": 17.254901960784313,
+            "MAF": 10.44,
+            "FUEL_RAIL_PRESS": 24900,
+            "MONITORS": {
+                "MIL": false,
+                "DTC_Count": 1,
+                "Misfire": {
+                    "Sup": false,
+                    "Rdy": true
+                },
+                "FuelSys": {
+                    "Sup": true,
+                    "Rdy": true
+                },
+                "CompCmp": {
+                    "Sup": true,
+                    "Rdy": true
+                },
+                "Cat": {
+                    "Sup": true,
+                    "Rdy": true
+                },
+                "Evap": {
+                    "Sup": false,
+                    "Rdy": false
+                },
+                "O2": {
+                    "Sup": false,
+                    "Rdy": true
+                },
+                "EGR": {
+                    "Sup": true,
+                    "Rdy": true
+                }
+            },
+            "MIL": false,
+            "OBD_STD": "EOBD",
+            "Phase": "WARMUP",
+            "Time": 7.01252555847168
+        },
+        {
+            "RPM": 769.25,
+            "SPEED": 0,
+            "MAP": 86,
+            "LOAD": 16.862745098039216,
+            "MAF": 10.51,
+            "FUEL_RAIL_PRESS": 25050,
+            "MIL": false,
+            "MONITORS": {
+                "MIL": false,
+                "DTC_Count": 1,
+                "Misfire": {
+                    "Sup": false,
+                    "Rdy": true
+                },
+                "FuelSys": {
+                    "Sup": true,
+                    "Rdy": true
+                },
+                "CompCmp": {
+                    "Sup": true,
+                    "Rdy": true
+                },
+                "Cat": {
+                    "Sup": true,
+                    "Rdy": true
+                },
+                "Evap": {
+                    "Sup": false,
+                    "Rdy": false
+                },
+                "O2": {
+                    "Sup": false,
+                    "Rdy": true
+                },
+                "EGR": {
+                    "Sup": true,
+                    "Rdy": true
+                }
+            },
+            "OBD_STD": "EOBD",
+            "Phase": "WARMUP",
+            "Time": 14.899775743484497
+        },
+        {
+            "RPM": 768.25,
+            "SPEED": 0,
+            "MAP": 86,
+            "LOAD": 17.254901960784313,
+            "MAF": 10.41,
+            "FUEL_RAIL_PRESS": 24970,
+            "MIL": false,
+            "MONITORS": {
+                "MIL": false,
+                "DTC_Count": 1,
+                "Misfire": {
+                    "Sup": false,
+                    "Rdy": true
+                },
+                "FuelSys": {
+                    "Sup": true,
+                    "Rdy": true
+                },
+                "CompCmp": {
+                    "Sup": true,
+                    "Rdy": true
+                },
+                "Cat": {
+                    "Sup": true,
+                    "Rdy": true
+                },
+                "Evap": {
+                    "Sup": false,
+                    "Rdy": false
+                },
+                "O2": {
+                    "Sup": false,
+                    "Rdy": true
+                },
+                "EGR": {
+                    "Sup": true,
+                    "Rdy": true
+                }
+            },
+            "OBD_STD": "EOBD",
+            "Phase": "WARMUP",
+            "Time": 21.910295963287354
+        },
+        {
+            "RPM": 773.75,
+            "SPEED": 0,
+            "MAP": 86,
+            "LOAD": 17.254901960784313,
+            "MAF": 10.41,
+            "FUEL_RAIL_PRESS": 24970,
+            "MIL": false,
+            "MONITORS": {
+                "MIL": false,
+                "DTC_Count": 1,
+                "Misfire": {
+                    "Sup": false,
+                    "Rdy": true
+                },
+                "FuelSys": {
+                    "Sup": true,
+                    "Rdy": true
+                },
+                "CompCmp": {
+                    "Sup": true,
+                    "Rdy": true
+                },
+                "Cat": {
+                    "Sup": true,
+                    "Rdy": true
+                },
+                "Evap": {
+                    "Sup": false,
+                    "Rdy": false
+                },
+                "O2": {
+                    "Sup": false,
+                    "Rdy": true
+                },
+                "EGR": {
+                    "Sup": true,
+                    "Rdy": true
+                }
+            },
+            "OBD_STD": "EOBD",
+            "Phase": "WARMUP",
+            "Time": 28.922718286514282
+        },
+        {
+            "RPM": 769.25,
+            "SPEED": 0,
+            "MAP": 86,
+            "LOAD": 17.254901960784313,
+            "MAF": 10.44,
+            "FUEL_RAIL_PRESS": 25130,
+            "MIL": false,
+            "MONITORS": {
+                "MIL": false,
+                "DTC_Count": 1,
+                "Misfire": {
+                    "Sup": false,
+                    "Rdy": true
+                },
+                "FuelSys": {
+                    "Sup": true,
+                    "Rdy": true
+                },
+                "CompCmp": {
+                    "Sup": true,
+                    "Rdy": true
+                },
+                "Cat": {
+                    "Sup": true,
+                    "Rdy": true
+                },
+                "Evap": {
+                    "Sup": false,
+                    "Rdy": false
+                },
+                "O2": {
+                    "Sup": false,
+                    "Rdy": true
+                },
+                "EGR": {
+                    "Sup": true,
+                    "Rdy": true
+                }
+            },
+            "OBD_STD": "EOBD",
+            "Phase": "WARMUP",
+            "Time": 35.93280911445618
+        },
+        {
+            "RPM": 769.5,
+            "SPEED": 0,
+            "MAP": 86,
+            "LOAD": 17.254901960784313,
+            "MAF": 10.44,
+            "FUEL_RAIL_PRESS": 25200,
+            "MIL": false,
+            "MONITORS": {
+                "MIL": false,
+                "DTC_Count": 1,
+                "Misfire": {
+                    "Sup": false,
+                    "Rdy": true
+                },
+                "FuelSys": {
+                    "Sup": true,
+                    "Rdy": true
+                },
+                "CompCmp": {
+                    "Sup": true,
+                    "Rdy": true
+                },
+                "Cat": {
+                    "Sup": true,
+                    "Rdy": true
+                },
+                "Evap": {
+                    "Sup": false,
+                    "Rdy": false
+                },
+                "O2": {
+                    "Sup": false,
+                    "Rdy": true
+                },
+                "EGR": {
+                    "Sup": true,
+                    "Rdy": true
+                }
+            },
+            "OBD_STD": "EOBD",
+            "Phase": "WARMUP",
+            "Time": 42.945030212402344
+        },
+        {
+            "RPM": 770.5,
+            "SPEED": 0,
+            "MAP": 86,
+            "LOAD": 16.862745098039216,
+            "MAF": 10.44,
+            "FUEL_RAIL_PRESS": 25050,
+            "MIL": false,
+            "MONITORS": {
+                "MIL": false,
+                "DTC_Count": 1,
+                "Misfire": {
+                    "Sup": false,
+                    "Rdy": true
+                },
+                "FuelSys": {
+                    "Sup": true,
+                    "Rdy": true
+                },
+                "CompCmp": {
+                    "Sup": true,
+                    "Rdy": true
+                },
+                "Cat": {
+                    "Sup": true,
+                    "Rdy": true
+                },
+                "Evap": {
+                    "Sup": false,
+                    "Rdy": false
+                },
+                "O2": {
+                    "Sup": false,
+                    "Rdy": true
+                },
+                "EGR": {
+                    "Sup": true,
+                    "Rdy": true
+                }
+            },
+            "OBD_STD": "EOBD",
+            "Phase": "WARMUP",
+            "Time": 49.95397162437439
+        },
+        {
+            "RPM": 772.75,
+            "SPEED": 0,
+            "MAP": 86,
+            "LOAD": 17.254901960784313,
+            "MAF": 10.54,
+            "FUEL_RAIL_PRESS": 24900,
+            "MIL": false,
+            "MONITORS": {
+                "MIL": false,
+                "DTC_Count": 1,
+                "Misfire": {
+                    "Sup": false,
+                    "Rdy": true
+                },
+                "FuelSys": {
+                    "Sup": true,
+                    "Rdy": true
+                },
+                "CompCmp": {
+                    "Sup": true,
+                    "Rdy": true
+                },
+                "Cat": {
+                    "Sup": true,
+                    "Rdy": true
+                },
+                "Evap": {
+                    "Sup": false,
+                    "Rdy": false
+                },
+                "O2": {
+                    "Sup": false,
+                    "Rdy": true
+                },
+                "EGR": {
+                    "Sup": true,
+                    "Rdy": true
+                }
+            },
+            "OBD_STD": "EOBD",
+            "Phase": "WARMUP",
+            "Time": 56.96682095527649
+        },
+        {
+            "RPM": 770.0,
+            "SPEED": 0,
+            "MAP": 86,
+            "LOAD": 16.470588235294116,
+            "MAF": 10.41,
+            "FUEL_RAIL_PRESS": 24900,
+            "MIL": false,
+            "MONITORS": {
+                "MIL": false,
+                "DTC_Count": 1,
+                "Misfire": {
+                    "Sup": false,
+                    "Rdy": true
+                },
+                "FuelSys": {
+                    "Sup": true,
+                    "Rdy": true
+                },
+                "CompCmp": {
+                    "Sup": true,
+                    "Rdy": true
+                },
+                "Cat": {
+                    "Sup": true,
+                    "Rdy": true
+                },
+                "Evap": {
+                    "Sup": false,
+                    "Rdy": false
+                },
+                "O2": {
+                    "Sup": false,
+                    "Rdy": true
+                },
+                "EGR": {
+                    "Sup": true,
+                    "Rdy": true
+                }
+            },
+            "OBD_STD": "EOBD",
+            "Phase": "WARMUP",
+            "Time": 63.97528862953186
+        },
+        {
+            "RPM": 771.5,
+            "SPEED": 0,
+            "MAP": 85,
+            "LOAD": 17.254901960784313,
+            "MAF": 10.38,
+            "FUEL_RAIL_PRESS": 24970,
+            "MIL": false,
+            "MONITORS": {
+                "MIL": false,
+                "DTC_Count": 1,
+                "Misfire": {
+                    "Sup": false,
+                    "Rdy": true
+                },
+                "FuelSys": {
+                    "Sup": true,
+                    "Rdy": true
+                },
+                "CompCmp": {
+                    "Sup": true,
+                    "Rdy": true
+                },
+                "Cat": {
+                    "Sup": true,
+                    "Rdy": true
+                },
+                "Evap": {
+                    "Sup": false,
+                    "Rdy": false
+                },
+                "O2": {
+                    "Sup": false,
+                    "Rdy": true
+                },
+                "EGR": {
+                    "Sup": true,
+                    "Rdy": true
+                }
+            },
+            "OBD_STD": "EOBD",
+            "Phase": "WARMUP",
+            "Time": 70.97966814041138
+        },
+        {
+            "RPM": 770.25,
+            "SPEED": 0,
+            "MAP": 86,
+            "LOAD": 17.254901960784313,
+            "MAF": 10.24,
+            "FUEL_RAIL_PRESS": 25130,
+            "MIL": false,
+            "MONITORS": {
+                "MIL": false,
+                "DTC_Count": 1,
+                "Misfire": {
+                    "Sup": false,
+                    "Rdy": true
+                },
+                "FuelSys": {
+                    "Sup": true,
+                    "Rdy": true
+                },
+                "CompCmp": {
+                    "Sup": true,
+                    "Rdy": true
+                },
+                "Cat": {
+                    "Sup": true,
+                    "Rdy": true
+                },
+                "Evap": {
+                    "Sup": false,
+                    "Rdy": false
+                },
+                "O2": {
+                    "Sup": false,
+                    "Rdy": true
+                },
+                "EGR": {
+                    "Sup": true,
+                    "Rdy": true
+                }
+            },
+            "OBD_STD": "EOBD",
+            "Phase": "WARMUP",
+            "Time": 76.78028202056885
+        }
+    ]
+}

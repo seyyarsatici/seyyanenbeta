@@ -1,0 +1,31 @@
+Name," ""ShortName"""," ""ModeAndPID"""," ""Equation"""," ""Min Value"""," ""Max Value"""," ""Units"""," ""Header"""," ""startDiagnostic"""," ""stopDiagnostic"""," ""scale""",minimumRefreshDelayMillis
+Average Battery Module Voltage,AvM,0x224841,((((A*256)+B)*(1/10)+0)/100),0,50,Volts,0,,,1,0
+Battery Age,age,0x224810,((((A*256)+B)*(1/20)+0)/10),0,100,months,0,,,1,0
+Battery Modules,VVM,0x22483f,((((A*256)+B)*(1/10)+0)/100),0,100,Volts,0,,,1,0
+Contactor Voltage Negative,CVN,0x224806,((((A*256)+B)*(1/1)+0)/10),0,300,Volts,0,,,1,0
+Contactor Voltage Positive,CVP,0x224805,((((A*256)+B)*(1/1)+0)/10),0,300,Volts,0,,,1,0
+Engine run time,TmE,0x22f41f,((((A*256)+B)*(25/16)+0)/100),0,1000,Mins,0,,,1,0
+HV Negative Leakage Voltage,HvNLV,0x224804,INT16(A:B)*0.001,0,100,Volts,,,,1,0
+HV Positive Leakage Voltage,HvPLV,0x224803,INT16(A:B)*0.001,0,100,Volts,,,,1,0
+HVB Age,HvbAge,0x224810,INT16(A:B)*0.005,0,320,months,,,,1,0
+HVB Average Module Voltage,HvbAvgModV,0x224841,INT16(A:B)*0.001,0,10,volts,7.00E+04,,,1,0
+HVB Coolant Inlet Temperature,HvbCIT,0x224846,(A-50)*1.8+32,-50,400,F,,,,1,0
+HVB Current,AMP,0x22480b,((((Signed(A)*256)+B)*(1/5)+0)/10),0,300,amps,0,,,1,0
+HVB Minimum Module Voltage,HvbMinModV,0x224840,INT16(A:B)*0.001,0,10,Volts,7.00E+04,,,1,0
+HVB State of Charge,HvbSoc,0x224801,INT16(A:B)*0.002,0,100,%,,,,1,0
+HVB Temperature,HvbT,0x224800,(A-50)*1.8+32,-50,400,F,,,,1,0
+HVB Temperature Range,HvbTR,0x224808,(C-50)*1.8,-50,300,Deg F,,,,1,0
+HVB Temperature Range Average,HvbAve,0x224808,(D-50)*1.8+32,-50,300,Deg F,,,,1,0
+HVB Temperature Range Maximum,HvbMaxT,0x224808,(A-50)*1.8+32,-50,300,Deg F,,,,1,0
+HVB Temperature Range Minimum,HvbMinT,0x224808,(B-50)*1.8+32,-50,300,Deg F,,,,1,0
+Hybrid Battery Current High Range,CHR,0x224809,((((A*256)+B)*(1/1)+0)/100),0,300,Amps,0,,,1,0
+Hybrid Battery Minimum Battery Module Voltage,MBV,0x224840,((((A*256)+B)*(1/10)+0)/100),0,100,Volts,0,,,1,0
+Main ECU Voltage Supply,ECU,0x22dd02,((A*(1/1)+0)/10),0,100,Volts,0,,,1,0
+Maximum Discharge Power Limit,MxD,0x224815,((A*(25/1)+0)/100),0,300,kW,0,,,1,0
+Maxium Temperature Range,MAX,0x224808,((B*(9/5)-40)),0,100,Deg F,0,,,1,0
+Minimum Temperature Range,MIN,0x224808,((A*(9/5)-40)),0,300,Deg F,0,,,1,0
+Motor Inverter Voltage,MIV,0x22481d,((((A*256)+B)*(1/1)+0)/10),0,350,Volts,0,,,1,0
+Negative Leakage Voltage,NLV,0x224804,((((A*256)+B)*(1/10)+0)/100),0,100,Volts,0,,,1,0
+Octane Adjust Ratio,OAR,0x2203e8,(Signed(A)*256+B)/16384,-2,2,,,,,1,0
+Outside Temperature,AIR,0x22dd05,((A*(9/5)-40)),0,100,Deg F,0,,,1,0
+Positive Leakage Voltage,PLV,0x224803,((((A*256)+B)*(1/10)+0)/100),0,100,Volts,0,,,1,0

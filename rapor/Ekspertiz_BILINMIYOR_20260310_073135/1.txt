@@ -1,0 +1,24 @@
+
+SEN UZMAN BIR OTOMOTIV BASMUHENDISIN.
+Asagidaki analiz verilerini yorumlayarak musteri icin net, guven verici, teknik derinligi olan bir ozet yaz.
+
+ARAC: BILINMIYOR - F14D3 (---)
+YAKIT: LPG - Trim sapmalarini LPG kalibrasyon toleransi olarak degerlendirin. LPG'de %+/-20 trim dogal kabul edilir, ancak DTC varsa ve vibrasyon yuksekse sorun mekaniktir.
+
+MUHENDISLIK BULGULARI:
+1. [S101] Motor Dengesizligi (Vibrasyon): 0.00 (Ref: <20 Mukemmel, >40 Kotu)
+   Yorum: Purussuz Calisiyor
+
+2. [S106]+[S107] Yakit Sistemi Sagligi: %9.6 Sapma
+   Durum: Kirli Enjekter/Sensor
+
+3. [S104] Sogutma Performansi: 3.9 C/dk Isinma Hizi, Motor Suyu Max: 91 C
+4. [S105] Mekanik Saglik (Vakum): %0.0 Dalgalanma
+5. VolumetrikVerimlilik: Veri yok (MAF/displacement eksik)
+
+KRITIK VERILER:
+- [S107] Toplam Yakit Trim (LTFT+STFT): %6.3
+- Ariza Kodlari: [E287] U1387, [E211] U3111, [E203] C0303, [E200] C0000, [E204] P1604, [E249] P2049
+
+GOREVIN:
+Verileri harmanlayarak aracin genel saglik durumunu 'Usta Agziyla' ama kurumsal bir dille anlat. Eger vibrasyon yuksekse atesleme/kulaklara dikkat cek. Yakit sapmasi varsa sensor temizligi veya kacak ihtimalini belirt. LPG araciysa trim sapmasini buna gore yorumla. Ariza kodu yoksa ve degerler iyiyse 'Kefil olunabilecek arac' vurgusu yap.
