@@ -81,7 +81,9 @@ class SerialIOThread(threading.Thread):
         self.timeout = timeout
         self.command_queue = queue.PriorityQueue()
         self.running = True
-        self.last_response = []
+        self._next_id = 0
+        self._id_lock = threading.Lock()
+        self.responses = {}
         self.response_lock = threading.RLock()
 
     def enqueue(self, command, timeout=None, priority=PRIORITY_NORMAL):
@@ -91,7 +93,11 @@ class SerialIOThread(threading.Thread):
         """
         if timeout is None:
             timeout = self.timeout
-        self.command_queue.put((priority, time.time(), command, timeout))
+        with self._id_lock:
+            request_id = self._next_id
+            self._next_id += 1
+        self.command_queue.put((priority, time.time(), command, timeout, request_id))
+        return request_id
 
     def run(self):
         """Ana I/O loop - tüm komutları serial port'tan gönder/al"""
@@ -99,15 +105,15 @@ class SerialIOThread(threading.Thread):
             try:
                 # Timeout ile sıra bekle (engellememe için)
                 try:
-                    priority, enqueue_time, command, timeout = self.command_queue.get(timeout=0.5)
+                    priority, enqueue_time, command, timeout, request_id = self.command_queue.get(timeout=0.5)
                 except queue.Empty:
                     continue
 
                 # Komutu gönder ve yanıt al
                 response = self._raw_send(command, timeout)
-                
+
                 with self.response_lock:
-                    self.last_response = response
+                    self.responses[request_id] = response
 
             except Exception as e:
                 log_flush(f"[SERIAL_IO_THREAD] Kritik hata: {e}")
@@ -191,10 +197,12 @@ class SerialIOThread(threading.Thread):
             log_flush(f"[SERIAL_IO] _raw_send hatası: {e}")
             return []
 
-    def get_response(self):
-        """Son yanıtı thread-safe şekilde al"""
+    def get_response(self, request_id):
+        """Belirtilen request_id'nin yanıtını thread-safe şekilde al ve sözlükten temizle"""
         with self.response_lock:
-            return self.last_response.copy()
+            if request_id in self.responses:
+                return self.responses.pop(request_id)
+            return None
 
     def stop(self):
         """Thread'i kapat"""
@@ -521,13 +529,18 @@ class AutoExpertEngine:
         def keep_alive_loop():
             while self.io_worker and self.io_worker.running:
                 try:
-                    # Keep-Alive komutu (3E 00) en yüksek prioritesi (KEEPALIVE) ile kuyruğa ekle
                     if self.io_worker:
-                        self.io_worker.enqueue("3E 00", timeout=0.5, priority=PRIORITY_KEEPALIVE)
+                        req_id = self.io_worker.enqueue("3E 00", timeout=0.5, priority=PRIORITY_KEEPALIVE)
+                        # Kendi yanıtını oku ve sözlükten temizle (sızıntı önleme), sonucu şimdilik kullanmıyoruz
+                        wait_start = time.time()
+                        while (time.time() - wait_start) < 0.6:
+                            if self.io_worker.get_response(req_id) is not None:
+                                break
+                            time.sleep(0.02)
                     time.sleep(3.0)
                 except Exception as e:
                     log_flush(f"[KEEPALIVE_ERROR] Keep-alive timer hatası: {e}")
-        
+
         self.keep_alive_timer = threading.Thread(target=keep_alive_loop, daemon=True)
         self.keep_alive_timer.start()
 
@@ -850,28 +863,22 @@ class AutoExpertEngine:
         """
         if not self.ser or not self.ser.is_open:
             return []
-        
+
         if not self.io_worker or not self.io_worker.running:
             log_flush("[KOMUT_ERROR] SerialIOThread çalışmıyor")
             return []
 
-        # Adaptive timeout
         if self.is_slow_protocol:
             timeout = max(timeout, 3.0)
         else:
             timeout = max(timeout, 0.5)
 
-        # V200: Kuyruğa ekle (normal öncelik)
-        self.io_worker.enqueue(komut, timeout=timeout, priority=PRIORITY_NORMAL)
+        request_id = self.io_worker.enqueue(komut, timeout=timeout, priority=PRIORITY_NORMAL)
 
-        # Yanıt bekle (timeout içinde)
         start_wait = time.time()
         while (time.time() - start_wait) < timeout:
-            response = self.io_worker.get_response()
-            if response:  # Yanıt geldi
-                # Son yanıtı temizle (bir sonraki sorgudan önce)
-                with self.io_worker.response_lock:
-                    self.io_worker.last_response = []
+            response = self.io_worker.get_response(request_id)
+            if response is not None:
                 return response
             time.sleep(0.02)
 
