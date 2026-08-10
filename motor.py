@@ -81,6 +81,16 @@ NRC_MAP = {
     "78": "Response Pending",            # _raw_send zaten retry ile hallediyor, buraya normalde ulasmaz
 }
 
+# --- Raw Response Status Sınıflandırması — komut_gonder()'ın son çağrısının SEBEBİNİ ayrı takip eder ---
+# Bu sabitler mevcut `list` dönüş değerini DEĞİŞTİRMEZ, sadece ek/gözlemsel bir katmandır.
+STATUS_VALID = "VALID"                  # Pozitif, kullanılabilir cevap alındı
+STATUS_NO_DATA = "NO_DATA"              # ECU/ELM327 açıkça "NO DATA" dedi
+STATUS_TIMEOUT = "TIMEOUT"              # Zaman aşımına uğradı, hiç cevap gelmedi
+STATUS_NO_CONNECTION = "NO_CONNECTION"  # Seri port açık değil
+STATUS_WORKER_DOWN = "WORKER_DOWN"      # SerialIOThread çalışmıyor
+STATUS_SERIAL_ERROR = "SERIAL_ERROR"    # Exception (port koptu, I/O hatası vb.)
+STATUS_NRC = "NRC"                      # UDS negative response (7F..) alındı — _classify_nrc zaten bunu ayrıca işliyor
+
 # --- V200: Tekil I/O Worker Thread (Priority Queue Mimarisi) ---
 class SerialIOThread(threading.Thread):
     """
@@ -96,6 +106,7 @@ class SerialIOThread(threading.Thread):
         self._next_id = 0
         self._id_lock = threading.Lock()
         self.responses = {}
+        self.last_raw_status = STATUS_VALID
         self.response_lock = threading.RLock()
 
     def enqueue(self, command, timeout=None, priority=PRIORITY_NORMAL):
@@ -136,6 +147,8 @@ class SerialIOThread(threading.Thread):
         Gerçek seri I/O işlemi. ELM327 hatalarını yutup devam eder.
         """
         if not self.ser or not self.ser.is_open:
+            with self.response_lock:
+                self.last_raw_status = STATUS_NO_CONNECTION
             return []
 
         try:
@@ -198,16 +211,29 @@ class SerialIOThread(threading.Thread):
 
             # ELM327 hatalarını logla ve yut (çökmeyi engelle)
             elm_errors = ["BUS BUSY", "STOPPED", "NO DATA", "ERROR", "?"]
+            had_no_data = any("NO DATA" in l for l in clean_lines)
             for error in elm_errors:
                 if any(error in line for line in clean_lines):
                     log_flush(f"[ELM327_ERROR] {error} alindi (cmd={command})")
                     # Hatayı yut, devam et
                     clean_lines = [l for l in clean_lines if error not in l]
 
+            with self.response_lock:
+                if clean_lines:
+                    self.last_raw_status = STATUS_VALID
+                elif had_no_data:
+                    self.last_raw_status = STATUS_NO_DATA
+                elif not raw_lines:
+                    self.last_raw_status = STATUS_TIMEOUT
+                else:
+                    self.last_raw_status = STATUS_VALID  # ör: sadece '>' geldi, boş ama hata da değil
+
             return clean_lines
 
         except Exception as e:
             log_flush(f"[SERIAL_IO] _raw_send hatası: {e}")
+            with self.response_lock:
+                self.last_raw_status = STATUS_SERIAL_ERROR
             return []
 
     def get_response(self, request_id):
@@ -361,6 +387,7 @@ class AutoExpertEngine:
         self.is_can = False
         self.is_slow_protocol = False
         self.current_header = "7DF"
+        self.last_response_status = STATUS_VALID  # En son komut_gonder() çağrısının durumu (gözlemsel, list dönüşünü etkilemez)
         self._loop_counter = 0
         self.last_valid_data_time = time.time()
         self.watchdog_limit = 15.0
@@ -895,10 +922,12 @@ class AutoExpertEngine:
         Tüm komutlar SerialIOThread'in kuyruğuna eklenir, gerçek I/O thread-safe şekilde yapılır.
         """
         if not self.ser or not self.ser.is_open:
+            self.last_response_status = STATUS_NO_CONNECTION
             return []
 
         if not self.io_worker or not self.io_worker.running:
             log_flush("[KOMUT_ERROR] SerialIOThread çalışmıyor")
+            self.last_response_status = STATUS_WORKER_DOWN
             return []
 
         if self.is_slow_protocol:
@@ -912,10 +941,13 @@ class AutoExpertEngine:
         while (time.time() - start_wait) < timeout:
             response = self.io_worker.get_response(request_id)
             if response is not None:
+                with self.io_worker.response_lock:
+                    self.last_response_status = getattr(self.io_worker, "last_raw_status", STATUS_VALID)
                 return response
             time.sleep(0.02)
 
         log_flush(f"[KOMUT_TIMEOUT] {komut} komutu timeout oldu ({timeout}s)")
+        self.last_response_status = STATUS_TIMEOUT
         return []
 
     def tek_veri_oku(self, target_list=None, phase="UNKNOWN"):
@@ -1331,6 +1363,7 @@ class AutoExpertEngine:
             return None
 
         nrc_desc = NRC_MAP.get(nrc_code, f"Unknown NRC 0x{nrc_code}")
+        self.last_response_status = STATUS_NRC
 
         # DID ismini csv_pids'ten cek, yoksa ham PID'i kullan
         did_name = context_pid
