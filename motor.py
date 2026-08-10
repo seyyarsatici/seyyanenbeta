@@ -352,7 +352,8 @@ class AutoExpertEngine:
         self.last_valid_data_time = time.time()
         self.watchdog_limit = 15.0
         self.test_start_time = 0
-        self.mode22_session_opened = False
+        self.ecu_sessions = {}       # {header_str: last_interaction_unix_time} — tracks which ECUs have an open UDS extended session
+        self.session_timeout = 4.0   # seconds; refresh before the UDS default 5s S3 timer expires
         self.data_cache = {}
         self.sensor_cache = {}
         self.ecu_info = {"VIN": "Bilinmiyor"}
@@ -525,18 +526,37 @@ class AutoExpertEngine:
         self.pid_taramasi_yap()
 
     def _start_keep_alive_timer(self):
-        """V200: Keep-Alive mantığını timer ile kuyrukta görev olarak ekle"""
+        """V200+: Keep-Alive artık ecu_sessions içindeki TÜM açık session'ları dolaşır"""
         def keep_alive_loop():
             while self.io_worker and self.io_worker.running:
                 try:
-                    if self.io_worker:
+                    now = time.time()
+                    for header in list(self.ecu_sessions.keys()):
+                        if now - self.ecu_sessions[header] < 2.5:
+                            continue  # yakın zamanda zaten kullanıldı, gereksiz trafik yapma
+
+                        if self.current_header != header:
+                            self.komut_gonder(f"AT SH {header}", timeout=0.5)
+                            self.current_header = header
+
                         req_id = self.io_worker.enqueue("3E 00", timeout=0.5, priority=PRIORITY_KEEPALIVE)
-                        # Kendi yanıtını oku ve sözlükten temizle (sızıntı önleme), sonucu şimdilik kullanmıyoruz
+                        response = None
                         wait_start = time.time()
                         while (time.time() - wait_start) < 0.6:
-                            if self.io_worker.get_response(req_id) is not None:
+                            response = self.io_worker.get_response(req_id)
+                            if response is not None:
                                 break
                             time.sleep(0.02)
+
+                        res_str = "".join(response).upper() if response else ""
+                        if "7E00" in res_str:
+                            self.ecu_sessions[header] = time.time()
+                        elif "7F3E" in res_str:
+                            log_flush(f"[KEEPALIVE_REJECT] {header} '3E00' reddetti (NRC 7F3E), session düşürüldü.")
+                            self.ecu_sessions.pop(header, None)
+                        # response None ya da boşsa (timeout/no data): session'ı düşürmüyoruz,
+                        # bir sonraki _ensure_session çağrısı zaten süresi dolmuşsa yeniden açacak.
+
                     time.sleep(3.0)
                 except Exception as e:
                     log_flush(f"[KEEPALIVE_ERROR] Keep-alive timer hatası: {e}")
@@ -1040,15 +1060,7 @@ class AutoExpertEngine:
             # 21: Genel Extended Mfr, 22: SAE J2190 Mfr Specific, 2C: Defined-by-Memory PIDs
             is_extended_mode = len(pid) >= 4 and pid.upper()[:2] in ["21", "22", "2C"]
             if is_extended_mode:
-                # V113+: Diagnostic Session — sadece ilk extended mod sorgusunda aç
-                # Extended Diagnostic Session (1003) her seferinde gönderilirse
-                # ECU yorulur ve okuma hızı düşer. Bayrak True olunca bir daha gonderilmez.
-                if not self.mode22_session_opened:
-                    self.komut_gonder("AT SH 7E0", timeout=1.0)  # Motor ECU header
-                    self.komut_gonder("1003", timeout=1.0)        # Extended Diagnostic Session (ileride Aveo: 1081)
-                    time.sleep(0.1)                               # ECU stabilizasyonu
-                    self.mode22_session_opened = True
-                    log_flush("V114: MultiMode ExtendedDiagSession (1003) açıldı (mode={pid[:2]})")
+                self._ensure_session(self.current_header)
                 t_out = (1.0 if self.is_can else 5.0) * 2  # Extended modlar: 2x timeout
             else:
                 t_out = 0.5 if self.is_can else 2.5  # Standart Mode 01 timeout
@@ -1114,11 +1126,12 @@ class AutoExpertEngine:
                 formula = info["formul"]
                 header = info["header"]
                 
-                # V135.1: Akıllı Header Yönetimi (Flooding Koruma)
+                # V135.1 + Multi-ECU Session: Header değiştir VE o header için session garanti et
                 if self.current_header != header:
                     self.komut_gonder(f"AT SH {header}")
                     self.current_header = header
-                
+                self._ensure_session(header)
+
                 res = self.komut_gonder(mode_pid)
                 res_str = "".join(res).upper()
                 
@@ -1280,6 +1293,40 @@ class AutoExpertEngine:
             log_flush(f"[PID_PARSE_ERROR] Genel ayrıştırma hatası (pid={pid}): {e}")
             return None
         return None
+
+    def _ensure_session(self, header: str) -> bool:
+        """
+        Verilen header için UDS Extended Diagnostic Session (1003) açık mı kontrol eder,
+        değilse açar veya süresi dolduysa yeniler. Mode 22/21/2C okumalarından önce çağrılmalı.
+        Returns True if the session is (now) considered open, False if it was refused/ambiguous.
+        """
+        header = header.strip().upper()
+        now = time.time()
+
+        if header in self.ecu_sessions and (now - self.ecu_sessions[header]) <= self.session_timeout:
+            # Session zaten taze, sadece dokunma (wire trafiği yok)
+            self.ecu_sessions[header] = now
+            return True
+
+        if self.current_header != header:
+            self.komut_gonder(f"AT SH {header}", timeout=1.0)
+            self.current_header = header
+
+        res = self.komut_gonder("1003", timeout=1.0)
+        res_str = "".join(res).upper()
+
+        if "7F10" in res_str:
+            log_flush(f"[SESSION_FAIL] {header} '1003' reddetti (NRC 7F10): {res_str}")
+            self.ecu_sessions.pop(header, None)
+            return False
+        elif "5003" in res_str:
+            self.ecu_sessions[header] = now
+            log_flush(f"V200: ExtendedDiagSession (1003) açıldı/yenilendi -> header={header}")
+            return True
+        else:
+            log_flush(f"[SESSION_FAIL] {header} '1003' belirsiz cevap: {res_str}")
+            self.ecu_sessions.pop(header, None)
+            return False
 
     def header_set(self, header_id: str):
         """
