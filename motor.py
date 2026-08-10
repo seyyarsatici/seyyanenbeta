@@ -64,10 +64,22 @@ PROTO_MAP = {
     9: {"name": "SAE J1850 (PWM 41.6kbaud)", "is_can": False, "is_slow": False},
 }
 
-def log_flush(msg):
-    """Her önemli logdan sonra diske yazmayı zorla"""
-    print(f"[{time.ctime()}] {msg}")
-    sys.stdout.flush()
+# --- NRC (Negative Response Code) Sınıflandırma Haritası — Mode22 reverse-engineering için ---
+NRC_MAP = {
+    "10": "General Reject",
+    "11": "Service Not Supported",
+    "12": "Sub-Function Not Supported",
+    "13": "Incorrect Message Length/Format",
+    "21": "Busy Repeat Request",
+    "22": "Conditions Not Correct",
+    "24": "Request Sequence Error",
+    "31": "Request Out of Range",       # Mode22 icin: bu DID bu ECU'da yok
+    "33": "Security Access Denied",      # Mode22 icin: seed/key gerekiyor
+    "35": "Invalid Key",
+    "36": "Exceeded Number Of Attempts",
+    "37": "Required Time Delay Not Expired",
+    "78": "Response Pending",            # _raw_send zaten retry ile hallediyor, buraya normalde ulasmaz
+}
 
 # --- V200: Tekil I/O Worker Thread (Priority Queue Mimarisi) ---
 class SerialIOThread(threading.Thread):
@@ -1066,6 +1078,8 @@ class AutoExpertEngine:
                 t_out = 0.5 if self.is_can else 2.5  # Standart Mode 01 timeout
             cmd_result = self.komut_gonder(pid, timeout=t_out)
             time.sleep(0.03 if self.is_can else 0.1)
+            if is_extended_mode:
+                self._classify_nrc(cmd_result, context_pid=pid)
             
             # V99.5: Boş veya hatalı yanıt kontrolü
             if not cmd_result or len(cmd_result) == 0:
@@ -1134,6 +1148,7 @@ class AutoExpertEngine:
 
                 res = self.komut_gonder(mode_pid)
                 res_str = "".join(res).upper()
+                self._classify_nrc(res, context_pid=mode_pid)
                 
                 if res and "7F" not in res_str and "NO DATA" not in res_str:
                     # 62 + PID (4 hane) = 6 hane (3 byte) prefix.
@@ -1293,6 +1308,51 @@ class AutoExpertEngine:
             log_flush(f"[PID_PARSE_ERROR] Genel ayrıştırma hatası (pid={pid}): {e}")
             return None
         return None
+
+    def _classify_nrc(self, response_lines: list, context_pid: str = "") -> str | None:
+        """
+        komut_gonder() dönüşünü tarar, UDS negative response (7F xx yy) var mı bakar.
+        Varsa NRC kodunu ayrıştırıp dbCSV/nrc_log.csv'ye yazar, kodu string olarak döner.
+        Yoksa None döner (pozitif yanıt / cevap yok / tanınmayan format).
+        """
+        if not response_lines:
+            return None
+
+        full_str = "".join(response_lines).upper()
+        idx = full_str.find("7F")
+        if idx == -1 or len(full_str) < idx + 6:
+            return None
+
+        payload = full_str[idx:]
+        # Beklenen format: 7F <talep edilen servis, 2 hex> <NRC, 2 hex>
+        nrc_code = payload[4:6]
+        if not nrc_code or len(nrc_code) != 2:
+            return None
+
+        nrc_desc = NRC_MAP.get(nrc_code, f"Unknown NRC 0x{nrc_code}")
+
+        # DID ismini csv_pids'ten cek, yoksa ham PID'i kullan
+        did_name = context_pid
+        if hasattr(self, "csv_pids") and context_pid in self.csv_pids:
+            did_name = self.csv_pids[context_pid][0]
+
+        log_flush(f"[NRC] header={self.current_header} pid={context_pid} ({did_name}) -> 0x{nrc_code} {nrc_desc}")
+        self._log_nrc_to_csv(context_pid, did_name, nrc_code, nrc_desc)
+        return nrc_code
+
+    def _log_nrc_to_csv(self, pid, did_name, nrc_code, nrc_desc):
+        """NRC olaylarini dbCSV/nrc_log.csv dosyasina append eder (reverse-engineering kaydı)."""
+        try:
+            log_path = os.path.join(DBCSV_DIR, "nrc_log.csv")
+            file_exists = os.path.exists(log_path)
+            os.makedirs(DBCSV_DIR, exist_ok=True)
+            with open(log_path, mode='a', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                if not file_exists:
+                    writer.writerow(["timestamp", "header", "pid", "did_name", "nrc_code", "nrc_description"])
+                writer.writerow([time.ctime(), self.current_header, pid, did_name, nrc_code, nrc_desc])
+        except Exception as e:
+            log_flush(f"[NRC_LOG_ERROR] CSV yazma hatasi: {e}")
 
     def _ensure_session(self, header: str) -> bool:
         """
