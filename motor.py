@@ -177,6 +177,7 @@ class SerialIOThread(threading.Thread):
                 time.sleep(sleep_time)
 
             # Yanıtı işle
+            raw_data = raw_data.replace(b'\x00', b'')  # ELM327/EUSART NULL byte bug fix
             text = raw_data.decode('ascii', errors='ignore')
             raw_lines = []
             for part in text.split('\n'):
