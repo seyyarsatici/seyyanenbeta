@@ -90,6 +90,7 @@ STATUS_NO_CONNECTION = "NO_CONNECTION"  # Seri port açık değil
 STATUS_WORKER_DOWN = "WORKER_DOWN"      # SerialIOThread çalışmıyor
 STATUS_SERIAL_ERROR = "SERIAL_ERROR"    # Exception (port koptu, I/O hatası vb.)
 STATUS_NRC = "NRC"                      # UDS negative response (7F..) alındı — _classify_nrc zaten bunu ayrıca işliyor
+STATUS_DID_MISMATCH = "DID_MISMATCH"    # Mode22 cevabı geldi ama beklenen DID echo edilmedi / bozuk format
 
 # --- V200: Tekil I/O Worker Thread (Priority Queue Mimarisi) ---
 class SerialIOThread(threading.Thread):
@@ -388,6 +389,7 @@ class AutoExpertEngine:
         self.is_slow_protocol = False
         self.current_header = "7DF"
         self.last_response_status = STATUS_VALID  # En son komut_gonder() çağrısının durumu (gözlemsel, list dönüşünü etkilemez)
+        self.last_did_match_info = None  # Mode22 parse teşhisi: {"expected": str, "found_at": int|None, "reason": str} veya None
         self._loop_counter = 0
         self.last_valid_data_time = time.time()
         self.watchdog_limit = 15.0
@@ -1308,21 +1310,40 @@ class AutoExpertEngine:
              if _is_extended_mode:
                  # Dinamik target oluştur: respond_mode_hex + pid'in PID kısmı
                  target = f"{hex(int(pid[:2], 16) + 0x40)[2:].upper()}{pid[2:4].upper()}"
-                 idx = hex_str.find(target)
-                 if idx != -1:
-                     # idx'den sona tüm hex'i byte listesine dök
-                     full_payload_hex = hex_str[idx:]  # '61/62/6CXXYYZZ...' formatı
-                     all_bytes = []
-                     for i in range(0, len(full_payload_hex), 2):
-                         try:
-                             all_bytes.append(int(full_payload_hex[i:i+2], 16))
-                         except Exception as e:
-                             log_flush(f"[PID_PARSE_ERROR] Multi-mode byte parse hatası: {e}")
-                     # İlk 3 byte = servis yanıt kodu (1) + PID iki byte (2) → atla
-                     # Gerçek veri byte'ları [3:] ile alınır
-                     bytes_val = all_bytes[3:]
-                     if bytes_val:
-                         return func(bytes_val)
+
+                 # V201: Anchored match — target, hex_str'in EN BAŞINDA olmalı (header zaten strip edildi).
+                 # Eskisi gibi serbest find() yerine, beklenen konumda gerçekten var mı diye bakılır.
+                 if hex_str.startswith(target):
+                     idx = 0
+                 else:
+                     # Beklenen konumda yok — belki NRC ya da bozuk frame. Serbest arama ile
+                     # teşhis amaçlı konumunu bul (parse ETMEYECEĞİZ, sadece loglayacağız).
+                     fallback_idx = hex_str.find(target)
+                     self.last_did_match_info = {
+                         "expected": target,
+                         "found_at": fallback_idx if fallback_idx != -1 else None,
+                         "reason": "not_at_start" if fallback_idx != -1 else "not_found",
+                     }
+                     if fallback_idx == -1:
+                         return None
+                     # Beklenen DID string'i var ama başta değil — güvenilir değil, reddet.
+                     log_flush(f"[DID_MISMATCH] pid={pid} beklenen='{target}' konumda değil (found_at={fallback_idx}), reddedildi")
+                     return None
+
+                 self.last_did_match_info = None  # Başarılı anchored match, önceki teşhisi temizle
+                 # idx'den sona tüm hex'i byte listesine dök
+                 full_payload_hex = hex_str[idx:]  # '61/62/6CXXYYZZ...' formatı
+                 all_bytes = []
+                 for i in range(0, len(full_payload_hex), 2):
+                     try:
+                         all_bytes.append(int(full_payload_hex[i:i+2], 16))
+                     except Exception as e:
+                         log_flush(f"[PID_PARSE_ERROR] Multi-mode byte parse hatası: {e}")
+                 # İlk 3 byte = servis yanıt kodu (1) + PID iki byte (2) → atla
+                 # Gerçek veri byte'ları [3:] ile alınır
+                 bytes_val = all_bytes[3:]
+                 if bytes_val:
+                     return func(bytes_val)
              else:
                  # Standart Mode 01 parser (41 + pid son 2 hex) — KESİNLİKLE DOKUNULMAZ
                  target = f"41{pid[2:]}"
