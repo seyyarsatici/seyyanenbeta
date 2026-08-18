@@ -1641,7 +1641,15 @@ class AutoExpertEngine:
                             isim = s(["ShortName", "Name"])
                             pid_raw = s(["ModeAndPID"]).upper()
                             header = s(["OBD Header", "Header"])
-                            if not header: header = "7E0"
+                            if not header:
+                                header = "7E0"
+                            else:
+                                # V202: Header format doğrulama — bozuk Excel export'larını (örn. "7,00E+00") yakala
+                                header_clean = header.strip().upper()
+                                if not re.fullmatch(r'7E[0-9A-F]', header_clean) and not re.fullmatch(r'7D[0-9A-F]', header_clean):
+                                    log_flush(f"[CSV_HEADER_CORRUPT] {os.path.basename(csv_yol)} - PID={pid_raw} - bozuk header degeri atlandi: '{header}'")
+                                    continue
+                                header = header_clean
                             denklem = s(["Equation"])
                             
                             if len(pid_raw) >= 4 and pid_raw.startswith(("21", "22", "2C")):
@@ -1668,6 +1676,13 @@ class AutoExpertEngine:
                                         "formula": fonksiyon
                                     })
                                     count_csv += 1
+                                    # V202: derin_tarama_ek_pidler'daki veriyi ayrıca custom_pids'e de yaz
+                                    # (tek_veri_oku'daki GÖREV 3 polling döngüsü custom_pids'i okuyor, formul STRING bekliyor)
+                                    self.custom_pids[pid_raw] = {
+                                        "isim": isim,
+                                        "header": header,
+                                        "formul": ext,  # ham formül string'i (safe_parser.evaluate bunu bekliyor)
+                                    }
                     if count_csv > 0:
                         print(f"      ✅ {count_csv} Adet Extended PID algılandı ({os.path.basename(csv_yol)}).")
             except Exception as e:
