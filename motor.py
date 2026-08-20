@@ -1596,28 +1596,24 @@ class AutoExpertEngine:
                     "payload_hex": payload_hex,
                     "payload_bytes": payload_bytes,
                     "decoded_value": decoded_val,
-                })
-            elif "7F" in payload_str or self.last_response_status == STATUS_NRC:
+            else:
                 nrc_code = self._classify_nrc(res, context_pid=cmd)
-                if not nrc_code and "7F" in payload_str:
-                    idx = payload_str.find("7F")
-                    if len(payload_str) >= idx + 6:
-                        nrc_code = payload_str[idx+4:idx+6]
-                nrc_desc = NRC_MAP.get(nrc_code, f"Unknown NRC 0x{nrc_code}") if nrc_code else None
-                result.update({
-                    "ok": False,
-                    "status": STATUS_NRC,
-                    "nrc": nrc_code,
-                    "nrc_desc": nrc_desc,
-                })
-            elif target_prefix in payload_str:
-                fallback_idx = payload_str.find(target_prefix)
-                log_flush(f"[DID_MISMATCH] manual_did_probe: {cmd} beklenen='{target_prefix}' başta değil (idx={fallback_idx})")
-                self.last_response_status = STATUS_DID_MISMATCH
-                result.update({
-                    "ok": False,
-                    "status": STATUS_DID_MISMATCH,
-                })
+                if nrc_code or self.last_response_status == STATUS_NRC:
+                    nrc_desc = NRC_MAP.get(nrc_code, f"Unknown NRC 0x{nrc_code}") if nrc_code else None
+                    result.update({
+                        "ok": False,
+                        "status": STATUS_NRC,
+                        "nrc": nrc_code,
+                        "nrc_desc": nrc_desc,
+                    })
+                elif target_prefix in payload_str:
+                    fallback_idx = payload_str.find(target_prefix)
+                    log_flush(f"[DID_MISMATCH] manual_did_probe: {cmd} beklenen='{target_prefix}' başta değil (idx={fallback_idx})")
+                    self.last_response_status = STATUS_DID_MISMATCH
+                    result.update({
+                        "ok": False,
+                        "status": STATUS_DID_MISMATCH,
+                    })
 
         except Exception as e:
             log_flush(f"[MANUAL_DID_PROBE_ERROR] Hata: {e}")
