@@ -418,6 +418,15 @@ class MockSerial:
             elif did == "1640":
                 # Örnek: mevcut CSV'lerde geçen bir DID'e sahte ama tutarlı bir pozitif cevap
                 self._schedule_response(f"6216400096", self._get_delay(0.15))
+            elif did == "1641":
+                # Multi-frame ISO-TP Mode 22 yanıt simülasyonu
+                # Toplam payload: 62 16 41 01 02 03 04 05 06 07 08 09 (12 byte = 0x0C)
+                d = self._get_delay(0.1)
+                self._schedule_response("7E8 10 0C 62 16 41 01 02", d)
+                self._schedule_response("7E8 21 03 04 05 06 07 08", d + 0.02)
+                self._schedule_response("7E8 22 09", d + 0.04)
+                self._schedule_response(">", d + 0.06)
+                return
             elif did == "1940":
                 # DID Mismatch testi için bozuk/başta olmayan DID yanıtı
                 self._schedule_response(f"AA6219400096", self._get_delay(0.15))

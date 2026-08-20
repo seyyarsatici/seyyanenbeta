@@ -1186,14 +1186,19 @@ class AutoExpertEngine:
                 res_str = "".join(res).upper()
                 self._classify_nrc(res, context_pid=mode_pid)
                 
-                if res and "7F" not in res_str and "NO DATA" not in res_str:
+                if res and self.last_response_status != STATUS_NRC and "NO DATA" not in res_str:
+                    payload_str = res_str
+                    for hdr in ("7E8", "7E9", "7EA", "7EB", "7EC", "7ED", "7EE", "7EF", "7E0", "7E1", "7E2", "7E3", "7E4", "7E5", "7E6", "7E7", "7DF"):
+                        if payload_str.startswith(hdr):
+                            payload_str = payload_str[len(hdr):]
+                            break
+
                     # 62 + PID (4 hane) = 6 hane (3 byte) prefix.
                     # Örn: 22336A -> 62336A
-                    prefix = "62" + mode_pid[2:]
-                    idx = res_str.find(prefix)
-                    if idx != -1:
+                    prefix = f"62{mode_pid[2:]}"
+                    if payload_str.startswith(prefix):
                         try:
-                            data_hex = res_str[idx + len(prefix):]
+                            data_hex = payload_str[len(prefix):]
                             d = [int(data_hex[i:i+2], 16) for i in range(0, len(data_hex), 2)]
                             
                             # V136: Security Upgrade - SAFE PARSER (No eval)
@@ -1211,11 +1216,21 @@ class AutoExpertEngine:
                                 self.sensor_cache[name] = hesaplanan
                                 data[name] = hesaplanan
                                 self.data_cache[name] = {"val": hesaplanan, "time": time.time()}
+                                self.last_did_match_info = None
                                 log_flush(f"Custom PID OK: {name}={hesaplanan}")
                             else:
                                 log_flush(f"Custom PID Math Error ({name}): Formula failed safety check or calculation")
                         except Exception as e:
                             log_flush(f"[CUSTOM_PID_ERROR] Özel PID hatası ({name}): {e}")
+                    elif prefix in payload_str:
+                        fallback_idx = payload_str.find(prefix)
+                        self.last_did_match_info = {
+                            "expected": prefix,
+                            "found_at": fallback_idx,
+                            "reason": "not_at_start"
+                        }
+                        self.last_response_status = STATUS_DID_MISMATCH
+                        log_flush(f"[DID_MISMATCH] Custom PID={mode_pid} beklenen='{prefix}' konumda değil (found_at={fallback_idx}), reddedildi")
             
             # Polling sonrası header'ı standart Broadcast moduna geri al
             if self.current_header != "7DF":
@@ -1367,35 +1382,53 @@ class AutoExpertEngine:
 
     def _classify_nrc(self, response_lines: list, context_pid: str = "") -> str | None:
         """
-        komut_gonder() dönüşünü tarar, UDS negative response (7F xx yy) var mı bakar.
+        komut_gonder() dönüşünü tarar, UDS negative response (7F <service> <NRC>) var mı bakar.
+        Context PID/service ile 3-byte yapıyı doğrular, payload verisi içindeki 0x7F byte'larını
+        yanlışlıkla NRC olarak sınıflandırmaz.
         Varsa NRC kodunu ayrıştırıp dbCSV/nrc_log.csv'ye yazar, kodu string olarak döner.
         Yoksa None döner (pozitif yanıt / cevap yok / tanınmayan format).
         """
         if not response_lines:
             return None
 
-        full_str = "".join(response_lines).upper()
-        idx = full_str.find("7F")
-        if idx == -1 or len(full_str) < idx + 6:
-            return None
+        expected_service = None
+        if context_pid:
+            cleaned_ctx = context_pid.strip().replace(" ", "").upper()
+            if cleaned_ctx.startswith("0X"):
+                cleaned_ctx = cleaned_ctx[2:]
+            if len(cleaned_ctx) >= 2 and all(c in "0123456789ABCDEF" for c in cleaned_ctx[:2]):
+                expected_service = cleaned_ctx[:2]
 
-        payload = full_str[idx:]
-        # Beklenen format: 7F <talep edilen servis, 2 hex> <NRC, 2 hex>
-        nrc_code = payload[4:6]
-        if not nrc_code or len(nrc_code) != 2:
-            return None
+        for line in response_lines:
+            s = line.replace(" ", "").upper()
+            # 11-bit CAN header strip (7E8..7EF, 7E0..7E7, 7DF)
+            for hdr in ("7E8", "7E9", "7EA", "7EB", "7EC", "7ED", "7EE", "7EF", "7E0", "7E1", "7E2", "7E3", "7E4", "7E5", "7E6", "7E7", "7DF"):
+                if s.startswith(hdr):
+                    s = s[len(hdr):]
+                    break
 
-        nrc_desc = NRC_MAP.get(nrc_code, f"Unknown NRC 0x{nrc_code}")
-        self.last_response_status = STATUS_NRC
+            # ISO-TP Single Frame length byte strip (örn: 037F2231 -> 7F2231)
+            if len(s) >= 8 and s[:2] in ("03", "04", "05", "06", "07") and s[2:4] == "7F":
+                s = s[2:]
 
-        # DID ismini csv_pids'ten cek, yoksa ham PID'i kullan
-        did_name = context_pid
-        if hasattr(self, "csv_pids") and context_pid in self.csv_pids:
-            did_name = self.csv_pids[context_pid][0]
+            if s.startswith("7F") and len(s) >= 6:
+                resp_service = s[2:4]
+                nrc_code = s[4:6]
+                if expected_service and resp_service != expected_service:
+                    continue
+                if nrc_code in NRC_MAP or (len(nrc_code) == 2 and all(c in "0123456789ABCDEF" for c in nrc_code)):
+                    nrc_desc = NRC_MAP.get(nrc_code, f"Unknown NRC 0x{nrc_code}")
+                    self.last_response_status = STATUS_NRC
 
-        log_flush(f"[NRC] header={self.current_header} pid={context_pid} ({did_name}) -> 0x{nrc_code} {nrc_desc}")
-        self._log_nrc_to_csv(context_pid, did_name, nrc_code, nrc_desc)
-        return nrc_code
+                    did_name = context_pid
+                    if hasattr(self, "csv_pids") and context_pid in self.csv_pids:
+                        did_name = self.csv_pids[context_pid][0]
+
+                    log_flush(f"[NRC] header={self.current_header} pid={context_pid} ({did_name}) -> 0x{nrc_code} {nrc_desc}")
+                    self._log_nrc_to_csv(context_pid, did_name, nrc_code, nrc_desc)
+                    return nrc_code
+
+        return None
 
     def _log_nrc_to_csv(self, pid, did_name, nrc_code, nrc_desc):
         """NRC olaylarini dbCSV/nrc_log.csv dosyasina append eder (reverse-engineering kaydı)."""
@@ -1492,32 +1525,17 @@ class AutoExpertEngine:
         cmd = f"22{target_did}"
 
         # 2. Header & Session Handling
+        initial_header = self.current_header
         target_header = header.strip().upper() if header else (self.current_header if self.current_header != "7DF" else "7E0")
+        switched_header = False
 
-        if self.current_header != target_header:
-            self.komut_gonder(f"AT SH {target_header}", timeout=1.0)
-            self.current_header = target_header
-
-        self._ensure_session(target_header)
-
-        # 3. Send Request
-        res = self.komut_gonder(cmd, timeout=2.0)
-        res_str = "".join(res).upper() if res else ""
-
-        # Check CAN Header prefix strip (11-bit)
-        payload_str = res_str
-        if payload_str.startswith(('7E0', '7E1', '7E2', '7E8', '7E9')):
-            payload_str = payload_str[3:]
-
-        # 4. Analyze Response
-        target_prefix = f"62{target_did}"
         result = {
             "ok": False,
             "status": self.last_response_status,
             "request": cmd,
             "did": target_did,
             "header": target_header,
-            "response": res_str,
+            "response": None,
             "payload_hex": None,
             "payload_bytes": [],
             "decoded_value": None,
@@ -1525,59 +1543,94 @@ class AutoExpertEngine:
             "nrc_desc": None,
         }
 
-        if payload_str.startswith(target_prefix):
-            payload_hex = payload_str[len(target_prefix):]
-            payload_bytes = []
-            for i in range(0, len(payload_hex), 2):
-                try:
-                    payload_bytes.append(int(payload_hex[i:i+2], 16))
-                except ValueError:
-                    break
+        try:
+            if self.current_header != target_header:
+                self.komut_gonder(f"AT SH {target_header}", timeout=1.0)
+                self.current_header = target_header
+                switched_header = True
 
-            decoded_val = None
-            if formula and payload_bytes:
-                try:
-                    context = {"x": payload_bytes, "d": payload_bytes}
-                    for i, val in enumerate(payload_bytes):
-                        if i < 26:
-                            context[chr(65 + i)] = val
-                    decoded_val = self.safe_parser.evaluate(formula, context)
-                except Exception as e:
-                    log_flush(f"[MANUAL_DID_PROBE] Formül hesaplama hatası ({formula}): {e}")
+            self._ensure_session(target_header)
 
-            result.update({
-                "ok": True,
-                "status": STATUS_VALID,
-                "payload_hex": payload_hex,
-                "payload_bytes": payload_bytes,
-                "decoded_value": decoded_val,
-            })
-        elif "7F" in payload_str or self.last_response_status == STATUS_NRC:
-            nrc_code = self._classify_nrc(res, context_pid=cmd)
-            if not nrc_code and "7F" in payload_str:
-                idx = payload_str.find("7F")
-                if len(payload_str) >= idx + 6:
-                    nrc_code = payload_str[idx+4:idx+6]
-            nrc_desc = NRC_MAP.get(nrc_code, f"Unknown NRC 0x{nrc_code}") if nrc_code else None
+            # 3. Send Request
+            res = self.komut_gonder(cmd, timeout=2.0)
+            res_str = "".join(res).upper() if res else ""
+            result["response"] = res_str
+            result["status"] = self.last_response_status
+
+            # Reassemble multi-frame if multiple lines / ISO-TP frames present
+            if res and len(res) > 1:
+                payload_str = self._multiframe_birlestir(res)
+            else:
+                payload_str = res_str
+                for hdr in ("7E8", "7E9", "7EA", "7EB", "7EC", "7ED", "7EE", "7EF", "7E0", "7E1", "7E2", "7E3", "7E4", "7E5", "7E6", "7E7", "7DF"):
+                    if payload_str.startswith(hdr):
+                        payload_str = payload_str[len(hdr):]
+                        break
+
+            # 4. Analyze Response
+            target_prefix = f"62{target_did}"
+
+            if payload_str.startswith(target_prefix):
+                payload_hex = payload_str[len(target_prefix):]
+                payload_bytes = []
+                for i in range(0, len(payload_hex), 2):
+                    try:
+                        payload_bytes.append(int(payload_hex[i:i+2], 16))
+                    except ValueError:
+                        break
+
+                decoded_val = None
+                if formula and payload_bytes:
+                    try:
+                        context = {"x": payload_bytes, "d": payload_bytes}
+                        for i, val in enumerate(payload_bytes):
+                            if i < 26:
+                                context[chr(65 + i)] = val
+                        decoded_val = self.safe_parser.evaluate(formula, context)
+                    except Exception as e:
+                        log_flush(f"[MANUAL_DID_PROBE] Formül hesaplama hatası ({formula}): {e}")
+
+                result.update({
+                    "ok": True,
+                    "status": STATUS_VALID,
+                    "payload_hex": payload_hex,
+                    "payload_bytes": payload_bytes,
+                    "decoded_value": decoded_val,
+                })
+            elif "7F" in payload_str or self.last_response_status == STATUS_NRC:
+                nrc_code = self._classify_nrc(res, context_pid=cmd)
+                if not nrc_code and "7F" in payload_str:
+                    idx = payload_str.find("7F")
+                    if len(payload_str) >= idx + 6:
+                        nrc_code = payload_str[idx+4:idx+6]
+                nrc_desc = NRC_MAP.get(nrc_code, f"Unknown NRC 0x{nrc_code}") if nrc_code else None
+                result.update({
+                    "ok": False,
+                    "status": STATUS_NRC,
+                    "nrc": nrc_code,
+                    "nrc_desc": nrc_desc,
+                })
+            elif target_prefix in payload_str:
+                fallback_idx = payload_str.find(target_prefix)
+                log_flush(f"[DID_MISMATCH] manual_did_probe: {cmd} beklenen='{target_prefix}' başta değil (idx={fallback_idx})")
+                self.last_response_status = STATUS_DID_MISMATCH
+                result.update({
+                    "ok": False,
+                    "status": STATUS_DID_MISMATCH,
+                })
+
+        except Exception as e:
+            log_flush(f"[MANUAL_DID_PROBE_ERROR] Hata: {e}")
             result.update({
                 "ok": False,
-                "status": STATUS_NRC,
-                "nrc": nrc_code,
-                "nrc_desc": nrc_desc,
+                "status": STATUS_SERIAL_ERROR,
+                "error": str(e),
             })
-        elif target_prefix in payload_str:
-            fallback_idx = payload_str.find(target_prefix)
-            log_flush(f"[DID_MISMATCH] manual_did_probe: {cmd} beklenen='{target_prefix}' başta değil (idx={fallback_idx})")
-            self.last_response_status = STATUS_DID_MISMATCH
-            result.update({
-                "ok": False,
-                "status": STATUS_DID_MISMATCH,
-            })
-
-        # 5. Restore Header to 7DF if switched
-        if self.current_header != "7DF":
-            self.komut_gonder("AT SH 7DF", timeout=1.0)
-            self.current_header = "7DF"
+        finally:
+            # 5. Restore Header to initial state if switched
+            if switched_header and self.current_header != initial_header:
+                self.komut_gonder(f"AT SH {initial_header}", timeout=1.0)
+                self.current_header = initial_header
 
         return result
 
