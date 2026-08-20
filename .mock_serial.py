@@ -36,6 +36,8 @@ class MockSerial:
         self._buffer = []           # (timestamp, byte) listesi
         self._locked_until = 0
         self.headers_active = True  # ATH1 varsayılan (motor.py ister)
+        self.current_sim_header = "7DF"  # AT SH ile değişen, mode22/UDS session simülasyonu için
+        self.sim_sessions = set()        # Hangi header'larda '1003' extended session açıldı (simülasyon amaçlı)
         self.start_time = time.time()
 
         # [G5] Protokol: "KWP" veya "CAN" (ATSP komutuyla değişir)
@@ -263,6 +265,12 @@ class MockSerial:
             self._schedule_response(">", self._get_delay(0.1))
             return
 
+        if clean.startswith("ATSH"):
+            self.current_sim_header = clean[4:].upper()
+            self._schedule_response("OK", self._get_delay(0.05))
+            self._schedule_response(">",  self._get_delay(0.1))
+            return
+
         if clean.startswith("ATST"):
             # Timeout ayarı - kabul et, sessiz geç
             self._schedule_response("OK", self._get_delay(0.05))
@@ -384,6 +392,35 @@ class MockSerial:
             self._schedule_response("49 02 02 30 30 30 30 30 30", d + 0.01)
             self._schedule_response("49 02 03 30 30 30 30 30 30", d + 0.02)
             self._schedule_response(">", d + 0.03)
+            return
+
+        # =============================================================
+        # UDS / MODE 22 SİMÜLASYONU (V202 test desteği)
+        # =============================================================
+        if clean == "1003":
+            self.sim_sessions.add(self.current_sim_header)
+            self._schedule_response("5003", self._get_delay(0.1))
+            self._schedule_response(">",    self._get_delay(0.15))
+            return
+
+        if clean == "3E00":
+            if self.current_sim_header in self.sim_sessions:
+                self._schedule_response("7E00", self._get_delay(0.05))
+            else:
+                self._schedule_response("7F3E10", self._get_delay(0.05))  # general reject, session yok
+            self._schedule_response(">", self._get_delay(0.1))
+            return
+
+        if clean.startswith("22") and len(clean) >= 6:
+            did = clean[2:6]
+            if self.current_sim_header not in self.sim_sessions:
+                self._schedule_response(f"7F2222", self._get_delay(0.1))  # conditions not correct: session açık değil
+            elif did == "1640":
+                # Örnek: mevcut CSV'lerde geçen bir DID'e sahte ama tutarlı bir pozitif cevap
+                self._schedule_response(f"6216400096", self._get_delay(0.15))
+            else:
+                self._schedule_response(f"7F2231", self._get_delay(0.1))  # request out of range: bilinmeyen DID
+            self._schedule_response(">", self._get_delay(0.15))
             return
 
         # =============================================================
