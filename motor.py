@@ -12,6 +12,7 @@ from pathlib import Path
 import dashboard as Dashboard
 import threading
 import queue
+from collections import deque
 
 # --- Proje Dizin Yolları ---
 _MOTOR_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -415,6 +416,8 @@ class AutoExpertEngine:
         self.session_timeout = 4.0   # seconds; refresh before the UDS default 5s S3 timer expires
         self.data_cache = {}
         self.sensor_cache = {}
+        self.sensor_history = {}     # {sensor_name: deque(maxlen=50)}
+        self.history_max_len = 50
         self.ecu_info = {"VIN": "Bilinmiyor"}
         self.desteklenen_pidler = []
         self.failed_pids = {}
@@ -971,8 +974,8 @@ class AutoExpertEngine:
 
     def _update_sensor_cache(self, name: str, value, status: str = STATUS_VALID, quality: str = None, timestamp: float = None, source: str = None) -> dict:
         """
-        V204 (Phase C-1): Sensor verisini zaman damgası ve veri kalitesi metaverisiyle kaydeder.
-        Mevcut 'val' ve 'time' yapısını %100 korur, 'status', 'quality' ve 'source' alanlarını ekler.
+        V204 (Phase C-1/C-2): Sensor verisini zaman damgası, kalite ve geçmiş takibiyle kaydeder.
+        Mevcut 'val' ve 'time' yapısını %100 korur, bounded history'e sadece geçerli ölçümleri ekler.
         """
         ts = timestamp if timestamp is not None else time.time()
         q = quality if quality is not None else derive_quality_from_status(status)
@@ -988,7 +991,38 @@ class AutoExpertEngine:
 
         self.data_cache[name] = entry
         self.sensor_cache[name] = value
+
+        # Sadece STATUS_VALID ve geçerli değer üretilmişse geçmişe kaydet
+        if status == STATUS_VALID and q == QUALITY_GOOD and value is not None:
+            if name not in self.sensor_history:
+                self.sensor_history[name] = deque(maxlen=self.history_max_len)
+            self.sensor_history[name].append(dict(entry))
+
         return entry
+
+    def _get_sensor_age(self, name: str) -> float | None:
+        """Sensörün son geçerli edinilme zamanından bu yana geçen süreyi (saniye) döner."""
+        entry = self.data_cache.get(name)
+        if isinstance(entry, dict) and "time" in entry and entry["time"] > 0:
+            return time.time() - entry["time"]
+        return None
+
+    def _is_sensor_fresh(self, name: str, max_age: float = 2.0) -> bool:
+        """Sensörün en son edinilen değerinin max_age (varsayılan 2.0s) içinde olup olmadığını kontrol eder."""
+        age = self._get_sensor_age(name)
+        if age is None:
+            return False
+        return age <= max_age
+
+    def _get_sensor_history(self, name: str, limit: int = None) -> list:
+        """Sensörün geçmiş geçerli ölçümlerinin bir kopyasını döner (en eskiden en yeniye)."""
+        hist = self.sensor_history.get(name)
+        if not hist:
+            return []
+        items = list(hist)
+        if limit is not None and limit > 0:
+            return items[-limit:]
+        return items
 
     def tek_veri_oku(self, target_list=None, phase="UNKNOWN"):
         """
