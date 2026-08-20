@@ -418,6 +418,9 @@ class MockSerial:
             elif did == "1640":
                 # Örnek: mevcut CSV'lerde geçen bir DID'e sahte ama tutarlı bir pozitif cevap
                 self._schedule_response(f"6216400096", self._get_delay(0.15))
+            elif did == "1940":
+                # DID Mismatch testi için bozuk/başta olmayan DID yanıtı
+                self._schedule_response(f"AA6219400096", self._get_delay(0.15))
             else:
                 self._schedule_response(f"7F2231", self._get_delay(0.1))  # request out of range: bilinmeyen DID
             self._schedule_response(">", self._get_delay(0.15))

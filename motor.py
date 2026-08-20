@@ -91,6 +91,7 @@ STATUS_WORKER_DOWN = "WORKER_DOWN"      # SerialIOThread çalışmıyor
 STATUS_SERIAL_ERROR = "SERIAL_ERROR"    # Exception (port koptu, I/O hatası vb.)
 STATUS_NRC = "NRC"                      # UDS negative response (7F..) alındı — _classify_nrc zaten bunu ayrıca işliyor
 STATUS_DID_MISMATCH = "DID_MISMATCH"    # Mode22 cevabı geldi ama beklenen DID echo edilmedi / bozuk format
+STATUS_EMPTY_RESPONSE = "EMPTY_RESPONSE" # İletişim tamamlandı/prompt geldi ama faydalı yük yok
 
 # --- V200: Tekil I/O Worker Thread (Priority Queue Mimarisi) ---
 class SerialIOThread(threading.Thread):
@@ -227,7 +228,7 @@ class SerialIOThread(threading.Thread):
                 elif not raw_lines:
                     self.last_raw_status = STATUS_TIMEOUT
                 else:
-                    self.last_raw_status = STATUS_VALID  # ör: sadece '>' geldi, boş ama hata da değil
+                    self.last_raw_status = STATUS_EMPTY_RESPONSE  # ör: sadece '>' geldi, prompt var ama faydalı yük yok
 
             return clean_lines
 
@@ -1328,6 +1329,7 @@ class AutoExpertEngine:
                          return None
                      # Beklenen DID string'i var ama başta değil — güvenilir değil, reddet.
                      log_flush(f"[DID_MISMATCH] pid={pid} beklenen='{target}' konumda değil (found_at={fallback_idx}), reddedildi")
+                     self.last_response_status = STATUS_DID_MISMATCH
                      return None
 
                  self.last_did_match_info = None  # Başarılı anchored match, önceki teşhisi temizle
@@ -1454,6 +1456,130 @@ class AutoExpertEngine:
         self.komut_gonder(cmd, timeout=1.0)
         self.current_header = header_id.strip().upper()  # V135.1: Update tracking
         log_flush(f"V110 Header Set: {header_id}")
+
+    def manual_did_probe(self, did: str, header: str = None, formula: str = None) -> dict:
+        """
+        V203: Manual DID Probe (DID Teşhis ve Doğrulama Aracı)
+        Belirtilen DID ve ECU header'ına UDS Mode 22 sorgusu gönderir,
+        yanıtı analiz eder, NRC / DID_MISMATCH / VALID durumlarını ayıklar
+        ve opsiyonel olarak formül ile çözer.
+        """
+        # 1. Input Normalization & Validation
+        raw_did = str(did).strip().replace(" ", "").upper()
+        if raw_did.startswith("0X"):
+            raw_did = raw_did[2:]
+        if raw_did.startswith("22") and len(raw_did) == 6:
+            raw_did = raw_did[2:]
+
+        if len(raw_did) != 4 or not all(c in "0123456789ABCDEF" for c in raw_did):
+            log_flush(f"[MANUAL_DID_PROBE] Geçersiz DID formatı: '{did}' (4 haneli hex bekleniyor)")
+            return {
+                "ok": False,
+                "status": "INVALID_INPUT",
+                "request": None,
+                "did": raw_did,
+                "header": header,
+                "response": None,
+                "payload_hex": None,
+                "payload_bytes": [],
+                "decoded_value": None,
+                "nrc": None,
+                "nrc_desc": None,
+                "error": f"Geçersiz DID formatı: '{did}'. 4 basamaklı onaltılık (hex) değer giriniz (örn: '1640').",
+            }
+
+        target_did = raw_did
+        cmd = f"22{target_did}"
+
+        # 2. Header & Session Handling
+        target_header = header.strip().upper() if header else (self.current_header if self.current_header != "7DF" else "7E0")
+
+        if self.current_header != target_header:
+            self.komut_gonder(f"AT SH {target_header}", timeout=1.0)
+            self.current_header = target_header
+
+        self._ensure_session(target_header)
+
+        # 3. Send Request
+        res = self.komut_gonder(cmd, timeout=2.0)
+        res_str = "".join(res).upper() if res else ""
+
+        # Check CAN Header prefix strip (11-bit)
+        payload_str = res_str
+        if payload_str.startswith(('7E0', '7E1', '7E2', '7E8', '7E9')):
+            payload_str = payload_str[3:]
+
+        # 4. Analyze Response
+        target_prefix = f"62{target_did}"
+        result = {
+            "ok": False,
+            "status": self.last_response_status,
+            "request": cmd,
+            "did": target_did,
+            "header": target_header,
+            "response": res_str,
+            "payload_hex": None,
+            "payload_bytes": [],
+            "decoded_value": None,
+            "nrc": None,
+            "nrc_desc": None,
+        }
+
+        if payload_str.startswith(target_prefix):
+            payload_hex = payload_str[len(target_prefix):]
+            payload_bytes = []
+            for i in range(0, len(payload_hex), 2):
+                try:
+                    payload_bytes.append(int(payload_hex[i:i+2], 16))
+                except ValueError:
+                    break
+
+            decoded_val = None
+            if formula and payload_bytes:
+                try:
+                    context = {"x": payload_bytes, "d": payload_bytes}
+                    for i, val in enumerate(payload_bytes):
+                        if i < 26:
+                            context[chr(65 + i)] = val
+                    decoded_val = self.safe_parser.evaluate(formula, context)
+                except Exception as e:
+                    log_flush(f"[MANUAL_DID_PROBE] Formül hesaplama hatası ({formula}): {e}")
+
+            result.update({
+                "ok": True,
+                "status": STATUS_VALID,
+                "payload_hex": payload_hex,
+                "payload_bytes": payload_bytes,
+                "decoded_value": decoded_val,
+            })
+        elif "7F" in payload_str or self.last_response_status == STATUS_NRC:
+            nrc_code = self._classify_nrc(res, context_pid=cmd)
+            if not nrc_code and "7F" in payload_str:
+                idx = payload_str.find("7F")
+                if len(payload_str) >= idx + 6:
+                    nrc_code = payload_str[idx+4:idx+6]
+            nrc_desc = NRC_MAP.get(nrc_code, f"Unknown NRC 0x{nrc_code}") if nrc_code else None
+            result.update({
+                "ok": False,
+                "status": STATUS_NRC,
+                "nrc": nrc_code,
+                "nrc_desc": nrc_desc,
+            })
+        elif target_prefix in payload_str:
+            fallback_idx = payload_str.find(target_prefix)
+            log_flush(f"[DID_MISMATCH] manual_did_probe: {cmd} beklenen='{target_prefix}' başta değil (idx={fallback_idx})")
+            self.last_response_status = STATUS_DID_MISMATCH
+            result.update({
+                "ok": False,
+                "status": STATUS_DID_MISMATCH,
+            })
+
+        # 5. Restore Header to 7DF if switched
+        if self.current_header != "7DF":
+            self.komut_gonder("AT SH 7DF", timeout=1.0)
+            self.current_header = "7DF"
+
+        return result
 
     def baglanti_kontrol(self):
         """Otomatik Reconnect"""
