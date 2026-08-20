@@ -93,6 +93,22 @@ STATUS_NRC = "NRC"                      # UDS negative response (7F..) alındı 
 STATUS_DID_MISMATCH = "DID_MISMATCH"    # Mode22 cevabı geldi ama beklenen DID echo edilmedi / bozuk format
 STATUS_EMPTY_RESPONSE = "EMPTY_RESPONSE" # İletişim tamamlandı/prompt geldi ama faydalı yük yok
 
+# --- Data Quality Sınıflandırması (Phase C-1) ---
+QUALITY_GOOD = "GOOD"        # Son okuma başarılı ve geçerli
+QUALITY_STALE = "STALE"      # Veri belirlenen tazelik sınırını aştı
+QUALITY_INVALID = "INVALID"  # NRC, DID_MISMATCH veya NO DATA yanıtı
+QUALITY_ERROR = "ERROR"      # TIMEOUT, NO_CONNECTION veya seri hatası
+
+def derive_quality_from_status(status: str) -> str:
+    """STATUS_* değerini deterministik QUALITY_* sınıfına dönüştürür."""
+    if status == STATUS_VALID:
+        return QUALITY_GOOD
+    elif status in (STATUS_TIMEOUT, STATUS_NO_CONNECTION, STATUS_WORKER_DOWN, STATUS_SERIAL_ERROR):
+        return QUALITY_ERROR
+    elif status in (STATUS_NO_DATA, STATUS_EMPTY_RESPONSE, STATUS_NRC, STATUS_DID_MISMATCH):
+        return QUALITY_INVALID
+    return QUALITY_INVALID
+
 # --- V200: Tekil I/O Worker Thread (Priority Queue Mimarisi) ---
 class SerialIOThread(threading.Thread):
     """
@@ -953,6 +969,27 @@ class AutoExpertEngine:
         self.last_response_status = STATUS_TIMEOUT
         return []
 
+    def _update_sensor_cache(self, name: str, value, status: str = STATUS_VALID, quality: str = None, timestamp: float = None, source: str = None) -> dict:
+        """
+        V204 (Phase C-1): Sensor verisini zaman damgası ve veri kalitesi metaverisiyle kaydeder.
+        Mevcut 'val' ve 'time' yapısını %100 korur, 'status', 'quality' ve 'source' alanlarını ekler.
+        """
+        ts = timestamp if timestamp is not None else time.time()
+        q = quality if quality is not None else derive_quality_from_status(status)
+
+        entry = {
+            "val": value,
+            "time": ts,
+            "status": status,
+            "quality": q,
+        }
+        if source:
+            entry["source"] = source
+
+        self.data_cache[name] = entry
+        self.sensor_cache[name] = value
+        return entry
+
     def tek_veri_oku(self, target_list=None, phase="UNKNOWN"):
         """
         V106: Heartbeat & Freshness Report
@@ -1003,8 +1040,8 @@ class AutoExpertEngine:
                 try: 
                     volt = float(res[0].replace("V",""))
                     data["Voltaj"] = volt
-                    # V111: Timestamp ile kaydet
-                    self.data_cache["Voltaj"] = {"val": volt, "time": time.time()}
+                    # V111/V204: Timestamp & Quality ile kaydet
+                    self._update_sensor_cache("Voltaj", volt, status=STATUS_VALID, source="ATRV")
                 except Exception as e:
                     log_flush(f"[DATA_READ_ERROR] Voltaj degeri ('AT RV') parse edilemedi: {e}")
 
@@ -1147,14 +1184,14 @@ class AutoExpertEngine:
                          elif name == "MONITORS":
                              data["MONITORS"] = val
                              data["MIL"] = val.get("MIL", False)
-                             self.data_cache["MIL"] = {"val": data["MIL"], "time": time.time()}
-                             self.data_cache["MONITORS"] = {"val": val, "time": time.time()}
+                             self._update_sensor_cache("MIL", data["MIL"], status=STATUS_VALID, source="MODE01")
+                             self._update_sensor_cache("MONITORS", val, status=STATUS_VALID, source="MODE01")
                              self.failed_pids[pid] = 0
                              parsed_any = True
                          else:
                              data[name] = val
-                             # V111: Timestamp ile cache'e yaz
-                             self.data_cache[name] = {"val": val, "time": time.time()}
+                             # V111/V204: Timestamp & Quality ile cache'e yaz
+                             self._update_sensor_cache(name, val, status=STATUS_VALID, source="MODE01")
                              # Başarılı okuma, strikeout sıfırla
                              self.failed_pids[pid] = 0
                              parsed_any = True
@@ -1213,9 +1250,8 @@ class AutoExpertEngine:
                             hesaplanan = self.safe_parser.evaluate(formula, context)
                             
                             if hesaplanan is not None:
-                                self.sensor_cache[name] = hesaplanan
                                 data[name] = hesaplanan
-                                self.data_cache[name] = {"val": hesaplanan, "time": time.time()}
+                                self._update_sensor_cache(name, hesaplanan, status=STATUS_VALID, quality=QUALITY_GOOD, source="MODE22")
                                 self.last_did_match_info = None
                                 log_flush(f"Custom PID OK: {name}={hesaplanan}")
                             else:
@@ -1265,14 +1301,14 @@ class AutoExpertEngine:
                             # Her iki durumda da yeni, zengin veri yapısını tam olarak kaydet
                             pid_name = pids[wb_pid][0]
                             data[pid_name] = wb_val
-                            self.data_cache[pid_name] = {"val": wb_val, "time": time.time()}
+                            self._update_sensor_cache(pid_name, wb_val, status=STATUS_VALID, source="MODE01")
                             
                             # Eski sistemlerle uyumluluk için O2_B1S1_V'ye bir değer ata
                             display_val = 0.0
                             if 'voltage' in wb_val:
                                 display_val = wb_val['voltage']
                                 data["O2_B1S1_V"] = display_val
-                                self.data_cache["O2_B1S1_V"] = {"val": display_val, "time": time.time()}
+                                self._update_sensor_cache("O2_B1S1_V", display_val, status=STATUS_VALID, source="MODE01")
                             
                             log_flush(f"WB-FALLBACK: {pid_name} okundu. Uyumlu değer: {display_val:.3f}V")
                             self.failed_pids[wb_pid] = 0
@@ -1895,12 +1931,12 @@ class AutoExpertEngine:
                     idx1, idx2 = config[0]
                     if idx2 < len(bytes_list):
                         val = (bytes_list[idx1] * 256 + bytes_list[idx2]) / 4 # Sirius RPM bölü 4
-                        self.data_cache[field] = {"val": val, "time": _now}
+                        self._update_sensor_cache(field, val, status=STATUS_VALID, timestamp=_now, source="MODE21")
                 else: # Single byte
                     byte_idx, scale, offset = config
                     if byte_idx < len(bytes_list):
                         val = (bytes_list[byte_idx] * scale) + offset
-                        self.data_cache[field] = {"val": val, "time": _now}
+                        self._update_sensor_cache(field, val, status=STATUS_VALID, timestamp=_now, source="MODE21")
             except Exception as e:
                 log_flush(f"[BLOCK_PARSE_ERROR] Sirius D42 hesaplama hatası ({field}): {e}")
 
