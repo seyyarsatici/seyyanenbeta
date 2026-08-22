@@ -94,11 +94,30 @@ STATUS_NRC = "NRC"                      # UDS negative response (7F..) alındı 
 STATUS_DID_MISMATCH = "DID_MISMATCH"    # Mode22 cevabı geldi ama beklenen DID echo edilmedi / bozuk format
 STATUS_EMPTY_RESPONSE = "EMPTY_RESPONSE" # İletişim tamamlandı/prompt geldi ama faydalı yük yok
 
-# --- Data Quality Sınıflandırması (Phase C-1) ---
-QUALITY_GOOD = "GOOD"        # Son okuma başarılı ve geçerli
-QUALITY_STALE = "STALE"      # Veri belirlenen tazelik sınırını aştı
-QUALITY_INVALID = "INVALID"  # NRC, DID_MISMATCH veya NO DATA yanıtı
-QUALITY_ERROR = "ERROR"      # TIMEOUT, NO_CONNECTION veya seri hatası
+# --- Data Quality Sınıflandırması (Phase C-1/C-3) ---
+QUALITY_GOOD = "GOOD"                # Son okuma başarılı ve geçerli
+QUALITY_STALE = "STALE"              # Veri belirlenen tazelik sınırını aştı
+QUALITY_INVALID = "INVALID"          # NRC, DID_MISMATCH veya NO DATA yanıtı
+QUALITY_ERROR = "ERROR"              # TIMEOUT, NO_CONNECTION veya seri hatası
+QUALITY_IMPLAUSIBLE = "IMPLAUSIBLE"  # Fiziksel plausibility zarfı dışında (Phase C-3)
+
+# --- Physical Plausibility Durumları (Phase C-3) ---
+PHYSICS_PLAUSIBLE = "PLAUSIBLE"
+PHYSICS_IMPLAUSIBLE_HIGH = "IMPLAUSIBLE_HIGH"
+PHYSICS_IMPLAUSIBLE_LOW = "IMPLAUSIBLE_LOW"
+PHYSICS_UNKNOWN = "UNKNOWN"
+
+# --- Physical Plausibility Sınırları (Geniş fiziksel limitler, Phase C-3) ---
+PHYSICAL_LIMITS = {
+    "RPM": (0, 15000),
+    "ECT": (-60, 180),
+    "MAP": (0, 300),
+    "SPEED": (0, 350),
+    "TPS": (0, 100),
+    "IAT": (-60, 180),
+    "STFT": (-100, 100),
+    "LTFT": (-100, 100),
+}
 
 def derive_quality_from_status(status: str) -> str:
     """STATUS_* değerini deterministik QUALITY_* sınıfına dönüştürür."""
@@ -972,13 +991,40 @@ class AutoExpertEngine:
         self.last_response_status = STATUS_TIMEOUT
         return []
 
+    def _check_physical_plausibility(self, name: str, value) -> str:
+        """
+        Phase C-3: Tekil sensör fiziksel plausibility kontrolü.
+        Değerin geniş fiziksel sınırlar (PHYSICAL_LIMITS) içinde olup olmadığını belirler.
+        """
+        if name not in PHYSICAL_LIMITS:
+            return PHYSICS_UNKNOWN
+
+        # Güvenli sayısal kontrol (bool tipleri int alt sınıfı olduğundan hariç tutulur)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return PHYSICS_UNKNOWN
+
+        min_val, max_val = PHYSICAL_LIMITS[name]
+
+        if value < min_val:
+            return PHYSICS_IMPLAUSIBLE_LOW
+        elif value > max_val:
+            return PHYSICS_IMPLAUSIBLE_HIGH
+        else:
+            return PHYSICS_PLAUSIBLE
+
     def _update_sensor_cache(self, name: str, value, status: str = STATUS_VALID, quality: str = None, timestamp: float = None, source: str = None) -> dict:
         """
-        V204 (Phase C-1/C-2): Sensor verisini zaman damgası, kalite ve geçmiş takibiyle kaydeder.
-        Mevcut 'val' ve 'time' yapısını %100 korur, bounded history'e sadece geçerli ölçümleri ekler.
+        V204 (Phase C-1/C-2/C-3): Sensor verisini zaman damgası, kalite, fiziksel plausibility ve geçmiş takibiyle kaydeder.
+        Mevcut 'val' ve 'time' yapısını %100 korur, bounded history'e sadece güvenilir geçerli ölçümleri ekler.
         """
         ts = timestamp if timestamp is not None else time.time()
         q = quality if quality is not None else derive_quality_from_status(status)
+
+        physics_status = None
+        if status == STATUS_VALID and value is not None:
+            physics_status = self._check_physical_plausibility(name, value)
+            if physics_status in (PHYSICS_IMPLAUSIBLE_LOW, PHYSICS_IMPLAUSIBLE_HIGH):
+                q = QUALITY_IMPLAUSIBLE
 
         entry = {
             "val": value,
@@ -988,11 +1034,13 @@ class AutoExpertEngine:
         }
         if source:
             entry["source"] = source
+        if physics_status is not None:
+            entry["physics_status"] = physics_status
 
         self.data_cache[name] = entry
         self.sensor_cache[name] = value
 
-        # Sadece STATUS_VALID ve geçerli değer üretilmişse geçmişe kaydet
+        # Sadece STATUS_VALID, QUALITY_GOOD ve geçerli değer üretilmişse güvenilir geçmişe kaydet
         if status == STATUS_VALID and q == QUALITY_GOOD and value is not None:
             if name not in self.sensor_history:
                 self.sensor_history[name] = deque(maxlen=self.history_max_len)
