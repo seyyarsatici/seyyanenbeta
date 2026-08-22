@@ -137,6 +137,27 @@ TEMPORAL_LIMITS = {
     "LTFT": 100,     # yüzde puanı / saniye
 }
 
+# --- Cross-Sensor Correlation Durumları (Phase C-5) ---
+CORRELATION_COHERENT = "COHERENT"
+CORRELATION_INCONSISTENT = "INCONSISTENT"
+CORRELATION_UNKNOWN = "UNKNOWN"
+
+# --- Cross-Sensor Correlation Sınırları (Konservatif tutarsızlık eşikleri, Phase C-5) ---
+CORRELATION_THRESHOLDS = {
+    "RPM_STANDSTILL_MAX": 50,       # RPM bu değerin altındayken araç hareket ediyorsa tutarsız
+    "SPEED_MOVING_MIN": 10,         # km/h
+    "TPS_HIGH": 80,                 # % gaz kelebeği açıklığı
+    "RPM_LOW": 1000,                # RPM
+    "RPM_RUNNING": 1500,            # RPM (motor yüke girecek devir)
+    "MAP_EXTREMELY_LOW": 20,        # kPa (aşırı düşük emme manifoldu basıncı)
+}
+
+# --- Vehicle Operating Envelope Durumları (Phase C-6) ---
+ENVELOPE_NORMAL = "NORMAL"
+ENVELOPE_OUT_OF_RANGE_HIGH = "OUT_OF_RANGE_HIGH"
+ENVELOPE_OUT_OF_RANGE_LOW = "OUT_OF_RANGE_LOW"
+ENVELOPE_UNKNOWN = "UNKNOWN"
+
 def derive_quality_from_status(status: str) -> str:
     """STATUS_* değerini deterministik QUALITY_* sınıfına dönüştürür."""
     if status == STATUS_VALID:
@@ -455,6 +476,8 @@ class AutoExpertEngine:
         self.sensor_cache = {}
         self.sensor_history = {}     # {sensor_name: deque(maxlen=50)}
         self.history_max_len = 50
+        self.last_correlation_results = []
+        self.vehicle_profile = None
         self.ecu_info = {"VIN": "Bilinmiyor"}
         self.desteklenen_pidler = []
         self.failed_pids = {}
@@ -1071,9 +1094,37 @@ class AutoExpertEngine:
         else:
             return TEMPORAL_PLAUSIBLE
 
+    def _check_vehicle_envelope(self, name: str, value, profile=None) -> str:
+        """
+        Phase C-6: Araca özel işletim zarfı (VehicleProfile) kontrolü.
+        Örn: Redline üstü devirleri tespit eder.
+        Genel fiziksel plausibility (C-3) veya zamansal plausibility (C-4) ile karıştırılmaz.
+        """
+        prof = profile if profile is not None else getattr(self, "vehicle_profile", None)
+        if prof is None:
+            return ENVELOPE_UNKNOWN
+
+        # Güvenli sayısal kontrol (bool tipleri hariç)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return ENVELOPE_UNKNOWN
+
+        # RULE 1: RPM vs Redline
+        if name == "RPM":
+            redline = getattr(prof, "redline", None)
+            if isinstance(redline, (int, float)) and not isinstance(redline, bool) and redline > 0:
+                if value > redline:
+                    return ENVELOPE_OUT_OF_RANGE_HIGH
+                elif value >= 0:
+                    return ENVELOPE_NORMAL
+                else:
+                    return ENVELOPE_OUT_OF_RANGE_LOW
+            return ENVELOPE_UNKNOWN
+
+        return ENVELOPE_UNKNOWN
+
     def _update_sensor_cache(self, name: str, value, status: str = STATUS_VALID, quality: str = None, timestamp: float = None, source: str = None) -> dict:
         """
-        V204 (Phase C-1/C-2/C-3/C-4): Sensor verisini zaman damgası, kalite, fiziksel & zamansal plausibility ve geçmiş takibiyle kaydeder.
+        V204 (Phase C-1/C-2/C-3/C-4/C-6): Sensor verisini zaman damgası, kalite, fiziksel & zamansal plausibility, araca özel zarf ve geçmiş takibiyle kaydeder.
         Mevcut 'val' ve 'time' yapısını %100 korur, bounded history'e sadece güvenilir geçerli ölçümleri ekler.
         """
         ts = timestamp if timestamp is not None else time.time()
@@ -1081,11 +1132,15 @@ class AutoExpertEngine:
 
         physics_status = None
         temporal_status = None
+        envelope_status = None
+
         if status == STATUS_VALID and value is not None:
             # 1. Zamansal plausibility (mevcut trusted history'ye göre hesaplanır, ekleme öncesi)
             temporal_status = self._check_temporal_plausibility(name, value, timestamp=ts)
             # 2. Fiziksel plausibility
             physics_status = self._check_physical_plausibility(name, value)
+            # 3. Araca özel işletim zarfı (Phase C-6)
+            envelope_status = self._check_vehicle_envelope(name, value)
 
             # Öncelik hiyerarşisi: Fiziksel İmplausibility > Zamansal Şüphe > Normal Kalite
             if physics_status in (PHYSICS_IMPLAUSIBLE_LOW, PHYSICS_IMPLAUSIBLE_HIGH):
@@ -1105,6 +1160,8 @@ class AutoExpertEngine:
             entry["physics_status"] = physics_status
         if temporal_status is not None:
             entry["temporal_status"] = temporal_status
+        if envelope_status is not None:
+            entry["envelope_status"] = envelope_status
 
         self.data_cache[name] = entry
         self.sensor_cache[name] = value
@@ -1140,6 +1197,115 @@ class AutoExpertEngine:
         if limit is not None and limit > 0:
             return items[-limit:]
         return items
+
+    def _get_trusted_sensor_value(self, name: str) -> float | None:
+        """
+        Phase C-5: Sadece STATUS_VALID, QUALITY_GOOD, taze ve sayısal olan sensör değerini döner.
+        IMPLAUSIBLE, SUSPECT, STALE, INVALID veya ERROR durumundaki veriler güvenilmezdir (None döner).
+        """
+        entry = self.data_cache.get(name)
+        if not isinstance(entry, dict):
+            return None
+
+        if entry.get("status") != STATUS_VALID:
+            return None
+
+        if entry.get("quality") != QUALITY_GOOD:
+            return None
+
+        if not self._is_sensor_fresh(name):
+            return None
+
+        val = entry.get("val")
+        if isinstance(val, bool) or not isinstance(val, (int, float)):
+            return None
+
+        return float(val)
+
+    def _check_cross_sensor_correlations(self) -> list:
+        """
+        Phase C-5: Anlık geçerli ve taze sensör verileri arasındaki çapraz tutarlılığı kontrol eder.
+        Sensör kalitelerini veya cache değerlerini ASLA mutasyona uğratmaz; yapılandırılmış kanıt döner.
+        """
+        results = []
+
+        # RULE 1: RPM vs SPEED at Standstill (RPM_VSS)
+        rpm_val = self._get_trusted_sensor_value("RPM")
+        speed_val = self._get_trusted_sensor_value("SPEED")
+        if rpm_val is None or speed_val is None:
+            results.append({
+                "rule": "RPM_VSS",
+                "status": CORRELATION_UNKNOWN,
+                "sensors": ["RPM", "SPEED"],
+                "details": "Eksik veya güvenilmez RPM/SPEED verisi"
+            })
+        elif rpm_val <= CORRELATION_THRESHOLDS["RPM_STANDSTILL_MAX"] and speed_val >= CORRELATION_THRESHOLDS["SPEED_MOVING_MIN"]:
+            results.append({
+                "rule": "RPM_VSS",
+                "status": CORRELATION_INCONSISTENT,
+                "sensors": ["RPM", "SPEED"],
+                "details": f"Motor duruyor (RPM={rpm_val}) ancak araç hareket halinde (SPEED={speed_val} km/h)"
+            })
+        else:
+            results.append({
+                "rule": "RPM_VSS",
+                "status": CORRELATION_COHERENT,
+                "sensors": ["RPM", "SPEED"],
+                "details": "RPM ve SPEED tutarlı"
+            })
+
+        # RULE 2: TPS vs RPM Response (TPS_RPM)
+        tps_val = self._get_trusted_sensor_value("TPS")
+        if tps_val is None or rpm_val is None:
+            results.append({
+                "rule": "TPS_RPM",
+                "status": CORRELATION_UNKNOWN,
+                "sensors": ["TPS", "RPM"],
+                "details": "Eksik veya güvenilmez TPS/RPM verisi"
+            })
+        elif tps_val >= CORRELATION_THRESHOLDS["TPS_HIGH"] and rpm_val <= CORRELATION_THRESHOLDS["RPM_LOW"]:
+            results.append({
+                "rule": "TPS_RPM",
+                "status": CORRELATION_INCONSISTENT,
+                "sensors": ["TPS", "RPM"],
+                "details": f"Yüksek gaz kelebeği (TPS={tps_val}%) ancak düşük motor devri (RPM={rpm_val})"
+            })
+        else:
+            results.append({
+                "rule": "TPS_RPM",
+                "status": CORRELATION_COHERENT,
+                "sensors": ["TPS", "RPM"],
+                "details": "TPS ve RPM tutarlı"
+            })
+
+        # RULE 3: TPS vs MAP Airflow/Load Consistency (TPS_MAP)
+        map_val = self._get_trusted_sensor_value("MAP")
+        if tps_val is None or rpm_val is None or map_val is None:
+            results.append({
+                "rule": "TPS_MAP",
+                "status": CORRELATION_UNKNOWN,
+                "sensors": ["TPS", "RPM", "MAP"],
+                "details": "Eksik veya güvenilmez TPS/RPM/MAP verisi"
+            })
+        elif (tps_val >= CORRELATION_THRESHOLDS["TPS_HIGH"] and 
+              rpm_val >= CORRELATION_THRESHOLDS["RPM_RUNNING"] and 
+              map_val <= CORRELATION_THRESHOLDS["MAP_EXTREMELY_LOW"]):
+            results.append({
+                "rule": "TPS_MAP",
+                "status": CORRELATION_INCONSISTENT,
+                "sensors": ["TPS", "RPM", "MAP"],
+                "details": f"Yüksek gaz kelebeği (TPS={tps_val}%) ve çalışan motorda (RPM={rpm_val}) aşırı düşük emme basıncı (MAP={map_val} kPa)"
+            })
+        else:
+            results.append({
+                "rule": "TPS_MAP",
+                "status": CORRELATION_COHERENT,
+                "sensors": ["TPS", "RPM", "MAP"],
+                "details": "TPS, RPM ve MAP tutarlı"
+            })
+
+        self.last_correlation_results = results
+        return results
 
     def tek_veri_oku(self, target_list=None, phase="UNKNOWN"):
         """

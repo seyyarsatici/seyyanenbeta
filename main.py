@@ -953,6 +953,8 @@ def rapor_olustur():
     else:
         arac_bilgisi['YakitSistemi'] = profil.fuel_type_display
 
+    engine.vehicle_profile = profil
+
     # --- EXPERTSystem başlatma (zaman damgasıyla veri analizi için) ---
     uzman_sistem = DiagnosticExpert(vehicle_profile={
         "yakit_tipi": profil.yakit_tipi,
