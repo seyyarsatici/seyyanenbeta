@@ -100,6 +100,7 @@ QUALITY_STALE = "STALE"              # Veri belirlenen tazelik sınırını aşt
 QUALITY_INVALID = "INVALID"          # NRC, DID_MISMATCH veya NO DATA yanıtı
 QUALITY_ERROR = "ERROR"              # TIMEOUT, NO_CONNECTION veya seri hatası
 QUALITY_IMPLAUSIBLE = "IMPLAUSIBLE"  # Fiziksel plausibility zarfı dışında (Phase C-3)
+QUALITY_SUSPECT = "SUSPECT"          # Zamansal rate-of-change şüpheli (Phase C-4)
 
 # --- Physical Plausibility Durumları (Phase C-3) ---
 PHYSICS_PLAUSIBLE = "PLAUSIBLE"
@@ -117,6 +118,23 @@ PHYSICAL_LIMITS = {
     "IAT": (-60, 180),
     "STFT": (-100, 100),
     "LTFT": (-100, 100),
+}
+
+# --- Temporal Plausibility Durumları (Phase C-4) ---
+TEMPORAL_PLAUSIBLE = "PLAUSIBLE"
+TEMPORAL_SUSPECT = "SUSPECT"
+TEMPORAL_UNKNOWN = "UNKNOWN"
+
+# --- Temporal Plausibility Sınırları (Maksimum mutlak değişim oranı: birim/saniye, Phase C-4) ---
+TEMPORAL_LIMITS = {
+    "RPM": 50000,    # RPM / saniye
+    "ECT": 20,       # °C / saniye
+    "MAP": 1000,     # kPa / saniye
+    "SPEED": 100,    # km/h / saniye
+    "TPS": 500,      # yüzde puanı / saniye
+    "IAT": 20,       # °C / saniye
+    "STFT": 500,     # yüzde puanı / saniye
+    "LTFT": 100,     # yüzde puanı / saniye
 }
 
 def derive_quality_from_status(status: str) -> str:
@@ -1012,19 +1030,68 @@ class AutoExpertEngine:
         else:
             return PHYSICS_PLAUSIBLE
 
+    def _check_temporal_plausibility(self, name: str, value, timestamp: float = None) -> str:
+        """
+        Phase C-4: Tekil sensör zamansal plausibility (rate-of-change) kontrolü.
+        En son güvenilir geçmiş ölçümüne (self.sensor_history) göre değişim hızını denetler.
+        """
+        if name not in TEMPORAL_LIMITS:
+            return TEMPORAL_UNKNOWN
+
+        # Güvenli sayısal kontrol (bool tipleri hariç)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return TEMPORAL_UNKNOWN
+
+        hist = self.sensor_history.get(name)
+        if not hist:
+            return TEMPORAL_UNKNOWN
+
+        prev_entry = hist[-1]
+        prev_val = prev_entry.get("val")
+        prev_time = prev_entry.get("time")
+
+        if isinstance(prev_val, bool) or not isinstance(prev_val, (int, float)):
+            return TEMPORAL_UNKNOWN
+
+        if not isinstance(prev_time, (int, float)):
+            return TEMPORAL_UNKNOWN
+
+        current_time = timestamp if timestamp is not None else time.time()
+        dt = current_time - prev_time
+
+        if dt <= 0:
+            return TEMPORAL_UNKNOWN
+
+        delta = abs(value - prev_val)
+        rate = delta / dt
+        max_rate = TEMPORAL_LIMITS[name]
+
+        if rate > max_rate:
+            return TEMPORAL_SUSPECT
+        else:
+            return TEMPORAL_PLAUSIBLE
+
     def _update_sensor_cache(self, name: str, value, status: str = STATUS_VALID, quality: str = None, timestamp: float = None, source: str = None) -> dict:
         """
-        V204 (Phase C-1/C-2/C-3): Sensor verisini zaman damgası, kalite, fiziksel plausibility ve geçmiş takibiyle kaydeder.
+        V204 (Phase C-1/C-2/C-3/C-4): Sensor verisini zaman damgası, kalite, fiziksel & zamansal plausibility ve geçmiş takibiyle kaydeder.
         Mevcut 'val' ve 'time' yapısını %100 korur, bounded history'e sadece güvenilir geçerli ölçümleri ekler.
         """
         ts = timestamp if timestamp is not None else time.time()
         q = quality if quality is not None else derive_quality_from_status(status)
 
         physics_status = None
+        temporal_status = None
         if status == STATUS_VALID and value is not None:
+            # 1. Zamansal plausibility (mevcut trusted history'ye göre hesaplanır, ekleme öncesi)
+            temporal_status = self._check_temporal_plausibility(name, value, timestamp=ts)
+            # 2. Fiziksel plausibility
             physics_status = self._check_physical_plausibility(name, value)
+
+            # Öncelik hiyerarşisi: Fiziksel İmplausibility > Zamansal Şüphe > Normal Kalite
             if physics_status in (PHYSICS_IMPLAUSIBLE_LOW, PHYSICS_IMPLAUSIBLE_HIGH):
                 q = QUALITY_IMPLAUSIBLE
+            elif temporal_status == TEMPORAL_SUSPECT:
+                q = QUALITY_SUSPECT
 
         entry = {
             "val": value,
@@ -1036,6 +1103,8 @@ class AutoExpertEngine:
             entry["source"] = source
         if physics_status is not None:
             entry["physics_status"] = physics_status
+        if temporal_status is not None:
+            entry["temporal_status"] = temporal_status
 
         self.data_cache[name] = entry
         self.sensor_cache[name] = value
