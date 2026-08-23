@@ -158,6 +158,51 @@ ENVELOPE_OUT_OF_RANGE_HIGH = "OUT_OF_RANGE_HIGH"
 ENVELOPE_OUT_OF_RANGE_LOW = "OUT_OF_RANGE_LOW"
 ENVELOPE_UNKNOWN = "UNKNOWN"
 
+# --- Diagnostic Evidence Durumları (Phase D-1) ---
+EVIDENCE_SUPPORTED = "SUPPORTED"
+EVIDENCE_CONTRADICTED = "CONTRADICTED"
+EVIDENCE_UNKNOWN = "UNKNOWN"
+
+# --- Diagnostic Evidence Önem Seviyeleri (Phase D-1) ---
+EVIDENCE_INFO = "INFO"
+EVIDENCE_WARNING = "WARNING"
+EVIDENCE_CRITICAL = "CRITICAL"
+
+# --- Diagnostic Evidence Kaynakları (Phase D-1) ---
+SOURCE_DIRECT = "DIRECT"
+SOURCE_CROSS_SENSOR = "CROSS_SENSOR"
+SOURCE_VEHICLE_PROFILE = "VEHICLE_PROFILE"
+SOURCE_TEMPORAL = "TEMPORAL"
+SOURCE_PHYSICAL = "PHYSICAL"
+
+# --- Fault Hypothesis Durumları (Phase D-2) ---
+HYPOTHESIS_SUPPORTED = "SUPPORTED"
+HYPOTHESIS_POSSIBLE = "POSSIBLE"
+HYPOTHESIS_CONTRADICTED = "CONTRADICTED"
+HYPOTHESIS_INSUFFICIENT = "INSUFFICIENT"
+
+# --- Fault Hypothesis Önem Seviyeleri (Phase D-2) ---
+HYPOTHESIS_INFO = "INFO"
+HYPOTHESIS_WARNING = "WARNING"
+HYPOTHESIS_CRITICAL = "CRITICAL"
+
+# --- Test Recommendation Durumları (Phase D-3) ---
+TEST_RECOMMENDED = "RECOMMENDED"
+TEST_OPTIONAL = "OPTIONAL"
+TEST_BLOCKED = "BLOCKED"
+TEST_NOT_APPLICABLE = "NOT_APPLICABLE"
+
+# --- Test Recommendation Öncelikleri (Phase D-3) ---
+TEST_PRIORITY_LOW = "LOW"
+TEST_PRIORITY_MEDIUM = "MEDIUM"
+TEST_PRIORITY_HIGH = "HIGH"
+
+# --- Test Recommendation Güvenlik Seviyeleri (Phase D-3) ---
+TEST_SAFE_READ = "SAFE_READ"
+TEST_GUIDED_DRIVER = "GUIDED_DRIVER"
+TEST_WORKSHOP = "WORKSHOP"
+TEST_ACTUATION = "ACTUATION"
+
 def derive_quality_from_status(status: str) -> str:
     """STATUS_* değerini deterministik QUALITY_* sınıfına dönüştürür."""
     if status == STATUS_VALID:
@@ -477,6 +522,9 @@ class AutoExpertEngine:
         self.sensor_history = {}     # {sensor_name: deque(maxlen=50)}
         self.history_max_len = 50
         self.last_correlation_results = []
+        self.last_evidence_results = []
+        self.last_hypothesis_results = []
+        self.last_test_recommendations = []
         self.vehicle_profile = None
         self.ecu_info = {"VIN": "Bilinmiyor"}
         self.desteklenen_pidler = []
@@ -1306,6 +1354,682 @@ class AutoExpertEngine:
 
         self.last_correlation_results = results
         return results
+
+    def _collect_diagnostic_evidence(self) -> list:
+        """
+        Phase D-1: Güvenilir C-katmanı ölçüm ve metaverilerini yapılandırılmış teşhis kanıtlarına dönüştürür.
+        Arıza teşhisi yapmaz, olasılık/puan üretmez, alt katmanları mutasyona uğratmaz.
+        """
+        evidence_list = []
+        seen_ids = set()
+
+        def add_evidence(ev_id: str, status: str, severity: str, sensors: list, observations: dict, reason: str, source: str):
+            if ev_id in seen_ids:
+                return
+            seen_ids.add(ev_id)
+            evidence_list.append({
+                "id": ev_id,
+                "status": status,
+                "severity": severity,
+                "sensors": sensors,
+                "observations": observations,
+                "reason": reason,
+                "source": source
+            })
+
+        # RULE 1: Engine State (RPM)
+        rpm_val = self._get_trusted_sensor_value("RPM")
+        if rpm_val is not None:
+            if rpm_val > 400:
+                add_evidence(
+                    ev_id="ENGINE_RUNNING",
+                    status=EVIDENCE_SUPPORTED,
+                    severity=EVIDENCE_INFO,
+                    sensors=["RPM"],
+                    observations={"RPM": rpm_val},
+                    reason="Motor çalışıyor (RPM > 400)",
+                    source=SOURCE_DIRECT
+                )
+            else:
+                add_evidence(
+                    ev_id="ENGINE_NOT_RUNNING",
+                    status=EVIDENCE_SUPPORTED,
+                    severity=EVIDENCE_INFO,
+                    sensors=["RPM"],
+                    observations={"RPM": rpm_val},
+                    reason="Motor çalışmıyor veya marş devrinde (RPM <= 400)",
+                    source=SOURCE_DIRECT
+                )
+        else:
+            add_evidence(
+                ev_id="ENGINE_RUNNING",
+                status=EVIDENCE_UNKNOWN,
+                severity=EVIDENCE_INFO,
+                sensors=["RPM"],
+                observations={},
+                reason="RPM verisi eksik veya güvenilmez",
+                source=SOURCE_DIRECT
+            )
+
+        # RULE 2: Coolant Temperature (ECT vs Vehicle Profile Target)
+        ect_val = self._get_trusted_sensor_value("ECT")
+        prof = getattr(self, "vehicle_profile", None)
+        hedef_ect = getattr(prof, "hedef_ect", None) if prof is not None else None
+
+        if ect_val is not None and isinstance(hedef_ect, (int, float)) and not isinstance(hedef_ect, bool) and hedef_ect > 0:
+            if rpm_val is not None and rpm_val > 400:
+                if ect_val < (hedef_ect - 25):  # örn. 90°C hedefte 65°C altı
+                    add_evidence(
+                        ev_id="ECT_TOO_COLD",
+                        status=EVIDENCE_SUPPORTED,
+                        severity=EVIDENCE_WARNING,
+                        sensors=["ECT"],
+                        observations={"ECT": ect_val, "target_ect": hedef_ect},
+                        reason=f"Soğutma suyu sıcaklığı hedef değerin ({hedef_ect}°C) belirgin altında ({ect_val}°C)",
+                        source=SOURCE_VEHICLE_PROFILE
+                    )
+                elif ect_val > 115:
+                    add_evidence(
+                        ev_id="ECT_TOO_HOT",
+                        status=EVIDENCE_SUPPORTED,
+                        severity=EVIDENCE_WARNING,
+                        sensors=["ECT"],
+                        observations={"ECT": ect_val, "target_ect": hedef_ect},
+                        reason=f"Soğutma suyu sıcaklığı aşırı yüksek ({ect_val}°C)",
+                        source=SOURCE_DIRECT
+                    )
+        elif ect_val is None and prof is not None and isinstance(hedef_ect, (int, float)) and hedef_ect > 0:
+            add_evidence(
+                ev_id="ECT_TOO_COLD",
+                status=EVIDENCE_UNKNOWN,
+                severity=EVIDENCE_INFO,
+                sensors=["ECT"],
+                observations={},
+                reason="ECT verisi eksik veya güvenilmez",
+                source=SOURCE_VEHICLE_PROFILE
+            )
+
+        # RULE 3: Fuel Trim / Mixture (STFT & LTFT)
+        stft_val = self._get_trusted_sensor_value("STFT")
+        ltft_val = self._get_trusted_sensor_value("LTFT")
+        trim_obs = {}
+        trim_sensors = []
+        if stft_val is not None:
+            trim_obs["STFT"] = stft_val
+            trim_sensors.append("STFT")
+        if ltft_val is not None:
+            trim_obs["LTFT"] = ltft_val
+            trim_sensors.append("LTFT")
+
+        if trim_sensors:
+            is_pos = (stft_val is not None and stft_val >= 15.0) or (ltft_val is not None and ltft_val >= 15.0)
+            is_neg = (stft_val is not None and stft_val <= -15.0) or (ltft_val is not None and ltft_val <= -15.0)
+
+            if is_pos:
+                add_evidence(
+                    ev_id="FUEL_TRIM_POSITIVE",
+                    status=EVIDENCE_SUPPORTED,
+                    severity=EVIDENCE_WARNING,
+                    sensors=trim_sensors,
+                    observations=trim_obs,
+                    reason="Yakıt trim düzeltmesi belirgin pozitif (zenginleştirme ihtiyacı)",
+                    source=SOURCE_DIRECT
+                )
+            elif is_neg:
+                add_evidence(
+                    ev_id="FUEL_TRIM_NEGATIVE",
+                    status=EVIDENCE_SUPPORTED,
+                    severity=EVIDENCE_WARNING,
+                    sensors=trim_sensors,
+                    observations=trim_obs,
+                    reason="Yakıt trim düzeltmesi belirgin negatif (fakirleştirme ihtiyacı)",
+                    source=SOURCE_DIRECT
+                )
+
+        # RULE 4: Airflow / Load (MAF)
+        maf_val = self._get_trusted_sensor_value("MAF")
+        if maf_val is not None and rpm_val is not None and rpm_val >= 1000:
+            if maf_val <= 0.5:
+                add_evidence(
+                    ev_id="AIRFLOW_LOW",
+                    status=EVIDENCE_SUPPORTED,
+                    severity=EVIDENCE_WARNING,
+                    sensors=["MAF", "RPM"],
+                    observations={"MAF": maf_val, "RPM": rpm_val},
+                    reason="Motor çalışırken hava akış ölçümü (MAF) sıfıra yakın",
+                    source=SOURCE_DIRECT
+                )
+
+        # RULE 5: Sensor Agreement (C-5 Cross-Sensor Correlation reuse)
+        corr_results = getattr(self, "last_correlation_results", [])
+        if not corr_results:
+            corr_results = self._check_cross_sensor_correlations()
+
+        for r in corr_results:
+            if r.get("status") == CORRELATION_INCONSISTENT:
+                add_evidence(
+                    ev_id="SENSOR_CORRELATION_INCONSISTENT",
+                    status=EVIDENCE_SUPPORTED,
+                    severity=EVIDENCE_WARNING,
+                    sensors=r.get("sensors", []),
+                    observations={"rule": r.get("rule")},
+                    reason=r.get("details", "Sensörler arası tutarsızlık tespit edildi"),
+                    source=SOURCE_CROSS_SENSOR
+                )
+
+        # RULE 6: Vehicle Operating Envelope (C-6)
+        for s_name in ("RPM", "SPEED", "ECT", "MAP", "TPS"):
+            s_entry = self.data_cache.get(s_name)
+            if isinstance(s_entry, dict) and s_entry.get("status") == STATUS_VALID and s_entry.get("quality") == QUALITY_GOOD:
+                env_status = s_entry.get("envelope_status")
+                if env_status in (ENVELOPE_OUT_OF_RANGE_HIGH, ENVELOPE_OUT_OF_RANGE_LOW):
+                    add_evidence(
+                        ev_id="VEHICLE_ENVELOPE_EXCEEDED",
+                        status=EVIDENCE_SUPPORTED,
+                        severity=EVIDENCE_WARNING,
+                        sensors=[s_name],
+                        observations={s_name: s_entry.get("val"), "envelope_status": env_status},
+                        reason=f"{s_name} sensör değeri ({s_entry.get('val')}) araca özel çalışma zarfını aştı ({env_status})",
+                        source=SOURCE_VEHICLE_PROFILE
+                    )
+
+        # RULE 7: Sensor Reliability Meta-Evidence (optional C-3/C-4 meta-evidence)
+        for s_name, s_entry in self.data_cache.items():
+            if isinstance(s_entry, dict):
+                q = s_entry.get("quality")
+                if q == QUALITY_IMPLAUSIBLE:
+                    add_evidence(
+                        ev_id="SENSOR_PHYSICAL_IMPLAUSIBLE",
+                        status=EVIDENCE_SUPPORTED,
+                        severity=EVIDENCE_WARNING,
+                        sensors=[s_name],
+                        observations={s_name: s_entry.get("val"), "physics_status": s_entry.get("physics_status")},
+                        reason=f"{s_name} sensörü fiziksel sınırların dışında ölçüm üretiyor",
+                        source=SOURCE_PHYSICAL
+                    )
+                elif q == QUALITY_SUSPECT:
+                    add_evidence(
+                        ev_id="SENSOR_TEMPORAL_SUSPECT",
+                        status=EVIDENCE_SUPPORTED,
+                        severity=EVIDENCE_WARNING,
+                        sensors=[s_name],
+                        observations={s_name: s_entry.get("val"), "temporal_status": s_entry.get("temporal_status")},
+                        reason=f"{s_name} sensöründe şüpheli zamansal değişim hızı tespit edildi",
+                        source=SOURCE_TEMPORAL
+                    )
+
+        self.last_evidence_results = evidence_list
+        return evidence_list
+
+    def _infer_fault_hypotheses(self, evidence=None) -> list:
+        """
+        Phase D-2: Yapılandırılmış D-1 teşhis kanıtlarından deterministik arıza hipotezleri üretir.
+        Kesin arıza teşhisi koymaz, onarım tavsiyesi vermez (next_step=None), olasılık puanı üretmez.
+        """
+        ev_list = evidence if evidence is not None else self._collect_diagnostic_evidence()
+
+        # Kanıtları ID'lerine ve durumlarına göre indeksle
+        supported_ev_ids = {ev["id"] for ev in ev_list if isinstance(ev, dict) and ev.get("status") == EVIDENCE_SUPPORTED}
+        all_ev_ids = {ev["id"] for ev in ev_list if isinstance(ev, dict)}
+
+        # Minimal tanımsal bağlam (context)
+        prof = getattr(self, "vehicle_profile", None)
+        motor_kodu = getattr(prof, "motor_kodu", "UNKNOWN") if prof is not None else "UNKNOWN"
+        yakit_tipi = getattr(prof, "yakit_tipi", "UNKNOWN") if prof is not None else "UNKNOWN"
+
+        engine_state = "UNKNOWN"
+        if "ENGINE_RUNNING" in supported_ev_ids:
+            engine_state = "RUNNING"
+        elif "ENGINE_NOT_RUNNING" in supported_ev_ids:
+            engine_state = "NOT_RUNNING"
+
+        ctx = {
+            "engine_state": engine_state,
+            "profile": motor_kodu,
+            "fuel_type": yakit_tipi
+        }
+
+        hypotheses = []
+
+        # 1. HYPOTHESIS: FUEL_SYSTEM_LEAN
+        lean_supporting = []
+        lean_contradicting = []
+        lean_missing = []
+
+        if "FUEL_TRIM_NEGATIVE" in supported_ev_ids:
+            lean_contradicting.append("FUEL_TRIM_NEGATIVE")
+        if "FUEL_TRIM_POSITIVE" in supported_ev_ids:
+            lean_supporting.append("FUEL_TRIM_POSITIVE")
+        if "AIRFLOW_LOW" in supported_ev_ids:
+            lean_supporting.append("AIRFLOW_LOW")
+        if "ENGINE_RUNNING" in supported_ev_ids:
+            lean_supporting.append("ENGINE_RUNNING")
+        elif "ENGINE_RUNNING" not in all_ev_ids or (any(ev.get("id") == "ENGINE_RUNNING" and ev.get("status") == EVIDENCE_UNKNOWN for ev in ev_list)):
+            lean_missing.append("ENGINE_RUNNING")
+
+        if lean_contradicting and ("FUEL_TRIM_POSITIVE" not in supported_ev_ids):
+            lean_status = HYPOTHESIS_CONTRADICTED
+            lean_reason = "Negatif yakıt trim kanıtı karışımın fakir olduğu hipoteziyle çelişiyor"
+        elif "FUEL_TRIM_POSITIVE" in supported_ev_ids:
+            if len(lean_supporting) >= 2 and not lean_contradicting:
+                lean_status = HYPOTHESIS_SUPPORTED
+                lean_reason = "Pozitif yakıt trim düzeltmesi ve çalışma koşulları fakir karışım hipotezini destekliyor"
+            else:
+                lean_status = HYPOTHESIS_POSSIBLE
+                lean_reason = "Pozitif yakıt trim kanıtı mevcut ancak ek doğrulayıcı kanıtlar sınırlı"
+        else:
+            lean_status = HYPOTHESIS_INSUFFICIENT
+            lean_reason = "Fakir karışım hipotezini değerlendirmek için yeterli kanıt yok"
+
+        lean_supporting = list(dict.fromkeys(lean_supporting))
+        lean_contradicting = list(dict.fromkeys(lean_contradicting))
+        lean_missing = list(dict.fromkeys(lean_missing))
+
+        hypotheses.append({
+            "id": "FUEL_SYSTEM_LEAN",
+            "status": lean_status,
+            "severity": HYPOTHESIS_WARNING,
+            "title": "Fuel mixture appears lean",
+            "supporting_evidence": lean_supporting,
+            "contradicting_evidence": lean_contradicting,
+            "missing_evidence": lean_missing,
+            "reason": lean_reason,
+            "context": ctx,
+            "next_step": None
+        })
+
+        # 2. HYPOTHESIS: FUEL_SYSTEM_RICH
+        rich_supporting = []
+        rich_contradicting = []
+        rich_missing = []
+
+        if "FUEL_TRIM_POSITIVE" in supported_ev_ids:
+            rich_contradicting.append("FUEL_TRIM_POSITIVE")
+        if "FUEL_TRIM_NEGATIVE" in supported_ev_ids:
+            rich_supporting.append("FUEL_TRIM_NEGATIVE")
+        if "AIRFLOW_HIGH" in supported_ev_ids:
+            rich_supporting.append("AIRFLOW_HIGH")
+        if "ENGINE_RUNNING" in supported_ev_ids:
+            rich_supporting.append("ENGINE_RUNNING")
+        elif "ENGINE_RUNNING" not in all_ev_ids or (any(ev.get("id") == "ENGINE_RUNNING" and ev.get("status") == EVIDENCE_UNKNOWN for ev in ev_list)):
+            rich_missing.append("ENGINE_RUNNING")
+
+        if rich_contradicting and ("FUEL_TRIM_NEGATIVE" not in supported_ev_ids):
+            rich_status = HYPOTHESIS_CONTRADICTED
+            rich_reason = "Pozitif yakıt trim kanıtı karışımın zengin olduğu hipoteziyle çelişiyor"
+        elif "FUEL_TRIM_NEGATIVE" in supported_ev_ids:
+            if len(rich_supporting) >= 2 and not rich_contradicting:
+                rich_status = HYPOTHESIS_SUPPORTED
+                rich_reason = "Negatif yakıt trim düzeltmesi ve çalışma koşulları zengin karışım hipotezini destekliyor"
+            else:
+                rich_status = HYPOTHESIS_POSSIBLE
+                rich_reason = "Negatif yakıt trim kanıtı mevcut ancak ek doğrulayıcı kanıtlar sınırlı"
+        else:
+            rich_status = HYPOTHESIS_INSUFFICIENT
+            rich_reason = "Zengin karışım hipotezini değerlendirmek için yeterli kanıt yok"
+
+        rich_supporting = list(dict.fromkeys(rich_supporting))
+        rich_contradicting = list(dict.fromkeys(rich_contradicting))
+        rich_missing = list(dict.fromkeys(rich_missing))
+
+        hypotheses.append({
+            "id": "FUEL_SYSTEM_RICH",
+            "status": rich_status,
+            "severity": HYPOTHESIS_WARNING,
+            "title": "Fuel mixture appears rich",
+            "supporting_evidence": rich_supporting,
+            "contradicting_evidence": rich_contradicting,
+            "missing_evidence": rich_missing,
+            "reason": rich_reason,
+            "context": ctx,
+            "next_step": None
+        })
+
+        # 3. HYPOTHESIS: AIRFLOW_MEASUREMENT_ISSUE
+        air_supporting = []
+        air_contradicting = []
+        air_missing = []
+
+        if "AIRFLOW_LOW" in supported_ev_ids:
+            air_supporting.append("AIRFLOW_LOW")
+        if "AIRFLOW_HIGH" in supported_ev_ids:
+            air_supporting.append("AIRFLOW_HIGH")
+        if "SENSOR_CORRELATION_INCONSISTENT" in supported_ev_ids:
+            air_supporting.append("SENSOR_CORRELATION_INCONSISTENT")
+        if "ENGINE_RUNNING" in supported_ev_ids:
+            air_supporting.append("ENGINE_RUNNING")
+
+        if "AIRFLOW_LOW" in supported_ev_ids or "AIRFLOW_HIGH" in supported_ev_ids:
+            if ("ENGINE_RUNNING" in supported_ev_ids) or ("SENSOR_CORRELATION_INCONSISTENT" in supported_ev_ids):
+                air_status = HYPOTHESIS_SUPPORTED
+                air_reason = "Motor çalışırken hava akış ölçümündeki anormallik hava ölçüm tutarsızlığı hipotezini destekliyor"
+            else:
+                air_status = HYPOTHESIS_POSSIBLE
+                air_reason = "Hava akış anormalliği tespit edildi ancak motor çalışma durumu tam doğrulanamadı"
+        else:
+            air_status = HYPOTHESIS_INSUFFICIENT
+            air_reason = "Hava akış ölçümüyle ilgili bir anormallik kanıtı bulunmuyor"
+
+        air_supporting = list(dict.fromkeys(air_supporting))
+        air_contradicting = list(dict.fromkeys(air_contradicting))
+        air_missing = list(dict.fromkeys(air_missing))
+
+        hypotheses.append({
+            "id": "AIRFLOW_MEASUREMENT_ISSUE",
+            "status": air_status,
+            "severity": HYPOTHESIS_WARNING,
+            "title": "Airflow measurement or airflow estimation appears inconsistent",
+            "supporting_evidence": air_supporting,
+            "contradicting_evidence": air_contradicting,
+            "missing_evidence": air_missing,
+            "reason": air_reason,
+            "context": ctx,
+            "next_step": None
+        })
+
+        # 4. HYPOTHESIS: COOLING_SYSTEM_ISSUE
+        cool_supporting = []
+        cool_contradicting = []
+        cool_missing = []
+
+        if "ECT_TOO_COLD" in supported_ev_ids:
+            cool_supporting.append("ECT_TOO_COLD")
+        if "ECT_TOO_HOT" in supported_ev_ids:
+            cool_supporting.append("ECT_TOO_HOT")
+        if "ENGINE_RUNNING" in supported_ev_ids:
+            cool_supporting.append("ENGINE_RUNNING")
+
+        if "ECT_TOO_COLD" in supported_ev_ids or "ECT_TOO_HOT" in supported_ev_ids:
+            if "ENGINE_RUNNING" in supported_ev_ids:
+                cool_status = HYPOTHESIS_SUPPORTED
+                cool_reason = "Motor çalışırken soğutma sıvısı sıcaklığındaki sapma soğutma sistemi anormalliği hipotezini destekliyor"
+            else:
+                cool_status = HYPOTHESIS_POSSIBLE
+                cool_reason = "Sıcaklık sapması tespit edildi ancak motor çalışma doğrulaması eksik"
+        else:
+            cool_status = HYPOTHESIS_INSUFFICIENT
+            cool_reason = "Soğutma sıvısı sıcaklığı anormalliği kanıtı bulunmuyor"
+
+        cool_supporting = list(dict.fromkeys(cool_supporting))
+        cool_contradicting = list(dict.fromkeys(cool_contradicting))
+        cool_missing = list(dict.fromkeys(cool_missing))
+
+        hypotheses.append({
+            "id": "COOLING_SYSTEM_ISSUE",
+            "status": cool_status,
+            "severity": HYPOTHESIS_WARNING,
+            "title": "Engine coolant temperature behavior is abnormal",
+            "supporting_evidence": cool_supporting,
+            "contradicting_evidence": cool_contradicting,
+            "missing_evidence": cool_missing,
+            "reason": cool_reason,
+            "context": ctx,
+            "next_step": None
+        })
+
+        # 5. HYPOTHESIS: SENSOR_CORRELATION_ISSUE
+        corr_supporting = []
+        corr_contradicting = []
+        corr_missing = []
+
+        if "SENSOR_CORRELATION_INCONSISTENT" in supported_ev_ids:
+            corr_supporting.append("SENSOR_CORRELATION_INCONSISTENT")
+            corr_status = HYPOTHESIS_SUPPORTED
+            corr_reason = "Çoklu sensör çapraz tutarlılık kontrolünde fiziksel/çalışma tutarsızlığı tespit edildi"
+        else:
+            corr_status = HYPOTHESIS_INSUFFICIENT
+            corr_reason = "Sensörler arası belirgin bir tutarsızlık kanıtı bulunmuyor"
+
+        corr_supporting = list(dict.fromkeys(corr_supporting))
+        corr_contradicting = list(dict.fromkeys(corr_contradicting))
+        corr_missing = list(dict.fromkeys(corr_missing))
+
+        hypotheses.append({
+            "id": "SENSOR_CORRELATION_ISSUE",
+            "status": corr_status,
+            "severity": HYPOTHESIS_WARNING,
+            "title": "Multi-sensor correlation inconsistency detected",
+            "supporting_evidence": corr_supporting,
+            "contradicting_evidence": corr_contradicting,
+            "missing_evidence": corr_missing,
+            "reason": corr_reason,
+            "context": ctx,
+            "next_step": None
+        })
+
+        self.last_hypothesis_results = hypotheses
+        return hypotheses
+
+    def _recommend_diagnostic_tests(self, hypotheses=None) -> list:
+        """
+        Phase D-3: Aktif arıza hipotezleri ve eksik kanıtlardan deterministik test önerileri üretir.
+        Onarım/parça değişimi tavsiyesi vermez, aktüatör çalıştırmaz, UDS/CAN yazma komutu üretmez.
+        """
+        hyp_list = hypotheses if hypotheses is not None else self._infer_fault_hypotheses()
+
+        # İlgili hipotez durumlarını haritalandır
+        hyp_by_id = {h["id"]: h for h in hyp_list if isinstance(h, dict)}
+        supported_hyp_ids = {h["id"] for h in hyp_list if isinstance(h, dict) and h.get("status") == HYPOTHESIS_SUPPORTED}
+        possible_hyp_ids = {h["id"] for h in hyp_list if isinstance(h, dict) and h.get("status") == HYPOTHESIS_POSSIBLE}
+
+        # Eksik kanıtları topla
+        all_missing_evidence = set()
+        for h in hyp_list:
+            if isinstance(h, dict):
+                all_missing_evidence.update(h.get("missing_evidence", []))
+
+        # Test havuzu (test catalog)
+        test_candidates = {}
+
+        def register_candidate(t_id: str, priority: str, safety: str, title: str, purpose: str, 
+                               hyp_id: str, required_inputs: list, procedure: list, 
+                               expected: str, interpretation: str, prerequisites: list = None,
+                               is_optional: bool = False):
+            if t_id not in test_candidates:
+                test_candidates[t_id] = {
+                    "id": t_id,
+                    "status": TEST_OPTIONAL if is_optional else TEST_RECOMMENDED,
+                    "priority": priority,
+                    "safety": safety,
+                    "title": title,
+                    "purpose": purpose,
+                    "hypotheses": [hyp_id] if hyp_id else [],
+                    "required_inputs": list(required_inputs),
+                    "procedure": list(procedure),
+                    "expected_observation": expected,
+                    "interpretation": interpretation,
+                    "prerequisites": list(prerequisites) if prerequisites else [],
+                    "blocking_reason": None,
+                    "result": None
+                }
+            else:
+                # Hipotezi birleştir (deduplication)
+                if hyp_id and hyp_id not in test_candidates[t_id]["hypotheses"]:
+                    test_candidates[t_id]["hypotheses"].append(hyp_id)
+                # Önceliği yükselt (HIGH > MEDIUM > LOW)
+                priority_ranks = {TEST_PRIORITY_HIGH: 1, TEST_PRIORITY_MEDIUM: 2, TEST_PRIORITY_LOW: 3}
+                if priority_ranks.get(priority, 3) < priority_ranks.get(test_candidates[t_id]["priority"], 3):
+                    test_candidates[t_id]["priority"] = priority
+                if not is_optional:
+                    test_candidates[t_id]["status"] = TEST_RECOMMENDED
+
+        # 1. FUEL_SYSTEM_LEAN & FUEL_SYSTEM_RICH -> CHECK_FUEL_TRIM
+        for h_id in ("FUEL_SYSTEM_LEAN", "FUEL_SYSTEM_RICH"):
+            if h_id in supported_hyp_ids or h_id in possible_hyp_ids:
+                is_supp = h_id in supported_hyp_ids
+                register_candidate(
+                    t_id="CHECK_FUEL_TRIM",
+                    priority=TEST_PRIORITY_HIGH if is_supp else TEST_PRIORITY_MEDIUM,
+                    safety=TEST_SAFE_READ,
+                    title="Kısa ve uzun vadeli yakıt trimlerini yeniden gözlemle",
+                    purpose="Yakıt trim düzeltmesinin rölanti ve sürüş koşullarında kalıcı olup olmadığını belirlemek.",
+                    hyp_id=h_id,
+                    required_inputs=["STFT", "LTFT", "ECT", "RPM"],
+                    procedure=[
+                        "Motorun normal çalışma sıcaklığına ulaşmasını sağlayın",
+                        "Rölantide STFT ve LTFT değerlerini gözlemleyin",
+                        "Sabit hızda (cruise) STFT ve LTFT değerlerini gözlemleyin"
+                    ],
+                    expected="Kalıcı pozitif veya negatif trim hipotezi destekler; trimlerin normale dönmesi şüpheyi azaltır.",
+                    interpretation="Geçici yakıt adaptasyonunu kalıcı karışım probleminden ayırt etmeye yarar.",
+                    prerequisites=["Motor çalışır durumda olmalı"],
+                    is_optional=not is_supp
+                )
+
+        # 2. AIRFLOW_MEASUREMENT_ISSUE / LEAN / RICH -> CHECK_MAF_AIRFLOW_CORRELATION
+        for h_id in ("AIRFLOW_MEASUREMENT_ISSUE", "FUEL_SYSTEM_LEAN", "FUEL_SYSTEM_RICH"):
+            if h_id in supported_hyp_ids or h_id in possible_hyp_ids:
+                is_air_supp = ("AIRFLOW_MEASUREMENT_ISSUE" in supported_hyp_ids)
+                register_candidate(
+                    t_id="CHECK_MAF_AIRFLOW_CORRELATION",
+                    priority=TEST_PRIORITY_HIGH if is_air_supp else TEST_PRIORITY_MEDIUM,
+                    safety=TEST_GUIDED_DRIVER,
+                    title="MAF hava akış ölçümünü motor devri ve manifold basıncıyla karşılaştır",
+                    purpose="Hava akış ölçümünün farklı devir ve yük şartlarında tutarlı tepki verip vermediğini belirlemek.",
+                    hyp_id=h_id,
+                    required_inputs=["MAF", "RPM", "MAP"],
+                    procedure=[
+                        "Rölantiden kademeli olarak 2500 RPM'e kadar devri artırın",
+                        "MAF hava kütle akışındaki artışın gaz pedalı ve devirle uyumunu gözlemleyin"
+                    ],
+                    expected="Devir artışıyla uyumlu lineer MAF artışı hava ölçüm tutarlılığını gösterir.",
+                    interpretation="Hava ölçüm sapması ile mekanik vakum/basınç problemlerini ayırt etmeye yardım eder.",
+                    prerequisites=["MAF sensörü mevcut ve çalışır olmalı"],
+                    is_optional=(not is_air_supp and h_id not in supported_hyp_ids)
+                )
+
+        # 3. MISSING EVIDENCE -> CHECK_ENGINE_STATE_AND_TEMPERATURE
+        if "ENGINE_RUNNING" in all_missing_evidence or "ECT" in all_missing_evidence:
+            register_candidate(
+                t_id="CHECK_ENGINE_STATE_AND_TEMPERATURE",
+                priority=TEST_PRIORITY_MEDIUM,
+                safety=TEST_SAFE_READ,
+                title="Motor çalışma durumunu ve sıcaklık kararlılığını doğrula",
+                purpose="Tanısal çıkarımların sağlıklı yapılabilmesi için motorun çalıştığını ve işletim sıcaklığına ulaştığını doğrulamak.",
+                hyp_id="",
+                required_inputs=["RPM", "ECT"],
+                procedure=[
+                    "Motor devrinin rölanti bandında kararlı olduğunu teyit edin",
+                    "Soğutma suyu sıcaklığının hedef işletim aralığına ulaştığını gözlemleyin"
+                ],
+                expected="Motorun kararlı rölantide ve hedef çalışma sıcaklığında olması.",
+                interpretation="Eksik çalışma bağlamını tamamlar.",
+                prerequisites=[],
+                is_optional=False
+            )
+
+        # 4. AIRFLOW_MEASUREMENT_ISSUE -> CHECK_MAP_RESPONSE
+        if "AIRFLOW_MEASUREMENT_ISSUE" in supported_hyp_ids or "AIRFLOW_MEASUREMENT_ISSUE" in possible_hyp_ids:
+            register_candidate(
+                t_id="CHECK_MAP_RESPONSE",
+                priority=TEST_PRIORITY_MEDIUM,
+                safety=TEST_GUIDED_DRIVER,
+                title="Manifold mutlak basınç (MAP) tepkisini gözlemle",
+                purpose="Gaz kelebeği hareketlerinde manifold vakum/basınç değişiminin tutarlılığını test etmek.",
+                hyp_id="AIRFLOW_MEASUREMENT_ISSUE",
+                required_inputs=["MAP", "TPS", "RPM"],
+                procedure=[
+                    "Farklı gaz kelebeği açılarında MAP değerinin değişimini izleyin"
+                ],
+                expected="Gaz açıldığında MAP basıncının atmosferik basınca yaklaşması beklenir.",
+                interpretation="Manifold basınç sensörü tepkisini doğrular.",
+                prerequisites=["MAP sensörü mevcut olmalı"],
+                is_optional="AIRFLOW_MEASUREMENT_ISSUE" not in supported_hyp_ids
+            )
+
+        # 5. COOLING_SYSTEM_ISSUE -> CHECK_ECT_WARMUP & CHECK_ECT_STABILITY
+        if "COOLING_SYSTEM_ISSUE" in supported_hyp_ids or "COOLING_SYSTEM_ISSUE" in possible_hyp_ids:
+            is_cool_supp = "COOLING_SYSTEM_ISSUE" in supported_hyp_ids
+            register_candidate(
+                t_id="CHECK_ECT_WARMUP",
+                priority=TEST_PRIORITY_HIGH if is_cool_supp else TEST_PRIORITY_MEDIUM,
+                safety=TEST_SAFE_READ,
+                title="Soğutma suyu sıcaklık ısınma eğrisini gözlemle",
+                purpose="Motorun soğuk çalışmadan hedef sıcaklığa ulaşma süresini ve termal kararlılığını izlemek.",
+                hyp_id="COOLING_SYSTEM_ISSUE",
+                required_inputs=["ECT", "RPM"],
+                procedure=[
+                    "Motoru çalıştırarak ECT değerinin hedef sıcaklığa yükselişini izleyin"
+                ],
+                expected="Düzenli ve kademeli sıcaklık artışı ile hedef sıcaklıkta kararlı kalması beklenir.",
+                interpretation="Termal döngü anormalliklerini belirler.",
+                prerequisites=["Motor çalışır durumda olmalı"],
+                is_optional=not is_cool_supp
+            )
+            register_candidate(
+                t_id="CHECK_ECT_STABILITY",
+                priority=TEST_PRIORITY_MEDIUM,
+                safety=TEST_SAFE_READ,
+                title="Çalışma sıcaklığında ECT kararlılığını doğrula",
+                purpose="Motor sıcakken ECT dalgalanması veya aşırı soğuma olup olmadığını belirlemek.",
+                hyp_id="COOLING_SYSTEM_ISSUE",
+                required_inputs=["ECT"],
+                procedure=[
+                    "Çalışma sıcaklığına ulaşmış motorda sürüş ve dur-kalk esnasında ECT stabilitesini izleyin"
+                ],
+                expected="ECT değerinin hedef sıcaklık etrafında dar bir tolerans bandında kalması.",
+                interpretation="Aşırı soğuma veya aşırı ısınma eğilimlerini ayırt eder.",
+                prerequisites=[],
+                is_optional=not is_cool_supp
+            )
+
+        # 6. SENSOR_CORRELATION_ISSUE -> CHECK_SENSOR_REPEATABILITY
+        if "SENSOR_CORRELATION_ISSUE" in supported_hyp_ids or "SENSOR_CORRELATION_ISSUE" in possible_hyp_ids:
+            is_corr_supp = "SENSOR_CORRELATION_ISSUE" in supported_hyp_ids
+            register_candidate(
+                t_id="CHECK_SENSOR_REPEATABILITY",
+                priority=TEST_PRIORITY_HIGH if is_corr_supp else TEST_PRIORITY_MEDIUM,
+                safety=TEST_SAFE_READ,
+                title="Sensör çapraz tutarlılığını aynı koşulda tekrar test et",
+                purpose="Algılanan sensör uyumsuzluğunun geçici bir anomali mi yoksa kalıcı bir sinyal hatası mı olduğunu teyit etmek.",
+                hyp_id="SENSOR_CORRELATION_ISSUE",
+                required_inputs=["RPM", "SPEED"],
+                procedure=[
+                    "Uyumsuzluğun gerçekleştiği sürüş/durma koşulunu güvenli şekilde tekrarlayın",
+                    "Sensör ölçümlerinin eşzamanlı tutarlılığını izleyin"
+                ],
+                expected="Koşul tekrarında aynı uyumsuzluğun tekrarlanması kalıcı sinyal tutarsızlığını doğrular.",
+                interpretation="Anlık veri sıçramaları ile gerçek sinyal uyumsuzluklarını ayırt eder.",
+                prerequisites=[],
+                is_optional=not is_cool_supp if 'is_cool_supp' in locals() else False
+            )
+
+        # Prerequisite / Girdi Geçerlilik Kontrolü (TEST_BLOCKED denetimi)
+        final_recommendations = []
+        for t_id, item in test_candidates.items():
+            blocked = False
+            blocking_reason = None
+            for req_sensor in item["required_inputs"]:
+                s_entry = self.data_cache.get(req_sensor)
+                if not isinstance(s_entry, dict):
+                    blocked = True
+                    blocking_reason = f"Gerekli {req_sensor} verisi önbellekte bulunmuyor"
+                    break
+                if s_entry.get("status") != STATUS_VALID or s_entry.get("quality") in (QUALITY_ERROR, QUALITY_INVALID, QUALITY_IMPLAUSIBLE):
+                    blocked = True
+                    blocking_reason = f"Güvenilir {req_sensor} verisi mevcut değil ({s_entry.get('quality')})"
+                    break
+
+            if blocked:
+                item["status"] = TEST_BLOCKED
+                item["blocking_reason"] = blocking_reason
+            else:
+                item["blocking_reason"] = None
+
+            final_recommendations.append(item)
+
+        # Sıralama: Güvenlik Seviyesi (SAFE_READ -> GUIDED_DRIVER -> WORKSHOP) -> Öncelik (HIGH -> MEDIUM -> LOW) -> Test ID
+        safety_order = {TEST_SAFE_READ: 1, TEST_GUIDED_DRIVER: 2, TEST_WORKSHOP: 3, TEST_ACTUATION: 4}
+        priority_order = {TEST_PRIORITY_HIGH: 1, TEST_PRIORITY_MEDIUM: 2, TEST_PRIORITY_LOW: 3}
+
+        final_recommendations.sort(key=lambda x: (
+            safety_order.get(x["safety"], 99),
+            priority_order.get(x["priority"], 99),
+            x["id"]
+        ))
+
+        self.last_test_recommendations = final_recommendations
+        return final_recommendations
 
     def tek_veri_oku(self, target_list=None, phase="UNKNOWN"):
         """
