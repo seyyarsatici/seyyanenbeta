@@ -1501,9 +1501,7 @@ class AutoExpertEngine:
                 )
 
         # RULE 5: Sensor Agreement (C-5 Cross-Sensor Correlation reuse)
-        corr_results = getattr(self, "last_correlation_results", [])
-        if not corr_results:
-            corr_results = self._check_cross_sensor_correlations()
+        corr_results = self._check_cross_sensor_correlations()
 
         for r in corr_results:
             if r.get("status") == CORRELATION_INCONSISTENT:
@@ -1824,7 +1822,7 @@ class AutoExpertEngine:
         def register_candidate(t_id: str, priority: str, safety: str, title: str, purpose: str, 
                                hyp_id: str, required_inputs: list, procedure: list, 
                                expected: str, interpretation: str, prerequisites: list = None,
-                               is_optional: bool = False):
+                               is_optional: bool = False, provides_inputs: list = None):
             if t_id not in test_candidates:
                 test_candidates[t_id] = {
                     "id": t_id,
@@ -1839,6 +1837,7 @@ class AutoExpertEngine:
                     "expected_observation": expected,
                     "interpretation": interpretation,
                     "prerequisites": list(prerequisites) if prerequisites else [],
+                    "provides_inputs": list(provides_inputs) if provides_inputs else [],
                     "blocking_reason": None,
                     "result": None
                 }
@@ -1907,7 +1906,7 @@ class AutoExpertEngine:
                 title="Motor çalışma durumunu ve sıcaklık kararlılığını doğrula",
                 purpose="Tanısal çıkarımların sağlıklı yapılabilmesi için motorun çalıştığını ve işletim sıcaklığına ulaştığını doğrulamak.",
                 hyp_id="",
-                required_inputs=["RPM", "ECT"],
+                required_inputs=[],
                 procedure=[
                     "Motor devrinin rölanti bandında kararlı olduğunu teyit edin",
                     "Soğutma suyu sıcaklığının hedef işletim aralığına ulaştığını gözlemleyin"
@@ -1915,7 +1914,8 @@ class AutoExpertEngine:
                 expected="Motorun kararlı rölantide ve hedef çalışma sıcaklığında olması.",
                 interpretation="Eksik çalışma bağlamını tamamlar.",
                 prerequisites=[],
-                is_optional=False
+                is_optional=False,
+                provides_inputs=["RPM", "ECT"]
             )
 
         # 4. AIRFLOW_MEASUREMENT_ISSUE -> CHECK_MAP_RESPONSE
@@ -1991,7 +1991,7 @@ class AutoExpertEngine:
                 expected="Koşul tekrarında aynı uyumsuzluğun tekrarlanması kalıcı sinyal tutarsızlığını doğrular.",
                 interpretation="Anlık veri sıçramaları ile gerçek sinyal uyumsuzluklarını ayırt eder.",
                 prerequisites=[],
-                is_optional=not is_cool_supp if 'is_cool_supp' in locals() else False
+                is_optional=not is_corr_supp
             )
 
         # Prerequisite / Girdi Geçerlilik Kontrolü (TEST_BLOCKED denetimi)
@@ -2005,9 +2005,18 @@ class AutoExpertEngine:
                     blocked = True
                     blocking_reason = f"Gerekli {req_sensor} verisi önbellekte bulunmuyor"
                     break
-                if s_entry.get("status") != STATUS_VALID or s_entry.get("quality") in (QUALITY_ERROR, QUALITY_INVALID, QUALITY_IMPLAUSIBLE):
+                if s_entry.get("status") != STATUS_VALID or s_entry.get("quality") != QUALITY_GOOD:
                     blocked = True
                     blocking_reason = f"Güvenilir {req_sensor} verisi mevcut değil ({s_entry.get('quality')})"
+                    break
+                val = s_entry.get("val")
+                if isinstance(val, bool) or not isinstance(val, (int, float)):
+                    blocked = True
+                    blocking_reason = f"{req_sensor} verisi sayısal değil"
+                    break
+                if not self._is_sensor_fresh(req_sensor):
+                    blocked = True
+                    blocking_reason = f"{req_sensor} verisi güncel değil (stale)"
                     break
 
             if blocked:
