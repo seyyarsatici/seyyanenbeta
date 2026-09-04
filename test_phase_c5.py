@@ -49,8 +49,13 @@ def run_tests():
                 return r
         return None
 
+    def clean_step():
+        engine.data_cache.clear()
+        engine.sensor_history.clear()
+
     # TEST A — RPM/SPEED contradiction (RPM=0, SPEED=120)
     print("\n--- TEST A: RPM/SPEED Contradiction (RPM=0, SPEED=120) ---")
+    clean_step()
     engine._update_sensor_cache("RPM", 0.0, status=STATUS_VALID, source="MODE01")
     engine._update_sensor_cache("SPEED", 120.0, status=STATUS_VALID, source="MODE01")
     res_a = engine._check_cross_sensor_correlations()
@@ -61,6 +66,7 @@ def run_tests():
 
     # TEST B — RPM/SPEED coherent (RPM=800, SPEED=0)
     print("\n--- TEST B: RPM/SPEED Coherent (RPM=800, SPEED=0) ---")
+    clean_step()
     engine._update_sensor_cache("RPM", 800.0, status=STATUS_VALID, source="MODE01")
     engine._update_sensor_cache("SPEED", 0.0, status=STATUS_VALID, source="MODE01")
     res_b = engine._check_cross_sensor_correlations()
@@ -71,6 +77,7 @@ def run_tests():
 
     # TEST C — High TPS / Low RPM contradiction (TPS=90, RPM=800)
     print("\n--- TEST C: High TPS / Low RPM Contradiction (TPS=90, RPM=800) ---")
+    clean_step()
     engine._update_sensor_cache("TPS", 90.0, status=STATUS_VALID, source="MODE01")
     engine._update_sensor_cache("RPM", 800.0, status=STATUS_VALID, source="MODE01")
     res_c = engine._check_cross_sensor_correlations()
@@ -81,6 +88,7 @@ def run_tests():
 
     # TEST D — High TPS / normal RPM (TPS=90, RPM=2500)
     print("\n--- TEST D: High TPS / Normal RPM (TPS=90, RPM=2500) ---")
+    clean_step()
     engine._update_sensor_cache("TPS", 90.0, status=STATUS_VALID, source="MODE01")
     engine._update_sensor_cache("RPM", 2500.0, status=STATUS_VALID, source="MODE01")
     res_d = engine._check_cross_sensor_correlations()
@@ -91,6 +99,7 @@ def run_tests():
 
     # TEST E — High TPS / extremely low MAP (TPS=90, RPM=2000, MAP=15)
     print("\n--- TEST E: High TPS / Extremely Low MAP (TPS=90, RPM=2000, MAP=15) ---")
+    clean_step()
     engine._update_sensor_cache("TPS", 90.0, status=STATUS_VALID, source="MODE01")
     engine._update_sensor_cache("RPM", 2000.0, status=STATUS_VALID, source="MODE01")
     engine._update_sensor_cache("MAP", 15.0, status=STATUS_VALID, source="MODE01")
@@ -102,6 +111,7 @@ def run_tests():
 
     # TEST F — Coherent TPS/MAP (TPS=90, RPM=2500, MAP=90)
     print("\n--- TEST F: Coherent TPS/MAP (TPS=90, RPM=2500, MAP=90) ---")
+    clean_step()
     engine._update_sensor_cache("TPS", 90.0, status=STATUS_VALID, source="MODE01")
     engine._update_sensor_cache("RPM", 2500.0, status=STATUS_VALID, source="MODE01")
     engine._update_sensor_cache("MAP", 90.0, status=STATUS_VALID, source="MODE01")
@@ -122,6 +132,7 @@ def run_tests():
 
     # TEST H — Implausible input excluded (RPM=31500 implausible, SPEED=120)
     print("\n--- TEST H: Implausible Input Excluded ---")
+    clean_step()
     engine._update_sensor_cache("RPM", 31500.0, status=STATUS_VALID, source="MODE01")
     engine._update_sensor_cache("SPEED", 120.0, status=STATUS_VALID, source="MODE01")
     assert engine.data_cache["RPM"]["quality"] == QUALITY_IMPLAUSIBLE
@@ -132,6 +143,7 @@ def run_tests():
 
     # TEST I — Temporally suspect input excluded
     print("\n--- TEST I: Temporally Suspect Input Excluded ---")
+    clean_step()
     engine._update_sensor_cache("RPM", 800.0, status=STATUS_VALID, timestamp=1000.0, source="MODE01")
     # Spike TPS by 90% in 0.001s (rate = 90000 %/s > 500)
     engine._update_sensor_cache("TPS", 10.0, status=STATUS_VALID, timestamp=1000.0, source="MODE01")
@@ -144,6 +156,7 @@ def run_tests():
 
     # TEST J — Freshness requirement
     print("\n--- TEST J: Freshness Requirement ---")
+    clean_step()
     stale_time = time.time() - 10.0
     engine.data_cache["RPM"] = {
         "val": 0.0,
@@ -161,6 +174,7 @@ def run_tests():
 
     # TEST K — No false quality mutation
     print("\n--- TEST K: No False Quality Mutation ---")
+    clean_step()
     engine._update_sensor_cache("RPM", 0.0, status=STATUS_VALID, source="MODE01")
     engine._update_sensor_cache("SPEED", 120.0, status=STATUS_VALID, source="MODE01")
     prev_rpm_q = engine.data_cache["RPM"]["quality"]
@@ -174,7 +188,7 @@ def run_tests():
 
     # Connect mock simulator for regression
     engine.baglan()
-    time.sleep(0.5)
+    time.sleep(1.0)
 
     # TEST L — Phase A/B/C regression
     print("\n--- TEST L: Regression Checks ---")
@@ -184,6 +198,7 @@ def run_tests():
     
     # Phase B manual DID probe
     probe_res = engine.manual_did_probe("1640", header="7E0")
+    print("PROBE_RES in C5:", probe_res)
     assert probe_res["ok"] is True
     assert probe_res["status"] == STATUS_VALID
 

@@ -75,9 +75,13 @@ def run_tests():
                 return ev
         return None
 
+    def reset_cache():
+        engine.data_cache.clear()
+        engine.sensor_history.clear()
+
     # TEST A — Engine running (RPM = 800)
     print("\n--- TEST A: Engine Running (RPM = 800) ---")
-    engine.data_cache.clear()
+    reset_cache()
     engine._update_sensor_cache("RPM", 800.0, status=STATUS_VALID, source="MODE01")
     ev_a = engine._collect_diagnostic_evidence()
     item_a = get_ev_by_id(ev_a, "ENGINE_RUNNING")
@@ -89,7 +93,7 @@ def run_tests():
 
     # TEST B — Engine not running (RPM = 0)
     print("\n--- TEST B: Engine Not Running (RPM = 0) ---")
-    engine.data_cache.clear()
+    reset_cache()
     engine._update_sensor_cache("RPM", 0.0, status=STATUS_VALID, source="MODE01")
     ev_b = engine._collect_diagnostic_evidence()
     item_b = get_ev_by_id(ev_b, "ENGINE_NOT_RUNNING")
@@ -100,7 +104,7 @@ def run_tests():
 
     # TEST C — RPM missing/untrusted
     print("\n--- TEST C: RPM Missing / Untrusted ---")
-    engine.data_cache.clear()
+    reset_cache()
     ev_c = engine._collect_diagnostic_evidence()
     item_c = get_ev_by_id(ev_c, "ENGINE_RUNNING")
     assert item_c is not None
@@ -109,7 +113,7 @@ def run_tests():
 
     # TEST D — Positive fuel trim (STFT=+18, LTFT=+16)
     print("\n--- TEST D: Positive Fuel Trim (STFT=+18, LTFT=+16) ---")
-    engine.data_cache.clear()
+    reset_cache()
     engine._update_sensor_cache("RPM", 850.0, status=STATUS_VALID, source="MODE01")
     engine._update_sensor_cache("STFT", 18.0, status=STATUS_VALID, source="MODE01")
     engine._update_sensor_cache("LTFT", 16.0, status=STATUS_VALID, source="MODE01")
@@ -122,7 +126,7 @@ def run_tests():
 
     # TEST E — Negative fuel trim (STFT=-18, LTFT=-16)
     print("\n--- TEST E: Negative Fuel Trim (STFT=-18, LTFT=-16) ---")
-    engine.data_cache.clear()
+    reset_cache()
     engine._update_sensor_cache("RPM", 850.0, status=STATUS_VALID, source="MODE01")
     engine._update_sensor_cache("STFT", -18.0, status=STATUS_VALID, source="MODE01")
     engine._update_sensor_cache("LTFT", -16.0, status=STATUS_VALID, source="MODE01")
@@ -135,7 +139,7 @@ def run_tests():
 
     # TEST F — Fuel trim below threshold (STFT=+5, LTFT=+3)
     print("\n--- TEST F: Fuel Trim Below Threshold (STFT=+5, LTFT=+3) ---")
-    engine.data_cache.clear()
+    reset_cache()
     engine._update_sensor_cache("RPM", 850.0, status=STATUS_VALID, source="MODE01")
     engine._update_sensor_cache("STFT", 5.0, status=STATUS_VALID, source="MODE01")
     engine._update_sensor_cache("LTFT", 3.0, status=STATUS_VALID, source="MODE01")
@@ -146,7 +150,7 @@ def run_tests():
 
     # TEST G — ECT too cold (Target=90, ECT=60, RPM=800)
     print("\n--- TEST G: ECT Too Cold (Target=90, ECT=60, RPM=800) ---")
-    engine.data_cache.clear()
+    reset_cache()
     engine.vehicle_profile = MockVehicleProfile(
         motor_kodu="Z19DTH", marka="OPEL", aciklama="1.9 CDTI", yakit_tipi="DIESEL",
         max_rpm=4500, redline=4500, idle_rpm=820, hedef_ect=90
@@ -164,7 +168,7 @@ def run_tests():
     # TEST H — ECT target unavailable
     print("\n--- TEST H: ECT Target Unavailable ---")
     engine.vehicle_profile = None
-    engine.data_cache.clear()
+    reset_cache()
     engine._update_sensor_cache("RPM", 800.0, status=STATUS_VALID, source="MODE01")
     engine._update_sensor_cache("ECT", 60.0, status=STATUS_VALID, source="MODE01")
     ev_h = engine._collect_diagnostic_evidence()
@@ -173,7 +177,7 @@ def run_tests():
 
     # TEST I — MAF zero while running (RPM=1500, MAF=0)
     print("\n--- TEST I: MAF Zero While Running (RPM=1500, MAF=0) ---")
-    engine.data_cache.clear()
+    reset_cache()
     engine._update_sensor_cache("RPM", 1500.0, status=STATUS_VALID, source="MODE01")
     engine._update_sensor_cache("MAF", 0.0, status=STATUS_VALID, source="MODE01")
     ev_i = engine._collect_diagnostic_evidence()
@@ -185,7 +189,7 @@ def run_tests():
 
     # TEST J — C-5 correlation evidence (RPM=0, SPEED=120)
     print("\n--- TEST J: C-5 Correlation Evidence Reuse ---")
-    engine.data_cache.clear()
+    reset_cache()
     engine._update_sensor_cache("RPM", 0.0, status=STATUS_VALID, source="MODE01")
     engine._update_sensor_cache("SPEED", 120.0, status=STATUS_VALID, source="MODE01")
     engine._check_cross_sensor_correlations()
@@ -199,7 +203,7 @@ def run_tests():
 
     # TEST K — C-6 envelope evidence (Redline=4500, RPM=5000)
     print("\n--- TEST K: C-6 Envelope Evidence Reuse ---")
-    engine.data_cache.clear()
+    reset_cache()
     engine.vehicle_profile = MockVehicleProfile(
         motor_kodu="Z19DTH", marka="OPEL", aciklama="1.9 CDTI", yakit_tipi="DIESEL",
         max_rpm=4500, redline=4500, idle_rpm=820, hedef_ect=90
@@ -214,7 +218,7 @@ def run_tests():
 
     # TEST L — Untrusted sensor excluded from positive evidence (ECT=315 implausible)
     print("\n--- TEST L: Untrusted Sensor Excluded from Positive Evidence ---")
-    engine.data_cache.clear()
+    reset_cache()
     engine._update_sensor_cache("RPM", 800.0, status=STATUS_VALID, source="MODE01")
     engine._update_sensor_cache("ECT", 315.0, status=STATUS_VALID, source="MODE01")
     ev_l = engine._collect_diagnostic_evidence()
@@ -237,7 +241,7 @@ def run_tests():
 
     # TEST N — Missing data safe degradation
     print("\n--- TEST N: Missing Data Safe Degradation ---")
-    engine.data_cache.clear()
+    reset_cache()
     engine._update_sensor_cache("RPM", 800.0, status=STATUS_VALID, source="MODE01")
     ev_n = engine._collect_diagnostic_evidence()
     assert len(ev_n) == 1

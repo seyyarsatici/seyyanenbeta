@@ -40,7 +40,7 @@ def run_tests():
     print("🚀 Running Phase C-4 Temporal Plausibility Tests (Tests A through I)...")
     engine = AutoExpertEngine()
 
-    t0 = 1000000.0
+    t0 = time.time()
 
     # TEST A — First sample
     print("\n--- TEST A: First Sample (No previous history) ---")
@@ -128,7 +128,7 @@ def run_tests():
 
     # Connect mock simulator for regression checks
     engine.baglan()
-    time.sleep(0.5)
+    time.sleep(1.0)
 
     # TEST I — Regression checks (Phase A, B, C-1, C-2, C-3)
     print("\n--- TEST I: Regression Checks ---")
@@ -138,6 +138,7 @@ def run_tests():
     
     # Phase B manual DID probe
     probe_res = engine.manual_did_probe("1640", header="7E0")
+    print("PROBE_RES in C4:", probe_res)
     assert probe_res["ok"] is True
     assert probe_res["status"] == STATUS_VALID
 

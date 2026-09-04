@@ -65,8 +65,9 @@ def run_tests():
 
     # TEST C — History bound (maxlen=50)
     print("\n--- TEST C: History Bound (maxlen=50) ---")
+    t_base = time.time()
     for i in range(60):
-        engine._update_sensor_cache("SPEED", float(i), status=STATUS_VALID, source="MODE01")
+        engine._update_sensor_cache("SPEED", float(i), status=STATUS_VALID, timestamp=t_base + i * 0.1, source="MODE01")
     
     hist_c = engine._get_sensor_history("SPEED")
     assert len(hist_c) == 50

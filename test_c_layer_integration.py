@@ -70,7 +70,7 @@ def run_integration_matrix():
         hedef_ect=90,
     )
     engine.vehicle_profile = diesel_profile
-    t0 = 2000000.0
+    t0 = time.time()
 
     # 1. LAYERED SEQUENCE AUDIT
     print("\n--- 1. Layered Sequence Audit ---")

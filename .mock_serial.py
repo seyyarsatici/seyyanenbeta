@@ -38,6 +38,7 @@ class MockSerial:
         self.headers_active = True  # ATH1 varsayılan (motor.py ister)
         self.current_sim_header = "7DF"  # AT SH ile değişen, mode22/UDS session simülasyonu için
         self.sim_sessions = set()        # Hangi header'larda '1003' extended session açıldı (simülasyon amaçlı)
+        self.mock_1640_payload = "0096"
         self.start_time = time.time()
 
         # [G5] Protokol: "KWP" veya "CAN" (ATSP komutuyla değişir)
@@ -130,11 +131,17 @@ class MockSerial:
             byte_delay = 0.008  # K-Line: 10.4kbps ~= 1 char/ms ama simülasyon için 8ms
 
         now = time.time() + start_delay
+        if self._buffer:
+            last_t = max(t for t, _ in self._buffer)
+            if last_t >= now:
+                now = last_t + 0.002
+
         for char in text:
             self._buffer.append((now, char.encode('ascii')))
             now += byte_delay
         # Satır sonu (CR) - motor.py bunu bekler
         self._buffer.append((now + byte_delay, b'\r'))
+        self._buffer.sort(key=lambda x: x[0])
 
     # -----------------------------------------------------------------
     # [G4] ZAMANa BAĞLI SENARYO GÜNCELLEMESİ
@@ -224,6 +231,7 @@ class MockSerial:
     # -----------------------------------------------------------------
 
     def _process_command(self, cmd):
+        self._buffer = []
         clean = cmd.replace(" ", "")
 
         # =============================================================
@@ -411,25 +419,47 @@ class MockSerial:
             self._schedule_response(">", self._get_delay(0.1))
             return
 
+        if clean.startswith("21") and len(clean) >= 4:
+            local_id = clean[2:4]
+            if local_id == "02":
+                # Sirius D42 block read simülasyonu: 61 02 + 10 byte payload
+                self._schedule_response("6102B94F32000C80004B00", self._get_delay(0.1))
+            elif local_id == "FF":
+                self._schedule_response("7F2131", self._get_delay(0.1))  # out of range
+            else:
+                self._schedule_response("NO DATA", self._get_delay(0.1))
+            self._schedule_response(">", self._get_delay(0.15))
+            return
+
         if clean.startswith("22") and len(clean) >= 6:
             did = clean[2:6]
             if self.current_sim_header not in self.sim_sessions:
                 self._schedule_response(f"7F2222", self._get_delay(0.1))  # conditions not correct: session açık değil
             elif did == "1640":
                 # Örnek: mevcut CSV'lerde geçen bir DID'e sahte ama tutarlı bir pozitif cevap
-                self._schedule_response(f"6216400096", self._get_delay(0.15))
+                p_hex = getattr(self, "mock_1640_payload", "0096")
+                self._schedule_response(f"621640{p_hex}", self._get_delay(0.15))
             elif did == "1641":
                 # Multi-frame ISO-TP Mode 22 yanıt simülasyonu
                 # Toplam payload: 62 16 41 01 02 03 04 05 06 07 08 09 (12 byte = 0x0C)
                 d = self._get_delay(0.1)
                 self._schedule_response("7E8 10 0C 62 16 41 01 02", d)
-                self._schedule_response("7E8 21 03 04 05 06 07 08", d + 0.02)
-                self._schedule_response("7E8 22 09", d + 0.04)
-                self._schedule_response(">", d + 0.06)
+                self._schedule_response("7E8 21 03 04 05 06 07 08", d + 0.04)
+                self._schedule_response("7E8 22 09", d + 0.08)
+                self._schedule_response(">", d + 0.12)
                 return
             elif did == "1940":
                 # DID Mismatch testi için bozuk/başta olmayan DID yanıtı
                 self._schedule_response(f"AA6219400096", self._get_delay(0.15))
+            elif did == "2000":
+                # Security Required (NRC 33) simülasyonu
+                self._schedule_response(f"7F2233", self._get_delay(0.1))
+            elif did == "9999":
+                # No Data simülasyonu
+                self._schedule_response("NO DATA", self._get_delay(0.1))
+            elif did == "DEAD":
+                # Timeout simülasyonu (cevap yok)
+                return
             else:
                 self._schedule_response(f"7F2231", self._get_delay(0.1))  # request out of range: bilinmeyen DID
             self._schedule_response(">", self._get_delay(0.15))

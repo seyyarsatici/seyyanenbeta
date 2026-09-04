@@ -12,6 +12,7 @@ from pathlib import Path
 import dashboard as Dashboard
 import threading
 import queue
+import uuid
 from collections import deque
 
 # --- Proje Dizin Yolları ---
@@ -202,6 +203,36 @@ TEST_SAFE_READ = "SAFE_READ"
 TEST_GUIDED_DRIVER = "GUIDED_DRIVER"
 TEST_WORKSHOP = "WORKSHOP"
 TEST_ACTUATION = "ACTUATION"
+
+# --- Phase E-1: Live Diagnostic Session Durumları ---
+SESSION_IDLE = "IDLE"
+SESSION_CONNECTING = "CONNECTING"
+SESSION_INITIALIZING = "INITIALIZING"
+SESSION_RUNNING = "RUNNING"
+SESSION_STOPPING = "STOPPING"
+SESSION_STOPPED = "STOPPED"
+SESSION_ERROR = "ERROR"
+
+# --- Phase E-2: ECU Capability Discovery Durum Modeli ---
+CAPABILITY_SUPPORTED = "SUPPORTED"
+CAPABILITY_UNSUPPORTED = "UNSUPPORTED"
+CAPABILITY_NO_RESPONSE = "NO_RESPONSE"
+CAPABILITY_NEGATIVE_RESPONSE = "NEGATIVE_RESPONSE"
+CAPABILITY_TIMEOUT = "TIMEOUT"
+CAPABILITY_DID_MISMATCH = "DID_MISMATCH"
+CAPABILITY_UNAVAILABLE = "UNAVAILABLE"
+
+# --- Phase E-3: UDS Read Service Catalog (Read-Only) ---
+UDS_READ_SERVICE_CATALOG = {
+    "01": "CURRENT_DATA",
+    "03": "READ_DTC",
+    "09": "VEHICLE_INFORMATION",
+    "21": "READ_DATA_BY_LOCAL_IDENTIFIER",
+    "22": "READ_DATA_BY_IDENTIFIER",
+}
+
+# --- Phase E-3: Acquisition Planning Constants ---
+MAX_ACQUISITION_PLAN = 100
 
 def derive_quality_from_status(status: str) -> str:
     """STATUS_* değerini deterministik QUALITY_* sınıfına dönüştürür."""
@@ -525,6 +556,17 @@ class AutoExpertEngine:
         self.last_evidence_results = []
         self.last_hypothesis_results = []
         self.last_test_recommendations = []
+        self.last_capability_results = []
+        self.last_advanced_capability_results = []
+        self.last_acquisition_plan = []
+        self.last_acquisition_plan_metadata = {
+            "plan_version": 1,
+            "count": 0,
+            "enabled_count": 0,
+            "disabled_count": 0,
+            "truncated": False,
+        }
+        self.last_acquisition_results = []
         self.vehicle_profile = None
         self.ecu_info = {"VIN": "Bilinmiyor"}
         self.desteklenen_pidler = []
@@ -1416,19 +1458,20 @@ class AutoExpertEngine:
         prof = getattr(self, "vehicle_profile", None)
         hedef_ect = getattr(prof, "hedef_ect", None) if prof is not None else None
 
-        if ect_val is not None and isinstance(hedef_ect, (int, float)) and not isinstance(hedef_ect, bool) and hedef_ect > 0:
+        if ect_val is not None:
             if rpm_val is not None and rpm_val > 400:
-                if ect_val < (hedef_ect - 25):  # örn. 90°C hedefte 65°C altı
-                    add_evidence(
-                        ev_id="ECT_TOO_COLD",
-                        status=EVIDENCE_SUPPORTED,
-                        severity=EVIDENCE_WARNING,
-                        sensors=["ECT"],
-                        observations={"ECT": ect_val, "target_ect": hedef_ect},
-                        reason=f"Soğutma suyu sıcaklığı hedef değerin ({hedef_ect}°C) belirgin altında ({ect_val}°C)",
-                        source=SOURCE_VEHICLE_PROFILE
-                    )
-                elif ect_val > 115:
+                if isinstance(hedef_ect, (int, float)) and not isinstance(hedef_ect, bool) and hedef_ect > 0:
+                    if ect_val < (hedef_ect - 25):  # örn. 90°C hedefte 65°C altı
+                        add_evidence(
+                            ev_id="ECT_TOO_COLD",
+                            status=EVIDENCE_SUPPORTED,
+                            severity=EVIDENCE_WARNING,
+                            sensors=["ECT"],
+                            observations={"ECT": ect_val, "target_ect": hedef_ect},
+                            reason=f"Soğutma suyu sıcaklığı hedef değerin ({hedef_ect}°C) belirgin altında ({ect_val}°C)",
+                            source=SOURCE_VEHICLE_PROFILE
+                        )
+                if ect_val > 115:
                     add_evidence(
                         ev_id="ECT_TOO_HOT",
                         status=EVIDENCE_SUPPORTED,
@@ -1438,16 +1481,6 @@ class AutoExpertEngine:
                         reason=f"Soğutma suyu sıcaklığı aşırı yüksek ({ect_val}°C)",
                         source=SOURCE_DIRECT
                     )
-        elif ect_val is None and prof is not None and isinstance(hedef_ect, (int, float)) and hedef_ect > 0:
-            add_evidence(
-                ev_id="ECT_TOO_COLD",
-                status=EVIDENCE_UNKNOWN,
-                severity=EVIDENCE_INFO,
-                sensors=["ECT"],
-                observations={},
-                reason="ECT verisi eksik veya güvenilmez",
-                source=SOURCE_VEHICLE_PROFILE
-            )
 
         # RULE 3: Fuel Trim / Mixture (STFT & LTFT)
         stft_val = self._get_trusted_sensor_value("STFT")
@@ -2255,6 +2288,52 @@ class AutoExpertEngine:
             if pid_response_ok:
                 fresh_count += 1
 
+        # --- WIDEBAND (FSI/GDI) O2 FALLBACK: A Planı → B Planı (GÜNCELLENDİ) ---
+        # Eğer standart O2 sensör voltajı (0114) okunmadıysa, Wideband sensörleri dene
+        _cache_o2 = self.data_cache.get("O2_B1S1_V")
+        _cache_o2_val = _cache_o2["val"] if isinstance(_cache_o2, dict) else _cache_o2
+        if data.get("O2_B1S1_V") is None and _cache_o2_val is None:
+            for wb_pid in ["0124", "0134"]:
+                if self.failed_pids.get(wb_pid, 0) >= 10: continue
+                if wb_pid not in pids: continue
+                
+                t_out = 0.5 if self.is_can else 2.5
+                wb_result = self.komut_gonder(wb_pid, timeout=t_out)
+                if not wb_result:
+                    self.failed_pids[wb_pid] = self.failed_pids.get(wb_pid, 0) + 1
+                    continue
+
+                wb_parsed = False
+                for wb_line in wb_result:
+                    if any(x in wb_line for x in ["SEARCHING", "BUS INIT", "STOPPED", "NO DATA"]): continue
+                    try:
+                        wb_val = self.parse_pid_line(wb_line, wb_pid, pids[wb_pid])
+                        if wb_val is not None:
+                            # Her iki durumda da yeni, zengin veri yapısını tam olarak kaydet
+                            pid_name = pids[wb_pid][0]
+                            data[pid_name] = wb_val
+                            self._update_sensor_cache(pid_name, wb_val, status=STATUS_VALID, source="MODE01")
+                            
+                            # Eski sistemlerle uyumluluk için O2_B1S1_V'ye bir değer ata
+                            display_val = 0.0
+                            if 'voltage' in wb_val:
+                                display_val = wb_val['voltage']
+                                data["O2_B1S1_V"] = display_val
+                                self._update_sensor_cache("O2_B1S1_V", display_val, status=STATUS_VALID, source="MODE01")
+                            
+                            log_flush(f"WB-FALLBACK: {pid_name} okundu. Uyumlu değer: {display_val:.3f}V")
+                            self.failed_pids[wb_pid] = 0
+                            wb_parsed = True
+                            break 
+                    except Exception as e:
+                        log_flush(f"[DATA_READ_ERROR] Wideband O2 fallback hatası (pid={wb_pid}): {e}")
+                        pass
+                
+                if wb_parsed:
+                    break
+                else:
+                    self.failed_pids[wb_pid] = self.failed_pids.get(wb_pid, 0) + 1
+
         # --- GÖREV 3: ÖZEL PID POLLING ---
         self.custom_pid_counter += 1
         if self.custom_pids and self.custom_pid_counter % 5 == 0:
@@ -2320,58 +2399,15 @@ class AutoExpertEngine:
             
             # Polling sonrası header'ı standart Broadcast moduna geri al
             if self.current_header != "7DF":
+                prev_status = self.last_response_status
                 self.komut_gonder("AT SH 7DF")
                 self.current_header = "7DF" # V136.1: Sync Fix
+                if prev_status in (STATUS_NRC, STATUS_DID_MISMATCH):
+                    self.last_response_status = prev_status
 
         # V111: Watchdog güncelle — en az 1 fresh veri geldiyse sayacı sıfırla
         if fresh_count > 0:
             self.last_valid_data_time = time.time()
-
-        # --- WIDEBAND (FSI/GDI) O2 FALLBACK: A Planı → B Planı (GÜNCELLENDİ) ---
-        # Eğer standart O2 sensör voltajı (0114) okunmadıysa, Wideband sensörleri dene
-        _cache_o2 = self.data_cache.get("O2_B1S1_V")
-        _cache_o2_val = _cache_o2["val"] if isinstance(_cache_o2, dict) else _cache_o2
-        if data.get("O2_B1S1_V") is None and _cache_o2_val is None:
-            for wb_pid in ["0124", "0134"]:
-                if self.failed_pids.get(wb_pid, 0) >= 10: continue
-                if wb_pid not in pids: continue
-                
-                t_out = 0.5 if self.is_can else 2.5
-                wb_result = self.komut_gonder(wb_pid, timeout=t_out)
-                if not wb_result:
-                    self.failed_pids[wb_pid] = self.failed_pids.get(wb_pid, 0) + 1
-                    continue
-
-                wb_parsed = False
-                for wb_line in wb_result:
-                    if any(x in wb_line for x in ["SEARCHING", "BUS INIT", "STOPPED", "NO DATA"]): continue
-                    try:
-                        wb_val = self.parse_pid_line(wb_line, wb_pid, pids[wb_pid])
-                        if wb_val is not None:
-                            # Her iki durumda da yeni, zengin veri yapısını tam olarak kaydet
-                            pid_name = pids[wb_pid][0]
-                            data[pid_name] = wb_val
-                            self._update_sensor_cache(pid_name, wb_val, status=STATUS_VALID, source="MODE01")
-                            
-                            # Eski sistemlerle uyumluluk için O2_B1S1_V'ye bir değer ata
-                            display_val = 0.0
-                            if 'voltage' in wb_val:
-                                display_val = wb_val['voltage']
-                                data["O2_B1S1_V"] = display_val
-                                self._update_sensor_cache("O2_B1S1_V", display_val, status=STATUS_VALID, source="MODE01")
-                            
-                            log_flush(f"WB-FALLBACK: {pid_name} okundu. Uyumlu değer: {display_val:.3f}V")
-                            self.failed_pids[wb_pid] = 0
-                            wb_parsed = True
-                            break 
-                    except Exception as e:
-                        log_flush(f"[DATA_READ_ERROR] Wideband O2 fallback hatası (pid={wb_pid}): {e}")
-                        pass
-                
-                if wb_parsed:
-                    break
-                else:
-                    self.failed_pids[wb_pid] = self.failed_pids.get(wb_pid, 0) + 1
 
         return data, fresh_count
 
@@ -2548,7 +2584,7 @@ class AutoExpertEngine:
             self.komut_gonder(f"AT SH {header}", timeout=1.0)
             self.current_header = header
 
-        res = self.komut_gonder("1003", timeout=1.0)
+        res = self.komut_gonder("1003", timeout=2.5)
         res_str = "".join(res).upper()
 
         if "7F10" in res_str:
@@ -2682,6 +2718,7 @@ class AutoExpertEngine:
                     "payload_hex": payload_hex,
                     "payload_bytes": payload_bytes,
                     "decoded_value": decoded_val,
+                })
             else:
                 nrc_code = self._classify_nrc(res, context_pid=cmd)
                 if nrc_code or self.last_response_status == STATUS_NRC:
@@ -2716,6 +2753,952 @@ class AutoExpertEngine:
 
         return result
 
+    def discover_ecu_capabilities(self, headers=None, dids=None, include_standard_pids=False, candidate_source=None) -> list:
+        """
+        V206 (Phase E-2): ECU Yetenek ve Tanımlayıcı Keşif Motoru (ECU Capability Discovery).
+        Belirtilen sonlu aday DID ve ECU header kümelerini UDS Mode 22 ile sorgular,
+        desteklenme durumlarını (SUPPORTED, NEGATIVE_RESPONSE, NO_RESPONSE, TIMEOUT,
+        DID_MISMATCH, UNAVAILABLE, UNSUPPORTED) ayrıştırır ve ham yanıtları korur.
+        Kaba kuvvet (brute-force) tarama yapmaz; salt-okunur (read-only) prensibindedir.
+        """
+        # 1. Hedef Header Listesi (Sonlu ve muhafazakar küme)
+        if headers is not None:
+            target_headers = [str(h).strip().upper() for h in headers if str(h).strip()]
+        else:
+            target_headers = [self.current_header if self.current_header != "7DF" else "7E0"]
+
+        # 2. Aday DID Listesi (Sonlu küme)
+        if dids is not None:
+            raw_candidates = list(dids)
+            if len(raw_candidates) == 0 and not include_standard_pids:
+                self.last_capability_results = []
+                return []
+        else:
+            raw_candidates = []
+            if hasattr(self, "custom_pids") and self.custom_pids:
+                for cp in self.custom_pids.keys():
+                    c_clean = str(cp).strip().replace(" ", "").upper()
+                    if c_clean.startswith("0X"):
+                        c_clean = c_clean[2:]
+                    if c_clean.startswith("22") and len(c_clean) == 6:
+                        c_clean = c_clean[2:]
+                    raw_candidates.append(c_clean)
+            if not raw_candidates and hasattr(self, "csv_pids") and self.csv_pids:
+                for cp in list(self.csv_pids.keys())[:30]:
+                    c_clean = str(cp).strip().replace(" ", "").upper()
+                    if c_clean.startswith("0X"):
+                        c_clean = c_clean[2:]
+                    if c_clean.startswith("22") and len(c_clean) == 6:
+                        c_clean = c_clean[2:]
+                    raw_candidates.append(c_clean)
+            if not raw_candidates:
+                raw_candidates = ["1640"]
+
+        # 3. DID Normalizasyonu ve Çiftlerin Tekilleştirilmesi (Deduplication)
+        normalized_dids = []
+        for d in raw_candidates:
+            d_clean = str(d).strip().replace(" ", "").upper()
+            if d_clean.startswith("0X"):
+                d_clean = d_clean[2:]
+            if d_clean.startswith("22") and len(d_clean) == 6:
+                d_clean = d_clean[2:]
+            if len(d_clean) == 4 and all(c in "0123456789ABCDEF" for c in d_clean):
+                normalized_dids.append(d_clean)
+
+        seen = set()
+        unique_candidates = []
+        for hdr in target_headers:
+            for did in normalized_dids:
+                key = (hdr, "22", did)
+                if key not in seen:
+                    seen.add(key)
+                    unique_candidates.append((hdr, did))
+
+        if not unique_candidates and not include_standard_pids:
+            self.last_capability_results = []
+            return []
+
+        # 4. Keşif Sorguları & Header Güvenliği (try/finally)
+        initial_header = self.current_header
+        results = []
+        src_label = candidate_source or ("USER" if dids is not None else "MODE22_CSV")
+
+        try:
+            for hdr, did in unique_candidates:
+                if not self.ser or not getattr(self.ser, "is_open", False):
+                    results.append({
+                        "type": "MODE22_DID",
+                        "id": did,
+                        "header": hdr,
+                        "service": "22",
+                        "status": CAPABILITY_UNAVAILABLE,
+                        "request": f"22{did}",
+                        "response": None,
+                        "nrc": None,
+                        "nrc_desc": None,
+                        "raw_response": [],
+                        "details": "OBD arabirimi bağlı değil",
+                        "candidate_source": src_label,
+                    })
+                    continue
+
+                cmd = f"22{did}"
+                if self.current_header != hdr:
+                    self.komut_gonder(f"AT SH {hdr}", timeout=1.0)
+                    self.current_header = hdr
+
+                self._ensure_session(hdr)
+
+                res = self.komut_gonder(cmd, timeout=2.0)
+                res_str = "".join(res).upper() if res else ""
+                raw_resp = list(res) if res else []
+
+                if res and len(res) > 1:
+                    payload_str = self._multiframe_birlestir(res)
+                else:
+                    payload_str = res_str
+                    for h in ("7E8", "7E9", "7EA", "7EB", "7EC", "7ED", "7EE", "7EF", "7E0", "7E1", "7E2", "7E3", "7E4", "7E5", "7E6", "7E7", "7DF"):
+                        if payload_str.startswith(h):
+                            payload_str = payload_str[len(h):]
+                            break
+
+                target_prefix = f"62{did}"
+                nrc_code = self._classify_nrc(res, context_pid=cmd)
+                if not nrc_code and ("7F" in payload_str or self.last_response_status == STATUS_NRC):
+                    idx = payload_str.find("7F")
+                    if len(payload_str) >= idx + 6 and payload_str[idx+2:idx+4] == "22":
+                        nrc_code = payload_str[idx+4:idx+6]
+
+                if payload_str.startswith(target_prefix):
+                    cap_status = CAPABILITY_SUPPORTED
+                    nrc = None
+                    nrc_desc = None
+                    details = "Positive UDS Mode 22 response"
+                    resp_val = payload_str
+                elif nrc_code:
+                    cap_status = CAPABILITY_NEGATIVE_RESPONSE
+                    nrc = nrc_code
+                    nrc_desc = NRC_MAP.get(nrc_code, f"Unknown NRC 0x{nrc_code}")
+                    if nrc_code == "31":
+                        details = "DID not supported / out of range"
+                    elif nrc_code == "33":
+                        details = "Security access denied"
+                    else:
+                        details = f"NRC 0x{nrc_code}: {nrc_desc}"
+                    resp_val = res_str or None
+                elif self.last_response_status == STATUS_DID_MISMATCH or (target_prefix in payload_str and not payload_str.startswith(target_prefix)):
+                    cap_status = CAPABILITY_DID_MISMATCH
+                    nrc = None
+                    nrc_desc = None
+                    details = "DID response detected with offset / mismatch"
+                    resp_val = res_str or None
+                elif self.last_response_status == STATUS_TIMEOUT:
+                    cap_status = CAPABILITY_TIMEOUT
+                    nrc = None
+                    nrc_desc = None
+                    details = "Communication timed out"
+                    resp_val = None
+                elif not res or "NO DATA" in res_str or self.last_response_status in (STATUS_NO_DATA, STATUS_EMPTY_RESPONSE):
+                    cap_status = CAPABILITY_NO_RESPONSE
+                    nrc = None
+                    nrc_desc = None
+                    details = "No data returned by ECU"
+                    resp_val = None
+                elif self.last_response_status in (STATUS_NO_CONNECTION, STATUS_WORKER_DOWN, STATUS_SERIAL_ERROR):
+                    cap_status = CAPABILITY_UNAVAILABLE
+                    nrc = None
+                    nrc_desc = None
+                    details = f"Communication error ({self.last_response_status})"
+                    resp_val = None
+                else:
+                    cap_status = CAPABILITY_UNSUPPORTED
+                    nrc = None
+                    nrc_desc = None
+                    details = f"Unrecognized response: {res_str}"
+                    resp_val = res_str or None
+
+                results.append({
+                    "type": "MODE22_DID",
+                    "id": did,
+                    "header": hdr,
+                    "service": "22",
+                    "status": cap_status,
+                    "request": cmd,
+                    "response": resp_val,
+                    "nrc": nrc,
+                    "nrc_desc": nrc_desc,
+                    "raw_response": raw_resp,
+                    "details": details,
+                    "candidate_source": src_label,
+                })
+
+            if include_standard_pids and hasattr(self, "desteklenen_pidler") and self.desteklenen_pidler:
+                for p in self.desteklenen_pidler:
+                    results.append({
+                        "type": "MODE01_PID",
+                        "id": p,
+                        "header": "7DF",
+                        "service": "01",
+                        "status": CAPABILITY_SUPPORTED,
+                        "request": p,
+                        "response": None,
+                        "nrc": None,
+                        "nrc_desc": None,
+                        "raw_response": [],
+                        "details": "Supported standard OBD-II PID",
+                        "candidate_source": "STANDARD_OBD",
+                    })
+
+        finally:
+            if self.current_header != initial_header:
+                self.komut_gonder(f"AT SH {initial_header}", timeout=1.0)
+                self.current_header = initial_header
+
+        self.last_capability_results = results
+        return results
+
+    def discover_advanced_capabilities(
+        self,
+        headers=None,
+        mode22_dids=None,
+        mode21_ids=None,
+        services=None,
+        candidate_source=None,
+        abort_callback=None,
+    ) -> list:
+        """
+        V207 (Phase E-3): Gelişmiş UDS / Mode 22 Teşhis Yetenek Keşfi (Advanced Capability Discovery).
+        Üreticiye özel UDS Mode 22 ve Mode 21 tanımlayıcılarını kontrollü, salt-okunur
+        ve sonlu aday kümeleri üzerinden derinlemesine sorgular.
+        Çok çerçeveli (multi-frame) ISO-TP yanıtlarını birleştirerek PCI baytlarından arındırılmış
+        ham uygulama veri yükünü (payload_hex) ayrıştırır.
+        Kaba kuvvet (brute-force) tarama yapmaz; güvenlik/yazma/kodlama/aktüasyon işlemleri içermez.
+        """
+        # 1. Hedef Header Listesi (Sonlu ve muhafazakar küme)
+        if headers is not None:
+            target_headers = [str(h).strip().upper() for h in headers if str(h).strip()]
+        else:
+            target_headers = [self.current_header if self.current_header != "7DF" else "7E0"]
+
+        # 2. Servis Kataloğu ve İstenen Servisler
+        requested_services = set()
+        if services is not None:
+            for s in services:
+                s_clean = str(s).strip().upper()
+                if s_clean in UDS_READ_SERVICE_CATALOG:
+                    requested_services.add(s_clean)
+        else:
+            if mode21_ids is not None and mode22_dids is None:
+                requested_services.add("21")
+            elif mode22_dids is not None and mode21_ids is None:
+                requested_services.add("22")
+            else:
+                requested_services.update(["21", "22"])
+
+        # 3. Adayların Toplanması ve Çapraz Kaynak Provenance Tespiti
+        raw_candidates = []
+        default_src = candidate_source or "USER"
+
+        # Boş küme kontrolü: mode22_dids explicitly [] and (mode21_ids is None or len(mode21_ids) == 0)
+        if mode22_dids is not None and len(mode22_dids) == 0 and (mode21_ids is None or len(mode21_ids) == 0):
+            self.last_advanced_capability_results = []
+            return []
+
+        # Mode 22 adayları
+        if "22" in requested_services:
+            if mode22_dids is not None:
+                for d in mode22_dids:
+                    raw_candidates.append(("22", d, default_src))
+            else:
+                csv_found = False
+                if hasattr(self, "custom_pids") and self.custom_pids:
+                    for cp in self.custom_pids.keys():
+                        raw_candidates.append(("22", cp, "CUSTOM_PID"))
+                        csv_found = True
+                if hasattr(self, "csv_pids") and self.csv_pids:
+                    for cp in list(self.csv_pids.keys())[:30]:
+                        if cp.startswith("22") and len(cp) >= 6:
+                            raw_candidates.append(("22", cp[2:], "MODE22_CSV"))
+                            csv_found = True
+                if hasattr(self, "derin_tarama_ek_pidler") and self.derin_tarama_ek_pidler:
+                    for entry in self.derin_tarama_ek_pidler[:30]:
+                        p_str = entry.get("pid", "")
+                        if p_str.startswith("22") and len(p_str) >= 6:
+                            raw_candidates.append(("22", p_str[2:], "MODE22_CSV"))
+                            csv_found = True
+                if not csv_found and not mode21_ids:
+                    raw_candidates.append(("22", "1640", default_src))
+
+        # Mode 21 adayları
+        if "21" in requested_services and mode21_ids is not None:
+            for mid in mode21_ids:
+                raw_candidates.append(("21", mid, default_src))
+
+        if not raw_candidates:
+            self.last_advanced_capability_results = []
+            return []
+
+        # 4. Normalizasyon ve Tekilleştirme (Deduplication)
+        candidate_map = {}
+        for srv, ident, src in raw_candidates:
+            c_clean = str(ident).strip().replace(" ", "").upper()
+            if c_clean.startswith("0X"):
+                c_clean = c_clean[2:]
+            if srv == "22":
+                if c_clean.startswith("22") and len(c_clean) == 6:
+                    c_clean = c_clean[2:]
+                if len(c_clean) != 4 or not all(c in "0123456789ABCDEF" for c in c_clean):
+                    continue
+            elif srv == "21":
+                if c_clean.startswith("21") and len(c_clean) in (4, 6):
+                    c_clean = c_clean[2:]
+                if not all(c in "0123456789ABCDEF" for c in c_clean):
+                    continue
+
+            for hdr in target_headers:
+                key = (hdr, srv, c_clean)
+                if key not in candidate_map:
+                    candidate_map[key] = []
+                if src not in candidate_map[key]:
+                    candidate_map[key].append(src)
+
+        if not candidate_map:
+            self.last_advanced_capability_results = []
+            return []
+
+        # 5. Keşif Döngüsü, Abort Desteği ve Header Güvenliği (try/finally)
+        initial_header = self.current_header
+        results = []
+
+        try:
+            for (hdr, srv, ident), src_list in candidate_map.items():
+                if abort_callback and abort_callback():
+                    log_flush("[ADVANCED_DISCOVERY] Abort sinyali algılandı, işlem durduruluyor.")
+                    break
+
+                comb_src = "+".join(src_list)
+                type_label = "MODE22_DID" if srv == "22" else f"MODE{srv}_IDENTIFIER"
+
+                if not self.ser or not getattr(self.ser, "is_open", False):
+                    results.append({
+                        "type": type_label,
+                        "id": ident,
+                        "header": hdr,
+                        "service": srv,
+                        "status": CAPABILITY_UNAVAILABLE,
+                        "request": f"{srv}{ident}",
+                        "response": None,
+                        "payload_hex": None,
+                        "nrc": None,
+                        "nrc_desc": None,
+                        "raw_response": [],
+                        "details": "OBD arabirimi bağlı değil",
+                        "candidate_source": comb_src,
+                    })
+                    continue
+
+                cmd = f"{srv}{ident}"
+                if self.current_header != hdr:
+                    self.komut_gonder(f"AT SH {hdr}", timeout=1.0)
+                    self.current_header = hdr
+
+                if srv == "22":
+                    self._ensure_session(hdr)
+
+                res = self.komut_gonder(cmd, timeout=2.0)
+                res_str = "".join(res).upper() if res else ""
+                raw_resp = list(res) if res else []
+
+                # Multi-frame ISO-TP reassembly
+                if res and len(res) > 1:
+                    payload_str = self._multiframe_birlestir(res)
+                else:
+                    payload_str = res_str
+                    for h in ("7E8", "7E9", "7EA", "7EB", "7EC", "7ED", "7EE", "7EF", "7E0", "7E1", "7E2", "7E3", "7E4", "7E5", "7E6", "7E7", "7DF"):
+                        if payload_str.startswith(h):
+                            payload_str = payload_str[len(h):]
+                            break
+
+                pos_service = f"{int(srv, 16) + 0x40:02X}"  # 22 -> 62, 21 -> 61
+                target_prefix = f"{pos_service}{ident}"
+
+                nrc_code = self._classify_nrc(res, context_pid=cmd)
+                if not nrc_code and ("7F" in payload_str or self.last_response_status == STATUS_NRC):
+                    idx = payload_str.find("7F")
+                    if len(payload_str) >= idx + 6 and payload_str[idx+2:idx+4] == srv:
+                        nrc_code = payload_str[idx+4:idx+6]
+
+                if payload_str.startswith(target_prefix):
+                    cap_status = CAPABILITY_SUPPORTED
+                    payload_hex = payload_str[len(target_prefix):]
+                    nrc = None
+                    nrc_desc = None
+                    details = f"Positive Mode {srv} response"
+                    resp_val = payload_str
+                elif nrc_code:
+                    cap_status = CAPABILITY_NEGATIVE_RESPONSE
+                    payload_hex = None
+                    nrc = nrc_code
+                    nrc_desc = NRC_MAP.get(nrc_code, f"Unknown NRC 0x{nrc_code}")
+                    if nrc_code == "31":
+                        details = "DID not supported / out of range"
+                    elif nrc_code == "33":
+                        details = "Security access denied"
+                    else:
+                        details = f"NRC 0x{nrc_code}: {nrc_desc}"
+                    resp_val = res_str or None
+                elif self.last_response_status == STATUS_DID_MISMATCH or (target_prefix in payload_str and not payload_str.startswith(target_prefix)):
+                    cap_status = CAPABILITY_DID_MISMATCH
+                    payload_hex = None
+                    nrc = None
+                    nrc_desc = None
+                    details = "Identifier response detected with offset / mismatch"
+                    resp_val = res_str or None
+                elif self.last_response_status == STATUS_TIMEOUT:
+                    cap_status = CAPABILITY_TIMEOUT
+                    payload_hex = None
+                    nrc = None
+                    nrc_desc = None
+                    details = "Communication timed out"
+                    resp_val = None
+                elif not res or "NO DATA" in res_str or self.last_response_status in (STATUS_NO_DATA, STATUS_EMPTY_RESPONSE):
+                    cap_status = CAPABILITY_NO_RESPONSE
+                    payload_hex = None
+                    nrc = None
+                    nrc_desc = None
+                    details = "No data returned by ECU"
+                    resp_val = None
+                elif self.last_response_status in (STATUS_NO_CONNECTION, STATUS_WORKER_DOWN, STATUS_SERIAL_ERROR):
+                    cap_status = CAPABILITY_UNAVAILABLE
+                    payload_hex = None
+                    nrc = None
+                    nrc_desc = None
+                    details = f"Communication error ({self.last_response_status})"
+                    resp_val = None
+                else:
+                    cap_status = CAPABILITY_UNSUPPORTED
+                    payload_hex = None
+                    nrc = None
+                    nrc_desc = None
+                    details = f"Unrecognized response: {res_str}"
+                    resp_val = res_str or None
+
+                results.append({
+                    "type": type_label,
+                    "id": ident,
+                    "header": hdr,
+                    "service": srv,
+                    "status": cap_status,
+                    "request": cmd,
+                    "response": resp_val,
+                    "payload_hex": payload_hex,
+                    "nrc": nrc,
+                    "nrc_desc": nrc_desc,
+                    "raw_response": raw_resp,
+                    "candidate_source": comb_src,
+                    "details": details,
+                })
+
+        finally:
+            if self.current_header != initial_header:
+                self.komut_gonder(f"AT SH {initial_header}", timeout=1.0)
+                self.current_header = initial_header
+
+        self.last_advanced_capability_results = results
+        return results
+
+    def build_acquisition_plan(self, capabilities=None, include_unsupported=False) -> list:
+        """
+        V208 (Phase E-3): Kapasite Keşfi → Veri Toplama Planlayıcısı (Capability -> Acquisition Plan).
+        discover_ecu_capabilities() sonuçlarını girdi alarak, hangi ECU/header üzerinden
+        hangi servis ve tanımlayıcının hangi öncelikle okunacağını belirleyen deterministik,
+        salt-okunur ve bounded bir okuma planı üretir.
+        Kesinlikle ECU iletişimi veya komut gönderimi (komut_gonder) yapmaz; otomatik çalıştırmaz.
+        """
+        raw_items = capabilities if capabilities is not None else self.last_capability_results
+        if not raw_items:
+            self.last_acquisition_plan = []
+            self.last_acquisition_plan_metadata = {
+                "plan_version": 1,
+                "count": 0,
+                "enabled_count": 0,
+                "disabled_count": 0,
+                "truncated": False,
+                "total_candidates": 0,
+            }
+            return []
+
+        plan_dict = {}
+        core_obd_pids = {"010C", "010D", "0105", "0111", "010B", "0C", "0D", "05", "11", "0B"}
+
+        for entry in raw_items:
+            if not isinstance(entry, dict):
+                continue
+
+            srv = str(entry.get("service") or "").strip().upper()
+            t_id = str(entry.get("id") or "").strip().replace(" ", "").upper()
+            hdr = str(entry.get("header") or "").strip().upper()
+            t_type = str(entry.get("type") or "").strip().upper()
+            status = entry.get("status")
+            src = str(entry.get("candidate_source") or entry.get("source") or "UNKNOWN").strip().upper()
+            session_info = entry.get("session")
+
+            # Servis / Tip tespiti
+            if not srv:
+                if t_type == "MODE22_DID":
+                    srv = "22"
+                elif t_type in ("MODE01_PID", "PID"):
+                    srv = "01"
+                elif t_id.startswith("22") and len(t_id) == 6:
+                    srv = "22"
+                elif t_id.startswith("01") and len(t_id) == 4:
+                    srv = "01"
+                else:
+                    srv = "22"
+
+            if not hdr:
+                hdr = "7DF" if srv == "01" else "7E0"
+
+            is_malformed = False
+            malformed_reason = None
+
+            if srv == "22":
+                clean_id = t_id
+                if clean_id.startswith("0X"):
+                    clean_id = clean_id[2:]
+                if clean_id.startswith("22") and len(clean_id) == 6:
+                    clean_id = clean_id[2:]
+
+                if len(clean_id) != 4 or not all(c in "0123456789ABCDEF" for c in clean_id):
+                    is_malformed = True
+                    malformed_reason = f"Malformed Mode 22 DID: '{t_id}'"
+                    norm_id = clean_id
+                    req = str(entry.get("request") or f"22{clean_id}")
+                else:
+                    norm_id = clean_id
+                    req = f"22{norm_id}"
+                item_type = "MODE22_DID"
+
+            elif srv == "01":
+                clean_id = t_id
+                if clean_id.startswith("0X"):
+                    clean_id = clean_id[2:]
+                if clean_id.startswith("01") and len(clean_id) == 4:
+                    clean_id = clean_id[2:]
+
+                if len(clean_id) != 2 or not all(c in "0123456789ABCDEF" for c in clean_id):
+                    is_malformed = True
+                    malformed_reason = f"Malformed Mode 01 PID: '{t_id}'"
+                    norm_id = clean_id
+                    req = str(entry.get("request") or f"01{clean_id}")
+                else:
+                    norm_id = clean_id
+                    req = f"01{norm_id}"
+                item_type = "MODE01_PID"
+
+            elif srv == "21":
+                clean_id = t_id
+                if clean_id.startswith("0X"):
+                    clean_id = clean_id[2:]
+                if clean_id.startswith("21") and len(clean_id) in (4, 6):
+                    clean_id = clean_id[2:]
+                norm_id = clean_id
+                req = f"21{norm_id}"
+                item_type = "MODE21_IDENTIFIER"
+
+            else:
+                norm_id = t_id
+                req = str(entry.get("request") or f"{srv}{t_id}")
+                item_type = t_type or f"MODE{srv}_ITEM"
+
+            is_supported = (status == CAPABILITY_SUPPORTED) and not is_malformed
+
+            if is_malformed:
+                enabled = False
+                reason = malformed_reason
+            elif is_supported:
+                enabled = True
+                reason = "CAPABILITY_SUPPORTED"
+            else:
+                enabled = False
+                reason = str(status or "UNSUPPORTED")
+
+            if not enabled and not include_unsupported:
+                continue
+
+            # Deterministik Öncelik
+            if srv == "01":
+                if norm_id in core_obd_pids or f"01{norm_id}" in core_obd_pids:
+                    priority = 100
+                else:
+                    priority = 90
+            elif srv == "22":
+                if "USER" in src:
+                    priority = 70
+                elif "CUSTOM_PID" in src:
+                    priority = 60
+                elif "MODE22_CSV" in src:
+                    priority = 50
+                else:
+                    priority = 40
+            elif srv == "21":
+                priority = 45
+            else:
+                priority = 30
+
+            plan_key = (hdr, srv, norm_id)
+
+            if plan_key in plan_dict:
+                existing = plan_dict[plan_key]
+                if enabled and not existing["enabled"]:
+                    existing["enabled"] = True
+                    existing["reason"] = reason
+                if priority > existing["priority"]:
+                    existing["priority"] = priority
+                if src != "UNKNOWN" and src not in existing["source"]:
+                    existing["source"] = f"{existing['source']}+{src}" if existing["source"] != "UNKNOWN" else src
+                if session_info and not existing.get("session"):
+                    existing["session"] = session_info
+            else:
+                plan_item = {
+                    "type": item_type,
+                    "id": norm_id,
+                    "header": hdr,
+                    "service": srv,
+                    "request": req,
+                    "source": src,
+                    "priority": priority,
+                    "enabled": enabled,
+                    "reason": reason,
+                }
+                if session_info:
+                    plan_item["session"] = session_info
+                plan_dict[plan_key] = plan_item
+
+        # Deterministik Sıralama
+        sorted_items = sorted(
+            plan_dict.values(),
+            key=lambda x: (
+                0 if x["enabled"] else 1,
+                -x["priority"],
+                x["header"],
+                x["service"],
+                x["id"]
+            )
+        )
+
+        is_truncated = len(sorted_items) > MAX_ACQUISITION_PLAN
+        final_plan = sorted_items[:MAX_ACQUISITION_PLAN]
+
+        enabled_count = sum(1 for it in final_plan if it["enabled"])
+        disabled_count = len(final_plan) - enabled_count
+
+        self.last_acquisition_plan = final_plan
+        self.last_acquisition_plan_metadata = {
+            "plan_version": 1,
+            "count": len(final_plan),
+            "enabled_count": enabled_count,
+            "disabled_count": disabled_count,
+            "truncated": is_truncated,
+            "total_candidates": len(sorted_items),
+        }
+
+        return list(final_plan)
+
+    def get_acquisition_plan(self) -> list:
+        """Son oluşturulan okuma planının yüzeysel kopyasını (shallow copy) döndürür."""
+        return list(self.last_acquisition_plan)
+
+    def execute_acquisition_plan(self, plan=None, session=None) -> list:
+        """
+        V209 (Phase E-4): Veri Toplama Yürütücüsü (Acquisition Execution Engine).
+        build_acquisition_plan() tarafından üretilen doğrulanmış okuma planını
+        sırayla, kontrollü ve salt-okunur şekilde ECU üzerinden yürütür.
+        Yalnızca enabled == True olan öğeleri sorgular.
+        Mode 01 ve Mode 22 yanıtlarını ayrıştırır, geçerli ölçümleri mevcut cache ve
+        history sistemine (_update_sensor_cache) aktarır.
+        """
+        target_plan = plan if plan is not None else self.last_acquisition_plan
+        if not target_plan:
+            self.last_acquisition_results = []
+            return []
+
+        # Enforce safety bound (MAX_ACQUISITION_PLAN)
+        if len(target_plan) > MAX_ACQUISITION_PLAN:
+            target_plan = target_plan[:MAX_ACQUISITION_PLAN]
+
+        initial_header = self.current_header
+        results = []
+
+        pids_table = {
+            "0104": ("LOAD", lambda x: x[0] * 100 / 255),
+            "0105": ("ECT", lambda x: x[0] - 40),
+            "0106": ("STFT", lambda x: (x[0] - 128) * 100 / 128),
+            "0107": ("LTFT", lambda x: (x[0] - 128) * 100 / 128),
+            "010B": ("MAP", lambda x: x[0]),
+            "010C": ("RPM", lambda x: (x[0]*256 + x[1]) / 4),
+            "010D": ("SPEED", lambda x: x[0]),
+            "010E": ("TIMING_ADV", lambda x: (x[0] / 2) - 64), 
+            "010F": ("IAT", lambda x: x[0] - 40),
+            "0110": ("MAF", lambda x: (x[0]*256 + x[1]) / 100),
+            "0111": ("TPS", lambda x: x[0] * 100 / 255),
+        }
+        if hasattr(self, "csv_pids") and self.csv_pids:
+            pids_table.update(self.csv_pids)
+
+        try:
+            for item in target_plan:
+                if not isinstance(item, dict):
+                    continue
+
+                # Kural 3: Yalnızca enabled == True olan öğeler çalıştırılır!
+                if not item.get("enabled", False):
+                    continue
+
+                item_type = str(item.get("type", "")).strip().upper()
+                item_id = str(item.get("id", "")).strip().replace(" ", "").upper()
+                hdr = str(item.get("header", "7DF")).strip().upper()
+                srv = str(item.get("service", "")).strip().upper()
+                req = str(item.get("request", "")).strip().upper()
+                src = str(item.get("source", "UNKNOWN")).strip().upper()
+                now_ts = time.time()
+
+                # Desteklenmeyen / Bilinmeyen tip kontrolü (Kural 4)
+                if item_type not in ("MODE01_PID", "MODE22_DID"):
+                    results.append({
+                        "type": item_type,
+                        "id": item_id,
+                        "header": hdr,
+                        "service": srv,
+                        "request": req,
+                        "status": "UNAVAILABLE",
+                        "quality": derive_quality_from_status("UNAVAILABLE"),
+                        "response": None,
+                        "payload_hex": None,
+                        "payload_bytes": [],
+                        "value": None,
+                        "source": src,
+                        "timestamp": now_ts,
+                        "error": f"Unsupported acquisition type: '{item_type}'",
+                    })
+                    continue
+
+                # Header switching (Kural 7)
+                if self.current_header != hdr:
+                    self.komut_gonder(f"AT SH {hdr}", timeout=1.0)
+                    self.current_header = hdr
+
+                # =========================================================
+                # MODE 01 EXECUTION
+                # =========================================================
+                if item_type == "MODE01_PID":
+                    clean_pid = item_id if len(item_id) == 4 else f"01{item_id}"
+                    cmd = req or clean_pid
+
+                    res = self.komut_gonder(cmd, timeout=2.0)
+                    res_str = "".join(res).upper() if res else ""
+                    raw_status = self.last_response_status
+
+                    decoded_val = None
+                    payload_bytes = []
+                    payload_hex = None
+                    error_msg = None
+
+                    if raw_status == STATUS_VALID and res:
+                        pid_info = pids_table.get(clean_pid)
+                        if pid_info:
+                            for line in res:
+                                try:
+                                    v = self.parse_pid_line(line, clean_pid, pid_info)
+                                    if v is not None:
+                                        decoded_val = v
+                                        sensor_name = pid_info[0]
+                                        self._update_sensor_cache(sensor_name, v, status=STATUS_VALID, timestamp=now_ts, source=src)
+                                        break
+                                except Exception as e:
+                                    error_msg = f"Mode 01 parse error: {e}"
+                        else:
+                            for line in res:
+                                hex_clean = line.replace(" ", "").upper()
+                                if "41" in hex_clean:
+                                    idx = hex_clean.find("41")
+                                    payload_hex = hex_clean[idx+4:]
+                                    payload_bytes = [int(payload_hex[i:i+2], 16) for i in range(0, len(payload_hex), 2) if len(payload_hex[i:i+2]) == 2]
+                                    if payload_bytes:
+                                        decoded_val = payload_bytes[0]
+                                    break
+                    else:
+                        error_msg = f"Mode 01 query failed ({raw_status})"
+
+                    quality = derive_quality_from_status(raw_status)
+                    results.append({
+                        "type": "MODE01_PID",
+                        "id": item_id,
+                        "header": hdr,
+                        "service": "01",
+                        "request": cmd,
+                        "status": raw_status,
+                        "quality": quality,
+                        "response": res_str or None,
+                        "payload_hex": payload_hex,
+                        "payload_bytes": payload_bytes,
+                        "value": decoded_val,
+                        "source": src,
+                        "timestamp": now_ts,
+                        "error": error_msg,
+                    })
+
+                # =========================================================
+                # MODE 22 EXECUTION
+                # =========================================================
+                elif item_type == "MODE22_DID":
+                    clean_did = item_id
+                    if clean_did.startswith("0X"): clean_did = clean_did[2:]
+                    if clean_did.startswith("22") and len(clean_did) == 6: clean_did = clean_did[2:]
+
+                    # Malformed DID check (Kural 23 TEST L)
+                    if len(clean_did) != 4 or not all(c in "0123456789ABCDEF" for c in clean_did):
+                        results.append({
+                            "type": "MODE22_DID",
+                            "id": item_id,
+                            "header": hdr,
+                            "service": "22",
+                            "request": req,
+                            "status": "INVALID_INPUT",
+                            "quality": QUALITY_INVALID,
+                            "response": None,
+                            "payload_hex": None,
+                            "payload_bytes": [],
+                            "value": None,
+                            "source": src,
+                            "timestamp": now_ts,
+                            "error": f"Malformed Mode 22 DID: '{item_id}'",
+                        })
+                        continue
+
+                    cmd = req or f"22{clean_did}"
+
+                    # Session Handling (Kural 8)
+                    self._ensure_session(hdr)
+
+                    # Send through komut_gonder (Kural 6)
+                    res = self.komut_gonder(cmd, timeout=2.0)
+                    res_str = "".join(res).upper() if res else ""
+                    raw_status = self.last_response_status
+
+                    # Reassemble multi-frame if needed (Kural 12)
+                    if res and len(res) > 1:
+                        payload_str = self._multiframe_birlestir(res)
+                    else:
+                        payload_str = res_str
+                        for h in ("7E8", "7E9", "7EA", "7EB", "7EC", "7ED", "7EE", "7EF", "7E0", "7E1", "7E2", "7E3", "7E4", "7E5", "7E6", "7E7", "7DF"):
+                            if payload_str.startswith(h):
+                                payload_str = payload_str[len(h):]
+                                break
+
+                    target_prefix = f"62{clean_did}"
+                    decoded_val = None
+                    payload_hex = None
+                    payload_bytes = []
+                    item_status = None
+                    error_msg = None
+
+                    # Anchored positive response match (Kural 10)
+                    if payload_str.startswith(target_prefix):
+                        item_status = STATUS_VALID
+                        payload_hex = payload_str[len(target_prefix):]
+                        payload_bytes = []
+                        for i in range(0, len(payload_hex)-1, 2):
+                            try:
+                                payload_bytes.append(int(payload_hex[i:i+2], 16))
+                            except ValueError:
+                                break
+
+                        # Value decoding via formula or numeric bytes
+                        formula = item.get("formula")
+                        if not formula and hasattr(self, "custom_pids") and cmd in self.custom_pids:
+                            formula = self.custom_pids[cmd][1]
+
+                        if formula and payload_bytes:
+                            try:
+                                context = {"x": payload_bytes, "d": payload_bytes}
+                                for idx_b, b_val in enumerate(payload_bytes):
+                                    if idx_b < 26:
+                                        context[chr(65 + idx_b)] = b_val
+                                decoded_val = self.safe_parser.evaluate(formula, context)
+                            except Exception as e:
+                                log_flush(f"[ACQUISITION_EXEC_ERROR] Formül hesaplama hatası ({formula}): {e}")
+                        elif len(payload_bytes) == 1:
+                            decoded_val = payload_bytes[0]
+                        elif len(payload_bytes) == 2:
+                            decoded_val = payload_bytes[0] * 256 + payload_bytes[1]
+
+                        # Cache & History Integration (Kural 13 & 14)
+                        sensor_name = item.get("name") or f"DID_{clean_did}"
+                        if decoded_val is not None:
+                            self._update_sensor_cache(
+                                sensor_name,
+                                decoded_val,
+                                status=STATUS_VALID,
+                                quality=QUALITY_GOOD,
+                                timestamp=now_ts,
+                                source=src
+                            )
+
+                    else:
+                        # Negative Response / NRC check (Kural 11)
+                        nrc_code = self._classify_nrc(res, context_pid=cmd)
+                        if not nrc_code and ("7F" in payload_str or raw_status == STATUS_NRC):
+                            idx_7f = payload_str.find("7F")
+                            if len(payload_str) >= idx_7f + 6 and payload_str[idx_7f+2:idx_7f+4] == "22":
+                                nrc_code = payload_str[idx_7f+4:idx_7f+6]
+
+                        if nrc_code:
+                            item_status = STATUS_NRC
+                            nrc_desc = NRC_MAP.get(nrc_code, f"Unknown NRC 0x{nrc_code}")
+                            error_msg = f"NRC 0x{nrc_code}: {nrc_desc}"
+                        elif target_prefix in payload_str and not payload_str.startswith(target_prefix):
+                            item_status = STATUS_DID_MISMATCH
+                            error_msg = "DID response detected with offset / mismatch"
+                        elif raw_status == STATUS_TIMEOUT:
+                            item_status = STATUS_TIMEOUT
+                            error_msg = "Communication timed out"
+                        elif not res or "NO DATA" in res_str or raw_status in (STATUS_NO_DATA, STATUS_EMPTY_RESPONSE):
+                            item_status = STATUS_NO_DATA
+                            error_msg = "No data returned by ECU"
+                        elif raw_status in (STATUS_NO_CONNECTION, STATUS_WORKER_DOWN, STATUS_SERIAL_ERROR):
+                            item_status = raw_status
+                            error_msg = f"Communication error ({raw_status})"
+                        else:
+                            item_status = STATUS_DID_MISMATCH if raw_status == STATUS_DID_MISMATCH else (raw_status or STATUS_EMPTY_RESPONSE)
+                            error_msg = f"Unrecognized response: {res_str}"
+
+                    quality = derive_quality_from_status(item_status)
+                    results.append({
+                        "type": "MODE22_DID",
+                        "id": clean_did,
+                        "header": hdr,
+                        "service": "22",
+                        "request": cmd,
+                        "status": item_status,
+                        "quality": quality,
+                        "response": res_str or None,
+                        "payload_hex": payload_hex,
+                        "payload_bytes": payload_bytes,
+                        "value": decoded_val,
+                        "source": src,
+                        "timestamp": now_ts,
+                        "error": error_msg,
+                    })
+
+        finally:
+            if self.current_header != initial_header:
+                self.komut_gonder(f"AT SH {initial_header}", timeout=1.0)
+                self.current_header = initial_header
+
+        self.last_acquisition_results = results
+        return results
+
     def baglanti_kontrol(self):
         """Otomatik Reconnect"""
         print("⚠️ Bağlantı koptu, tekrar deneniyor...")
@@ -2735,6 +3718,7 @@ class AutoExpertEngine:
     def kurulum_yap(self):
         print("Araç Hazırlanıyor...")
         self.ariza_kodlarini_coz()
+        return True
 
     def ariza_kodlarini_coz(self):
         """GÖREV 1 (Production): Gerçek DTC Decode — ISO-TP Multi-Frame Destekli (P/C/B/U)
@@ -2990,4 +3974,271 @@ class AutoExpertEngine:
             except Exception as e:
                 log_flush(f"[BLOCK_PARSE_ERROR] Sirius D42 hesaplama hatası ({field}): {e}")
 
-# V200: Priority Queue I/O Worker ve AT DPN adaptasyonu tamamlandı
+# ============================================================
+# Phase E-1: Live Diagnostic Session Orchestration
+# ============================================================
+class DiagnosticSession:
+    """
+    V205 (Phase E-1): Canlı Teşhis Oturumu Orkestrasyon Sınıfı.
+    AutoExpertEngine ile iletişim kurar, güvenilir ölçümleri periyodik olarak alır,
+    C ve D katmanlarını (D-1 Evidence -> D-2 Hypotheses -> D-3 Recommendations)
+    düzenli olarak tetikler ve sınırlandırılmış anlık durum görüntüsü sunar.
+    Read-only prensibiyle çalışır; ECU yazma veya aktüasyon yürütmez.
+    """
+    def __init__(self, engine=None, max_consecutive_errors: int = 5, eval_cadence: int = 1):
+        self.engine = engine if engine is not None else AutoExpertEngine()
+        self.session_id = None
+        self.started_at = None
+        self.ended_at = None
+        self.state = SESSION_IDLE
+        self.error_reason = None
+        self.last_evidence = []
+        self.last_hypotheses = []
+        self.last_recommendations = []
+        self.acquisition_count = 0
+        self.error_count = 0
+        self.consecutive_errors = 0
+        self.max_consecutive_errors = max_consecutive_errors
+        self.eval_cadence = eval_cadence
+
+    @property
+    def vehicle_profile(self):
+        return self.engine.vehicle_profile
+
+    def start(self, port=None, baudrate=None, profil=None) -> bool:
+        """
+        Oturumu başlatır: IDLE -> CONNECTING -> INITIALIZING -> RUNNING.
+        Mevcut engine.baglan() ve engine.kurulum_yap() fonksiyonlarını kullanır.
+        """
+        if self.state not in (SESSION_IDLE, SESSION_STOPPED):
+            log_flush(f"[SESSION_WARN] Oturum zaten aktif durumda: {self.state}")
+            return False
+
+        self.state = SESSION_CONNECTING
+        self.error_reason = None
+        self.consecutive_errors = 0
+
+        # 1. Bağlantı kur
+        ok = self.engine.baglan(profil=profil)
+        if not ok:
+            self.state = SESSION_ERROR
+            self.error_reason = "Connection failed: Unable to connect to OBD interface"
+            return False
+
+        # 2. Kurulum ve protokol tespiti
+        self.state = SESSION_INITIALIZING
+        try:
+            init_ok = self.engine.kurulum_yap()
+            if init_ok is False:
+                self.state = SESSION_ERROR
+                self.error_reason = "Initialization failed: ELM327 protocol or setup failed"
+                if self.engine.io_worker:
+                    self.engine.io_worker.stop()
+                if self.engine.ser and hasattr(self.engine.ser, "is_open") and self.engine.ser.is_open:
+                    self.engine.ser.close()
+                return False
+        except Exception as e:
+            self.state = SESSION_ERROR
+            self.error_reason = f"Initialization failed: {e}"
+            if self.engine.io_worker:
+                self.engine.io_worker.stop()
+            if self.engine.ser and hasattr(self.engine.ser, "is_open") and self.engine.ser.is_open:
+                self.engine.ser.close()
+            return False
+
+        self.started_at = time.time()
+        self.ended_at = None
+        self.session_id = f"diag_{int(self.started_at)}_{uuid.uuid4().hex[:6]}"
+        self.state = SESSION_RUNNING
+
+        # Başlangıç teşhis değerlendirmesi
+        self.evaluate_diagnostics()
+        return True
+
+    def stop(self) -> bool:
+        """
+        Oturumu güvenli ve idempotent şekilde durdurur: RUNNING -> STOPPING -> STOPPED.
+        """
+        if self.state == SESSION_STOPPED:
+            return True
+
+        self.state = SESSION_STOPPING
+        try:
+            if self.engine.io_worker:
+                self.engine.io_worker.stop()
+            if self.engine.ser and hasattr(self.engine.ser, "is_open") and self.engine.ser.is_open:
+                self.engine.ser.close()
+        except Exception as e:
+            log_flush(f"[SESSION_STOP_ERROR] Kapatma sırasında hata: {e}")
+        finally:
+            self.ended_at = time.time()
+            self.state = SESSION_STOPPED
+
+        return True
+
+    def step_acquisition(self, pids=None) -> dict | None:
+        """
+        Bir döngü veri okur, hata bütçesini kontrol eder ve periyodik teşhis çalıştırır.
+        """
+        if self.state != SESSION_RUNNING:
+            return None
+
+        data, fresh_count = self.engine.tek_veri_oku(target_list=pids)
+
+        comm_error = self.engine.last_response_status in (STATUS_NO_CONNECTION, STATUS_WORKER_DOWN, STATUS_SERIAL_ERROR)
+        if comm_error:
+            self.error_count += 1
+            self.consecutive_errors += 1
+            if self.consecutive_errors >= self.max_consecutive_errors:
+                self.state = SESSION_ERROR
+                self.error_reason = f"Persistent communication failure ({self.engine.last_response_status})"
+                try:
+                    if self.engine.io_worker:
+                        self.engine.io_worker.stop()
+                    if self.engine.ser and hasattr(self.engine.ser, "is_open") and self.engine.ser.is_open:
+                        self.engine.ser.close()
+                except Exception:
+                    pass
+                return data
+        elif fresh_count > 0 or (data and any(v is not None for v in data.values())):
+            self.acquisition_count += 1
+            self.consecutive_errors = 0
+        else:
+            self.error_count += 1
+            self.consecutive_errors += 1
+            if self.consecutive_errors >= self.max_consecutive_errors:
+                self.state = SESSION_ERROR
+                self.error_reason = "Persistent acquisition failure: exceeded error budget"
+                try:
+                    if self.engine.io_worker:
+                        self.engine.io_worker.stop()
+                    if self.engine.ser and hasattr(self.engine.ser, "is_open") and self.engine.ser.is_open:
+                        self.engine.ser.close()
+                except Exception:
+                    pass
+                return data
+
+        if self.acquisition_count > 0 and self.acquisition_count % self.eval_cadence == 0:
+            self.evaluate_diagnostics()
+
+        return data
+
+    def evaluate_diagnostics(self) -> dict:
+        """
+        D-1 -> D-2 -> D-3 teşhis zincirini deterministik olarak yürütür.
+        """
+        evidence = self.engine._collect_diagnostic_evidence()
+        hypotheses = self.engine._infer_fault_hypotheses(evidence)
+        recommendations = self.engine._recommend_diagnostic_tests(hypotheses)
+
+        self.last_evidence = evidence
+        self.last_hypotheses = hypotheses
+        self.last_recommendations = recommendations
+
+        return {
+            "evidence": evidence,
+            "hypotheses": hypotheses,
+            "recommendations": recommendations,
+        }
+
+    def get_session_snapshot(self) -> dict:
+        """
+        Sınırlandırılmış session anlık durum özetini döndürür.
+        """
+        prof_display = None
+        if self.vehicle_profile:
+            if hasattr(self.vehicle_profile, "motor_kodu"):
+                prof_display = self.vehicle_profile.motor_kodu
+            else:
+                prof_display = str(self.vehicle_profile)
+
+        return {
+            "session_id": self.session_id,
+            "state": self.state,
+            "started_at": self.started_at,
+            "ended_at": self.ended_at,
+            "vehicle_profile": prof_display,
+            "acquisition_count": self.acquisition_count,
+            "error_count": self.error_count,
+            "error_reason": self.error_reason,
+            "evidence": list(self.last_evidence),
+            "hypotheses": list(self.last_hypotheses),
+            "recommendations": list(self.last_recommendations),
+        }
+
+    def get_live_summary(self) -> str:
+        """
+        Kompakt, deterministik metin özeti üretir.
+        """
+        prof_name = "UNKNOWN"
+        if self.vehicle_profile and hasattr(self.vehicle_profile, "motor_kodu"):
+            prof_name = self.vehicle_profile.motor_kodu
+
+        conn_status = "ERROR" if self.state == SESSION_ERROR else ("OK" if self.state == SESSION_RUNNING else self.state)
+        lines = [
+            f"SESSION: {self.state}",
+            f"PROFILE: {prof_name}",
+            f"CONNECTION: {conn_status}",
+            "",
+            "EVIDENCE:",
+        ]
+        if self.last_evidence:
+            for ev in self.last_evidence:
+                lines.append(f"- {ev.get('id', 'UNKNOWN')}")
+        else:
+            lines.append("- (None)")
+
+        lines.extend(["", "HYPOTHESES:"])
+        if self.last_hypotheses:
+            for hyp in self.last_hypotheses:
+                lines.append(f"- {hyp.get('id', 'UNKNOWN')} — {hyp.get('status', 'UNKNOWN')}")
+        else:
+            lines.append("- (None)")
+
+        lines.extend(["", "NEXT TEST:"])
+        if self.last_recommendations:
+            top_test = self.last_recommendations[0]
+            lines.append(f"- {top_test.get('id', 'UNKNOWN')}")
+        else:
+            lines.append("- (None)")
+
+        return "\n".join(lines)
+
+    def discover_advanced_capabilities(
+        self,
+        headers=None,
+        mode22_dids=None,
+        mode21_ids=None,
+        services=None,
+        candidate_source=None,
+    ) -> list:
+        """
+        Oturum kapsamında gelişmiş UDS / Mode 22 keşfini tetikler.
+        Oturum durdurulduğunda keşif otomatik abort edilir.
+        """
+        return self.engine.discover_advanced_capabilities(
+            headers=headers,
+            mode22_dids=mode22_dids,
+            mode21_ids=mode21_ids,
+            services=services,
+            candidate_source=candidate_source,
+            abort_callback=lambda: self.state in (SESSION_STOPPING, SESSION_STOPPED),
+        )
+
+    def build_acquisition_plan(self, capabilities=None, include_unsupported=False) -> list:
+        """
+        Oturum kapsamında doğrulanmış yeteneklerden bir okuma planı üretir.
+        """
+        return self.engine.build_acquisition_plan(capabilities=capabilities, include_unsupported=include_unsupported)
+
+    def get_acquisition_plan(self) -> list:
+        """
+        Oturumun son veri toplama planının kopyasını döndürür.
+        """
+        return self.engine.get_acquisition_plan()
+
+    def execute_acquisition_plan(self, plan=None) -> list:
+        """
+        Oturum kapsamında veri toplama planını yürütür.
+        """
+        return self.engine.execute_acquisition_plan(plan=plan, session=self)

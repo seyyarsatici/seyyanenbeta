@@ -97,7 +97,7 @@ def run_tests():
     # TEST G — Multi-frame Manual DID Probe (221641)
     print("\n--- TEST G: Multi-frame Manual DID Probe (221641) ---")
     probe_g = engine.manual_did_probe("1641", header="7E0")
-    print(f"Test G Result: ok={probe_g['ok']}, status={probe_g['status']}, did={probe_g['did']}, payload_hex={probe_g['payload_hex']}")
+    print(f"Test G Result: ok={probe_g['ok']}, response={probe_g.get('response')}, payload_hex={probe_g['payload_hex']}")
     assert probe_g["ok"] is True
     assert probe_g["status"] == STATUS_VALID
     assert probe_g["did"] == "1641"

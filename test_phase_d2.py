@@ -210,8 +210,10 @@ def run_tests():
     assert derive_quality_from_status(STATUS_TIMEOUT) == QUALITY_ERROR
     # Phase B
     probe_res = engine.manual_did_probe("1640", header="7E0")
+    print("PROBE_RES in test_phase_d2:", probe_res)
     assert probe_res["ok"] is True
     # Phase C-2
+    engine._update_sensor_cache("RPM", 850.0, status=STATUS_VALID, source="MODE01")
     assert engine._is_sensor_fresh("RPM", max_age=1000000.0) is True
     # Phase C-3
     assert engine._check_physical_plausibility("ECT", 90.0) == PHYSICS_PLAUSIBLE

@@ -88,6 +88,7 @@ def run_tests():
     # Helper to populate standard trusted cache for tests
     def populate_trusted_cache():
         engine.data_cache.clear()
+        engine.sensor_history.clear()
         engine._update_sensor_cache("RPM", 850.0, status=STATUS_VALID, source="MODE01")
         engine._update_sensor_cache("SPEED", 0.0, status=STATUS_VALID, source="MODE01")
         engine._update_sensor_cache("ECT", 90.0, status=STATUS_VALID, source="MODE01")
@@ -263,6 +264,7 @@ def run_tests():
     # TEST N — D-1 -> D-2 -> D-3 Full Chain
     print("\n--- TEST N: Full End-to-End Chain (D-1 -> D-2 -> D-3) ---")
     engine.data_cache.clear()
+    engine.sensor_history.clear()
     engine.vehicle_profile = MockVehicleProfile(
         motor_kodu="Z19DTH", marka="OPEL", aciklama="1.9 CDTI", yakit_tipi="DIESEL",
         max_rpm=4500, redline=4500, idle_rpm=820, hedef_ect=90

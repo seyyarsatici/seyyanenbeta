@@ -6,9 +6,32 @@ import logging
 from dataclasses import dataclass, field
 
 # --- V70: GERÇEK vLinker MC+ DONANIMI ---
-from motor import AutoExpertEngine 
+from motor import (
+    AutoExpertEngine,
+    DiagnosticSession,
+    SESSION_IDLE,
+    SESSION_CONNECTING,
+    SESSION_INITIALIZING,
+    SESSION_RUNNING,
+    SESSION_STOPPING,
+    SESSION_STOPPED,
+    SESSION_ERROR,
+    CAPABILITY_SUPPORTED,
+    CAPABILITY_UNSUPPORTED,
+    CAPABILITY_NO_RESPONSE,
+    CAPABILITY_NEGATIVE_RESPONSE,
+    CAPABILITY_TIMEOUT,
+    CAPABILITY_DID_MISMATCH,
+    CAPABILITY_UNAVAILABLE,
+    UDS_READ_SERVICE_CATALOG,
+    MAX_ACQUISITION_PLAN,
+)
 from dashboard import Dashboard
 from expert_system import DiagnosticExpert
+
+def create_diagnostic_session(engine=None) -> DiagnosticSession:
+    """V205 (Phase E-1/E-2): Canlı teşhis oturumu orkestratörü oluşturucu."""
+    return DiagnosticSession(engine=engine)
 
 try:
     from raporlayici import rapor_olustur_pdf

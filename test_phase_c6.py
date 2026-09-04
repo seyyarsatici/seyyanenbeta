@@ -80,6 +80,7 @@ def run_tests():
 
     # TEST B — RPM above redline
     print("\n--- TEST B: RPM Above Redline ---")
+    engine.sensor_history.clear()
     entry_b = engine._update_sensor_cache("RPM", 5000.0, status=STATUS_VALID, source="MODE01")
     assert entry_b["envelope_status"] == ENVELOPE_OUT_OF_RANGE_HIGH
     # Quality must NOT become ERROR/INVALID solely due to envelope
@@ -103,12 +104,14 @@ def run_tests():
     # TEST E — Idle reference
     print("\n--- TEST E: Idle Reference ---")
     engine.vehicle_profile = diesel_profile
+    engine.sensor_history.clear()
     entry_e = engine._update_sensor_cache("RPM", 820.0, status=STATUS_VALID, source="MODE01")
     assert entry_e["envelope_status"] == ENVELOPE_NORMAL
     print(f"Test E Result: RPM=820, idle=820 -> envelope={entry_e['envelope_status']}")
 
     # TEST F — Idle not incorrectly applied at running speed
     print("\n--- TEST F: Idle Not Incorrectly Applied ---")
+    engine.sensor_history.clear()
     entry_f = engine._update_sensor_cache("RPM", 2500.0, status=STATUS_VALID, source="MODE01")
     assert entry_f["envelope_status"] == ENVELOPE_NORMAL
     print(f"Test F Result: RPM=2500, idle=820 -> envelope={entry_f['envelope_status']} (no idle failure)")
@@ -134,6 +137,7 @@ def run_tests():
         hedef_ect=0,
     )
     engine.vehicle_profile = malformed_profile
+    engine.sensor_history.clear()
     entry_h = engine._update_sensor_cache("RPM", 4000.0, status=STATUS_VALID, source="MODE01")
     assert entry_h["envelope_status"] == ENVELOPE_UNKNOWN
     print(f"Test H Result: malformed redline -> envelope={entry_h['envelope_status']}")
@@ -141,6 +145,7 @@ def run_tests():
     # TEST I — Quality preservation (Physical Implausibility Priority)
     print("\n--- TEST I: Quality Preservation & Priority ---")
     engine.vehicle_profile = diesel_profile
+    engine.sensor_history.clear()
     # 1. Plausible RPM (5000) above redline -> quality remains GOOD
     entry_i1 = engine._update_sensor_cache("RPM", 5000.0, status=STATUS_VALID, source="MODE01")
     assert entry_i1["physics_status"] == PHYSICS_PLAUSIBLE

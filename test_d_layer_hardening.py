@@ -74,6 +74,7 @@ def run_hardening_tests():
 
     def populate_trusted_cache():
         engine.data_cache.clear()
+        engine.sensor_history.clear()
         engine._update_sensor_cache("RPM", 850.0, status=STATUS_VALID, source="MODE01")
         engine._update_sensor_cache("SPEED", 0.0, status=STATUS_VALID, source="MODE01")
         engine._update_sensor_cache("ECT", 90.0, status=STATUS_VALID, source="MODE01")
@@ -174,6 +175,7 @@ def run_hardening_tests():
     # TEST G: D-1 does not reuse stale C-5 result after current cache changes
     print("\n--- TEST G: D-1 Does Not Reuse Stale C-5 Inconsistency ---")
     engine.data_cache.clear()
+    engine.sensor_history.clear()
     # Step 1: Set RPM=0, SPEED=120
     engine._update_sensor_cache("RPM", 0.0, status=STATUS_VALID, source="MODE01")
     engine._update_sensor_cache("SPEED", 120.0, status=STATUS_VALID, source="MODE01")
@@ -182,6 +184,7 @@ def run_hardening_tests():
     assert any(r["status"] == CORRELATION_INCONSISTENT for r in engine.last_correlation_results)
 
     # Step 2: Change cache to RPM=800, SPEED=0 (coherent)
+    engine.sensor_history.clear()
     engine._update_sensor_cache("RPM", 800.0, status=STATUS_VALID, source="MODE01")
     engine._update_sensor_cache("SPEED", 0.0, status=STATUS_VALID, source="MODE01")
     # Step 3: Call D-1 _collect_diagnostic_evidence()
@@ -197,6 +200,7 @@ def run_hardening_tests():
     assert "SENSOR_CORRELATION_INCONSISTENT" not in [e["id"] for e in ev_h1]
 
     # Change to RPM=0, SPEED=120 without running _check_cross_sensor_correlations manually
+    engine.sensor_history.clear()
     engine._update_sensor_cache("RPM", 0.0, status=STATUS_VALID, source="MODE01")
     engine._update_sensor_cache("SPEED", 120.0, status=STATUS_VALID, source="MODE01")
     ev_h2 = engine._collect_diagnostic_evidence()
