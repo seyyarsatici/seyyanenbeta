@@ -18,3 +18,13 @@ __pycache__/
 # OS
 Thumbs.db
 .DS_Store
+
+# Runtime-generated diagnostic logs — do NOT commit
+auto_expert_log.txt
+test_errors_full.log
+
+# Runtime NRC log generated during E-layer operation — do NOT commit
+dbCSV/nrc_log.csv
+
+# pytest cache
+.pytest_cache/
