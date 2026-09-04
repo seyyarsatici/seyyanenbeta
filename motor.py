@@ -2905,10 +2905,6 @@ class AutoExpertEngine:
 
                 target_prefix = f"62{did}"
                 nrc_code = self._classify_nrc(res, context_pid=cmd)
-                if not nrc_code and ("7F" in payload_str or self.last_response_status == STATUS_NRC):
-                    idx = payload_str.find("7F")
-                    if len(payload_str) >= idx + 6 and payload_str[idx+2:idx+4] == "22":
-                        nrc_code = payload_str[idx+4:idx+6]
 
                 if payload_str.startswith(target_prefix):
                     cap_status = CAPABILITY_SUPPORTED
@@ -3162,12 +3158,7 @@ class AutoExpertEngine:
 
                 pos_service = f"{int(srv, 16) + 0x40:02X}"  # 22 -> 62, 21 -> 61
                 target_prefix = f"{pos_service}{ident}"
-
                 nrc_code = self._classify_nrc(res, context_pid=cmd)
-                if not nrc_code and ("7F" in payload_str or self.last_response_status == STATUS_NRC):
-                    idx = payload_str.find("7F")
-                    if len(payload_str) >= idx + 6 and payload_str[idx+2:idx+4] == srv:
-                        nrc_code = payload_str[idx+4:idx+6]
 
                 if payload_str.startswith(target_prefix):
                     cap_status = CAPABILITY_SUPPORTED
@@ -3547,6 +3538,7 @@ class AutoExpertEngine:
                     payload_hex = None
                     error_msg = None
 
+                    quality = derive_quality_from_status(raw_status)
                     if raw_status == STATUS_VALID and res:
                         pid_info = pids_table.get(clean_pid)
                         if pid_info:
@@ -3556,7 +3548,9 @@ class AutoExpertEngine:
                                     if v is not None:
                                         decoded_val = v
                                         sensor_name = pid_info[0]
-                                        self._update_sensor_cache(sensor_name, v, status=STATUS_VALID, timestamp=now_ts, source=src)
+                                        cache_entry = self._update_sensor_cache(sensor_name, v, status=STATUS_VALID, timestamp=now_ts, source=src)
+                                        if cache_entry and isinstance(cache_entry, dict) and "quality" in cache_entry:
+                                            quality = cache_entry["quality"]
                                         break
                                 except Exception as e:
                                     error_msg = f"Mode 01 parse error: {e}"
@@ -3573,7 +3567,6 @@ class AutoExpertEngine:
                     else:
                         error_msg = f"Mode 01 query failed ({raw_status})"
 
-                    quality = derive_quality_from_status(raw_status)
                     results.append({
                         "type": "MODE01_PID",
                         "id": item_id,
@@ -3644,7 +3637,10 @@ class AutoExpertEngine:
                     payload_hex = None
                     payload_bytes = []
                     item_status = None
+                    nrc_code = None
+                    nrc_desc = None
                     error_msg = None
+                    quality = QUALITY_GOOD
 
                     # Anchored positive response match (Kural 10)
                     if payload_str.startswith(target_prefix):
@@ -3679,7 +3675,7 @@ class AutoExpertEngine:
                         # Cache & History Integration (Kural 13 & 14)
                         sensor_name = item.get("name") or f"DID_{clean_did}"
                         if decoded_val is not None:
-                            self._update_sensor_cache(
+                            cache_entry = self._update_sensor_cache(
                                 sensor_name,
                                 decoded_val,
                                 status=STATUS_VALID,
@@ -3687,14 +3683,12 @@ class AutoExpertEngine:
                                 timestamp=now_ts,
                                 source=src
                             )
+                            if cache_entry and isinstance(cache_entry, dict) and "quality" in cache_entry:
+                                quality = cache_entry["quality"]
 
                     else:
                         # Negative Response / NRC check (Kural 11)
                         nrc_code = self._classify_nrc(res, context_pid=cmd)
-                        if not nrc_code and ("7F" in payload_str or raw_status == STATUS_NRC):
-                            idx_7f = payload_str.find("7F")
-                            if len(payload_str) >= idx_7f + 6 and payload_str[idx_7f+2:idx_7f+4] == "22":
-                                nrc_code = payload_str[idx_7f+4:idx_7f+6]
 
                         if nrc_code:
                             item_status = STATUS_NRC
@@ -3716,8 +3710,9 @@ class AutoExpertEngine:
                             item_status = STATUS_DID_MISMATCH if raw_status == STATUS_DID_MISMATCH else (raw_status or STATUS_EMPTY_RESPONSE)
                             error_msg = f"Unrecognized response: {res_str}"
 
-                    quality = derive_quality_from_status(item_status)
-                    results.append({
+                        quality = derive_quality_from_status(item_status)
+
+                    res_item = {
                         "type": "MODE22_DID",
                         "id": clean_did,
                         "header": hdr,
@@ -3732,7 +3727,11 @@ class AutoExpertEngine:
                         "source": src,
                         "timestamp": now_ts,
                         "error": error_msg,
-                    })
+                    }
+                    if item_status == STATUS_NRC and nrc_code:
+                        res_item["nrc"] = nrc_code
+                        res_item["nrc_desc"] = nrc_desc
+                    results.append(res_item)
 
         finally:
             if self.current_header != initial_header:
@@ -3802,7 +3801,8 @@ class AutoExpertEngine:
             resp = item.get("response")
             ts = item.get("timestamp")
 
-            # 1. Timestamp Consistency Checks
+            # 1. Timestamp & Canonical Freshness Checks
+            sensor_name = item.get("name") or item_id
             if ts is None or not isinstance(ts, (int, float)):
                 item_issues.append("Missing or non-numeric timestamp")
                 errors.append(f"Invalid timestamp for {item_id or f'item #{idx}'}")
@@ -3816,11 +3816,16 @@ class AutoExpertEngine:
                     accepted = False
                     fresh = False
                 else:
-                    # Freshness check (default 2.0s age threshold)
-                    age = now - ts
-                    if age > 2.0:
-                        fresh = False
-                        warnings.append(f"Result for {item_id} is stale (age={age:.2f}s)")
+                    # Canonical C-2 Freshness check
+                    if hasattr(self, "_is_sensor_fresh") and sensor_name in self.data_cache:
+                        fresh = self._is_sensor_fresh(sensor_name)
+                        age = self._get_sensor_age(sensor_name)
+                    else:
+                        age = now - ts
+                        fresh = (age <= 2.0)
+
+                    if not fresh:
+                        warnings.append(f"Result for {item_id} is stale (age={age:.2f}s)" if age is not None else f"Result for {item_id} is stale")
                         has_stale_quality = True
 
                 # Backward timestamp ordering check
@@ -3830,6 +3835,15 @@ class AutoExpertEngine:
 
                 if isinstance(ts, (int, float)):
                     prev_timestamp = ts
+
+            # Check cache-layer quality synchronization (C-layer effective quality)
+            if hasattr(self, "data_cache") and sensor_name in self.data_cache:
+                cache_entry = self.data_cache.get(sensor_name)
+                if isinstance(cache_entry, dict) and cache_entry.get("quality"):
+                    eff_q = cache_entry.get("quality")
+                    if eff_q in (QUALITY_IMPLAUSIBLE, QUALITY_ERROR, QUALITY_INVALID, QUALITY_SUSPECT):
+                        reported_quality = eff_q
+                        item["quality"] = eff_q
 
             # 2. Duplicate Detection
             key = (hdr, srv, item_id)
@@ -4091,15 +4105,14 @@ class AutoExpertEngine:
             # Rule 4: Diagnostic NRC Findings (Yetki / Destek reddi)
             # -------------------------------------------------------------
             elif raw_status == STATUS_NRC:
-                nrc_code = None
-                if err and "NRC 0x" in err:
-                    nrc_code = err.split("NRC 0x")[1].split(":")[0].strip()
-                elif resp and "7F" in resp:
-                    idx = resp.find("7F")
-                    if len(resp) >= idx + 6:
-                        nrc_code = resp[idx+4:idx+6]
+                nrc_code = item.get("nrc")
+                if not nrc_code and err and "NRC 0x" in err:
+                    try:
+                        nrc_code = err.split("NRC 0x")[1].split(":")[0].strip()
+                    except Exception:
+                        nrc_code = None
 
-                nrc_desc = NRC_MAP.get(nrc_code, "Unknown NRC") if nrc_code else "Negative Response Code"
+                nrc_desc = item.get("nrc_desc") or (NRC_MAP.get(nrc_code, f"Unknown NRC 0x{nrc_code}") if nrc_code else "Negative Response Code")
                 _add_finding(
                     f_id=f"FINDING_{item_id}_NRC_{nrc_code or 'UNKNOWN'}",
                     severity=SEVERITY_WARNING,
@@ -4163,16 +4176,24 @@ class AutoExpertEngine:
                     )
 
         # -----------------------------------------------------------------
-        # Rule 7: DTC Bilgisi Bulguları
+        # Rule 7: DTC Bilgisi Bulguları (Yapılandırılmış DTC desteği)
         # -----------------------------------------------------------------
-        dtc_list = dtcs if dtcs is not None else target_snapshot.get("dtcs")
-        if dtc_list is None:
+        dtc_input = dtcs if dtcs is not None else target_snapshot.get("dtcs")
+        dtc_list = []
+        if isinstance(dtc_input, dict):
+            if dtc_input.get("status") == STATUS_VALID:
+                dtc_list = dtc_input.get("codes", [])
+        elif isinstance(dtc_input, list):
+            dtc_list = dtc_input
+        elif dtc_input is None:
             dtc_list = self.sensor_cache.get("DTC_List", [])
 
         if dtc_list and isinstance(dtc_list, list):
             for dtc in dtc_list:
-                clean_dtc = str(dtc).strip().upper()
-                if not clean_dtc:
+                if not dtc or not isinstance(dtc, str):
+                    continue
+                clean_dtc = dtc.strip().upper()
+                if not clean_dtc or clean_dtc == "NONE":
                     continue
                 _add_finding(
                     f_id=f"FINDING_DTC_{clean_dtc}",
@@ -4948,6 +4969,7 @@ class AutoExpertEngine:
         include_unsupported=False,
         session=None,
         abort_callback=None,
+        dtcs=None,
     ) -> dict:
         """
         V214 (Phase E-9): Uçtan Uca Teşhis Hattı Orkestrasyonu (Diagnostic Pipeline Orchestration).
@@ -5107,6 +5129,7 @@ class AutoExpertEngine:
             try:
                 interp_result = self.interpret_diagnostic_snapshot(
                     snapshot=snapshot,
+                    dtcs=dtcs,
                 )
                 findings = interp_result.get("findings", []) if isinstance(interp_result, dict) else []
                 stages["interpretation"] = STAGE_COMPLETE
@@ -5225,6 +5248,65 @@ class AutoExpertEngine:
     def get_diagnostic_pipeline(self) -> dict:
         """Son üretilen teşhis hattı sonucunun yüzeysel kopyasını (shallow copy) döndürür."""
         return dict(self.last_diagnostic_pipeline)
+
+    def read_diagnostic_trouble_codes(self, header=None) -> dict:
+        """
+        V215 (Phase E-Final): Yapılandırılmış Salt-Okunur DTC Okuma Katmanı.
+        Mevcut Mode 03 istek, ISO-TP birleştirme ve DTC çözümleme mekanizmalarını
+        kullanarak E-katmanına uyumlu yapılandırılmış sonuç döndürür.
+        Kesinlikle DTC silme (04), adaptasyon veya yazma işlemi yapmaz.
+        """
+        initial_header = self.current_header
+        now_ts = time.time()
+        try:
+            if header and header != self.current_header:
+                self.komut_gonder(f"AT SH {header}", timeout=1.0)
+                self.current_header = header
+
+            res = self.komut_gonder("03", timeout=3.0)
+            raw_status = self.last_response_status
+
+            if raw_status in (STATUS_TIMEOUT, STATUS_NO_CONNECTION, STATUS_WORKER_DOWN, STATUS_SERIAL_ERROR):
+                return {
+                    "type": "DTC",
+                    "status": raw_status,
+                    "codes": [],
+                    "details": [],
+                    "raw_response": res or [],
+                    "timestamp": now_ts,
+                    "error": f"DTC communication failure ({raw_status})",
+                }
+
+            res_str = "".join(res).upper() if res else ""
+            if not res or "NO DATA" in res_str or raw_status in (STATUS_NO_DATA, STATUS_EMPTY_RESPONSE):
+                return {
+                    "type": "DTC",
+                    "status": STATUS_NO_DATA,
+                    "codes": [],
+                    "details": [],
+                    "raw_response": res or [],
+                    "timestamp": now_ts,
+                    "error": None,
+                }
+
+            # Mevcut DTC çözümleme mantığını kullan
+            self.ariza_kodlarini_coz()
+            codes = list(self.ariza_kodlari)
+            details = list(self.ariza_detaylari)
+
+            return {
+                "type": "DTC",
+                "status": STATUS_VALID,
+                "codes": codes,
+                "details": details,
+                "raw_response": res,
+                "timestamp": now_ts,
+                "error": None,
+            }
+        finally:
+            if header and self.current_header != initial_header:
+                self.komut_gonder(f"AT SH {initial_header}", timeout=1.0)
+                self.current_header = initial_header
 
     def baglanti_kontrol(self):
         """Otomatik Reconnect"""
@@ -5844,6 +5926,12 @@ class DiagnosticSession:
         """
         return self.engine.get_diagnostic_report()
 
+    def read_dtcs(self, header=None) -> dict:
+        """
+        Oturum kapsamında salt-okunur Mode 03 DTC sorgusu gerçekleştirir.
+        """
+        return self.engine.read_diagnostic_trouble_codes(header=header)
+
     def run_diagnostic_pipeline(
         self,
         headers=None,
@@ -5854,6 +5942,7 @@ class DiagnosticSession:
         include_standard_pids=False,
         include_unsupported=False,
         abort_callback=None,
+        dtcs=None,
     ) -> dict:
         """
         Oturum kapsamında tam teşhis hattını (E-2 -> E-8) orkestre eder.
@@ -5869,6 +5958,7 @@ class DiagnosticSession:
             include_unsupported=include_unsupported,
             session=self,
             abort_callback=cb,
+            dtcs=dtcs,
         )
 
     def get_diagnostic_pipeline(self) -> dict:

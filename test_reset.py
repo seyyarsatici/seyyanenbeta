@@ -27,7 +27,8 @@ def test_reset():
     
     # Check data BEFORE reset
     print("3. Reading data BEFORE reset...", flush=True)
-    data_before = engine.tek_veri_oku("UNKNOWN")
+    res_before = engine.tek_veri_oku("UNKNOWN")
+    data_before = res_before[0] if isinstance(res_before, tuple) else res_before
     rpm_before = data_before.get("RPM", 0)
     print(f"   RPM Before: {rpm_before} (Expected > 0)", flush=True)
     
@@ -39,7 +40,8 @@ def test_reset():
     
     # Check data AFTER reset
     print("5. Reading data AFTER reset...", flush=True)
-    data_after = engine.tek_veri_oku("UNKNOWN")
+    res_after = engine.tek_veri_oku("UNKNOWN")
+    data_after = res_after[0] if isinstance(res_after, tuple) else res_after
     rpm_after = data_after.get("RPM", 0)
     print(f"   RPM After: {rpm_after} (Expected 0)", flush=True)
     
