@@ -161,3 +161,17 @@ def analiz_et(df: pd.DataFrame) -> dict:
         "ai_yanit_json": ai_json,
     }
 
+
+class DiagnosticExpert:
+    """Uzman Sistem ve Kural Tabanlı Teşhis Motoru Sınıfı."""
+
+    def __init__(self, vehicle_profile: dict | None = None):
+        self.vehicle_profile = vehicle_profile or {}
+
+    def analyze(self, df: pd.DataFrame) -> dict:
+        return analiz_et(df)
+
+    def analiz_et(self, df: pd.DataFrame) -> dict:
+        return analiz_et(df)
+
+

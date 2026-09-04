@@ -103,6 +103,38 @@ QUALITY_ERROR = "ERROR"              # TIMEOUT, NO_CONNECTION veya seri hatası
 QUALITY_IMPLAUSIBLE = "IMPLAUSIBLE"  # Fiziksel plausibility zarfı dışında (Phase C-3)
 QUALITY_SUSPECT = "SUSPECT"          # Zamansal rate-of-change şüpheli (Phase C-4)
 
+# --- Diagnostic Findings Severity (Phase E-6) ---
+SEVERITY_CRITICAL = "CRITICAL"
+SEVERITY_WARNING = "WARNING"
+SEVERITY_INFO = "INFO"
+
+# --- Diagnostic Recommendations (Phase E-7) ---
+ACTION_VERIFY = "VERIFY"
+ACTION_INSPECT = "INSPECT"
+ACTION_REACQUIRE = "REACQUIRE"
+ACTION_REVIEW_DTC = "REVIEW_DTC"
+ACTION_CHECK_CONNECTION = "CHECK_CONNECTION"
+ACTION_CHECK_CONFIGURATION = "CHECK_CONFIGURATION"
+
+RECOMMENDATION_PRIORITY_CRITICAL = 1
+RECOMMENDATION_PRIORITY_WARNING = 2
+RECOMMENDATION_PRIORITY_INFO = 3
+
+# --- Diagnostic Pipeline Orchestration (Phase E-9) ---
+PIPELINE_IDLE = "IDLE"
+PIPELINE_RUNNING = "RUNNING"
+PIPELINE_COMPLETE = "COMPLETE"
+PIPELINE_PARTIAL = "PARTIAL"
+PIPELINE_FAILED = "FAILED"
+
+STAGE_NOT_STARTED = "NOT_STARTED"
+STAGE_RUNNING = "RUNNING"
+STAGE_COMPLETE = "COMPLETE"
+STAGE_SKIPPED = "SKIPPED"
+STAGE_FAILED = "FAILED"
+
+
+
 # --- Physical Plausibility Durumları (Phase C-3) ---
 PHYSICS_PLAUSIBLE = "PLAUSIBLE"
 PHYSICS_IMPLAUSIBLE_HIGH = "IMPLAUSIBLE_HIGH"
@@ -567,6 +599,13 @@ class AutoExpertEngine:
             "truncated": False,
         }
         self.last_acquisition_results = []
+        self.last_validated_snapshot = {}
+        self.last_diagnostic_findings = []
+        self.last_diagnostic_interpretation = {}
+        self.last_diagnostic_recommendations = []
+        self.last_diagnostic_recommendations_result = {}
+        self.last_diagnostic_report = {}
+        self.last_diagnostic_pipeline = {}
         self.vehicle_profile = None
         self.ecu_info = {"VIN": "Bilinmiyor"}
         self.desteklenen_pidler = []
@@ -2753,7 +2792,7 @@ class AutoExpertEngine:
 
         return result
 
-    def discover_ecu_capabilities(self, headers=None, dids=None, include_standard_pids=False, candidate_source=None) -> list:
+    def discover_ecu_capabilities(self, headers=None, dids=None, include_standard_pids=False, candidate_source=None, candidate_dids=None) -> list:
         """
         V206 (Phase E-2): ECU Yetenek ve Tanımlayıcı Keşif Motoru (ECU Capability Discovery).
         Belirtilen sonlu aday DID ve ECU header kümelerini UDS Mode 22 ile sorgular,
@@ -2761,6 +2800,8 @@ class AutoExpertEngine:
         DID_MISMATCH, UNAVAILABLE, UNSUPPORTED) ayrıştırır ve ham yanıtları korur.
         Kaba kuvvet (brute-force) tarama yapmaz; salt-okunur (read-only) prensibindedir.
         """
+        effective_dids = dids if dids is not None else candidate_dids
+
         # 1. Hedef Header Listesi (Sonlu ve muhafazakar küme)
         if headers is not None:
             target_headers = [str(h).strip().upper() for h in headers if str(h).strip()]
@@ -2768,8 +2809,8 @@ class AutoExpertEngine:
             target_headers = [self.current_header if self.current_header != "7DF" else "7E0"]
 
         # 2. Aday DID Listesi (Sonlu küme)
-        if dids is not None:
-            raw_candidates = list(dids)
+        if effective_dids is not None:
+            raw_candidates = list(effective_dids)
             if len(raw_candidates) == 0 and not include_standard_pids:
                 self.last_capability_results = []
                 return []
@@ -3409,7 +3450,7 @@ class AutoExpertEngine:
         """Son oluşturulan okuma planının yüzeysel kopyasını (shallow copy) döndürür."""
         return list(self.last_acquisition_plan)
 
-    def execute_acquisition_plan(self, plan=None, session=None) -> list:
+    def execute_acquisition_plan(self, plan=None, session=None, abort_callback=None) -> list:
         """
         V209 (Phase E-4): Veri Toplama Yürütücüsü (Acquisition Execution Engine).
         build_acquisition_plan() tarafından üretilen doğrulanmış okuma planını
@@ -3448,6 +3489,8 @@ class AutoExpertEngine:
 
         try:
             for item in target_plan:
+                if abort_callback and abort_callback():
+                    break
                 if not isinstance(item, dict):
                     continue
 
@@ -3698,6 +3741,1490 @@ class AutoExpertEngine:
 
         self.last_acquisition_results = results
         return results
+
+    def validate_acquisition_results(self, results=None) -> dict:
+        """
+        V210 (Phase E-5): Veri Toplama Sonuç Doğrulama & Snapshot Tutarlılık Katmanı.
+        execute_acquisition_plan() tarafından üretilen sonuçları analiz eder,
+        tutarlılık, fiziksel plausibility, tazelik ve zaman damgası kontrollerini
+        deterministik olarak uygulayarak doğrulanmış bir snapshot üretir.
+        Kesinlikle ECU iletişimi (I/O) yapmaz.
+        """
+        target_results = results if results is not None else self.last_acquisition_results
+        now = time.time()
+
+        if not target_results:
+            empty_snapshot = {
+                "timestamp": now,
+                "status": STATUS_NO_DATA,
+                "quality": QUALITY_INVALID,
+                "complete": None,
+                "results": [],
+                "valid_count": 0,
+                "invalid_count": 0,
+                "errors": [],
+                "warnings": [],
+            }
+            self.last_validated_snapshot = empty_snapshot
+            return empty_snapshot
+
+        errors = []
+        warnings = []
+        annotated_results = []
+        valid_count = 0
+        invalid_count = 0
+
+        seen_keys = set()
+        prev_timestamp = None
+        has_error_quality = False
+        has_implausible_quality = False
+        has_invalid_quality = False
+        has_stale_quality = False
+
+        for idx, orig_item in enumerate(target_results):
+            if not isinstance(orig_item, dict):
+                errors.append(f"Item #{idx} is not a valid dictionary result.")
+                continue
+
+            # Shallow copy item to preserve original immutability
+            item = dict(orig_item)
+            item_issues = []
+            accepted = True
+            fresh = True
+
+            item_type = str(item.get("type", "")).strip().upper()
+            item_id = str(item.get("id", "")).strip().replace(" ", "").upper()
+            hdr = str(item.get("header", "7DF")).strip().upper()
+            srv = str(item.get("service", "")).strip().upper()
+            raw_status = item.get("status")
+            reported_quality = item.get("quality")
+            val = item.get("value")
+            resp = item.get("response")
+            ts = item.get("timestamp")
+
+            # 1. Timestamp Consistency Checks
+            if ts is None or not isinstance(ts, (int, float)):
+                item_issues.append("Missing or non-numeric timestamp")
+                errors.append(f"Invalid timestamp for {item_id or f'item #{idx}'}")
+                accepted = False
+                fresh = False
+            else:
+                # Future timestamp check (1.0s tolerance)
+                if ts > (now + 1.0):
+                    item_issues.append(f"Future timestamp detected ({ts:.3f} > {now:.3f})")
+                    errors.append(f"Future timestamp detected for {item_id}")
+                    accepted = False
+                    fresh = False
+                else:
+                    # Freshness check (default 2.0s age threshold)
+                    age = now - ts
+                    if age > 2.0:
+                        fresh = False
+                        warnings.append(f"Result for {item_id} is stale (age={age:.2f}s)")
+                        has_stale_quality = True
+
+                # Backward timestamp ordering check
+                if prev_timestamp is not None and isinstance(ts, (int, float)):
+                    if (prev_timestamp - ts) > 0.001:
+                        warnings.append(f"Backward timestamp sequence detected at #{idx} ({prev_timestamp:.3f} -> {ts:.3f})")
+
+                if isinstance(ts, (int, float)):
+                    prev_timestamp = ts
+
+            # 2. Duplicate Detection
+            key = (hdr, srv, item_id)
+            if key in seen_keys:
+                warnings.append(f"Duplicate acquisition entry detected for {srv}:{item_id} on header {hdr}")
+            seen_keys.add(key)
+
+            # 3. Status & Value Contradiction Checks
+            if raw_status in (STATUS_TIMEOUT, STATUS_NRC, STATUS_DID_MISMATCH, STATUS_NO_DATA, STATUS_EMPTY_RESPONSE, STATUS_NO_CONNECTION, STATUS_WORKER_DOWN, STATUS_SERIAL_ERROR):
+                if val is not None:
+                    err_msg = f"Contradictory status/value for {item_id}: status={raw_status} but value={val}"
+                    errors.append(err_msg)
+                    item_issues.append(err_msg)
+                    accepted = False
+                if raw_status == STATUS_NRC and reported_quality == QUALITY_GOOD:
+                    err_msg = f"Contradictory quality/status for {item_id}: status=NRC but quality=GOOD"
+                    errors.append(err_msg)
+                    item_issues.append(err_msg)
+                    accepted = False
+                accepted = False
+
+            # 4. Mode 22 Request/Response Anchored Consistency Check
+            if item_type == "MODE22_DID":
+                if raw_status == STATUS_VALID:
+                    clean_did = item_id
+                    if clean_did.startswith("0X"): clean_did = clean_did[2:]
+                    if clean_did.startswith("22") and len(clean_did) == 6: clean_did = clean_did[2:]
+                    expected_target = f"62{clean_did}"
+
+                    if resp:
+                        clean_resp = str(resp).replace(" ", "").upper()
+                        # Strip standard header prefix if present
+                        for h in ("7E8", "7E9", "7EA", "7EB", "7EC", "7ED", "7EE", "7EF", "7E0", "7E1", "7E2", "7E3", "7E4", "7E5", "7E6", "7E7", "7DF"):
+                            if clean_resp.startswith(h):
+                                clean_resp = clean_resp[len(h):]
+                                break
+
+                        if not clean_resp.startswith(expected_target):
+                            err_msg = f"Mode 22 response mismatch for DID {clean_did}: response '{resp}' does not start with '{expected_target}'"
+                            errors.append(err_msg)
+                            item_issues.append(err_msg)
+                            accepted = False
+
+            # 5. Quality & Plausibility Evaluation
+            if reported_quality == QUALITY_IMPLAUSIBLE:
+                item_issues.append("Implausible physical measurement")
+                accepted = False
+                has_implausible_quality = True
+            elif reported_quality == QUALITY_ERROR:
+                accepted = False
+                has_error_quality = True
+            elif reported_quality == QUALITY_INVALID:
+                accepted = False
+                has_invalid_quality = True
+            elif reported_quality == QUALITY_SUSPECT:
+                item_issues.append("Suspect temporal rate-of-change")
+
+            # 6. Overall acceptance gate
+            if raw_status != STATUS_VALID:
+                accepted = False
+
+            if accepted:
+                valid_count += 1
+            else:
+                invalid_count += 1
+
+            item["validation"] = {
+                "accepted": accepted,
+                "fresh": fresh,
+                "issues": item_issues,
+            }
+            annotated_results.append(item)
+
+        # Snapshot completeness: True if all results are accepted, False otherwise
+        complete = (invalid_count == 0 and valid_count > 0)
+
+        # Derive overall snapshot quality according to precedence:
+        # ERROR -> IMPLAUSIBLE -> INVALID -> STALE -> GOOD
+        if has_error_quality or any(r.get("quality") == QUALITY_ERROR for r in target_results):
+            overall_quality = QUALITY_ERROR
+        elif has_implausible_quality or any(r.get("quality") == QUALITY_IMPLAUSIBLE for r in target_results):
+            overall_quality = QUALITY_IMPLAUSIBLE
+        elif has_invalid_quality or any(r.get("quality") == QUALITY_INVALID for r in target_results):
+            overall_quality = QUALITY_INVALID
+        elif has_stale_quality or any(r.get("quality") == QUALITY_STALE for r in target_results) or any(not r["validation"]["fresh"] for r in annotated_results if r["validation"]["accepted"]):
+            overall_quality = QUALITY_STALE
+        else:
+            overall_quality = QUALITY_GOOD if valid_count > 0 else QUALITY_INVALID
+
+        # Derive overall snapshot status
+        if valid_count > 0:
+            overall_status = STATUS_VALID
+        else:
+            first_fail = target_results[0].get("status") if target_results else STATUS_NO_DATA
+            overall_status = first_fail or STATUS_NO_DATA
+
+        snapshot = {
+            "timestamp": now,
+            "status": overall_status,
+            "quality": overall_quality,
+            "complete": complete,
+            "results": annotated_results,
+            "valid_count": valid_count,
+            "invalid_count": invalid_count,
+            "errors": errors,
+            "warnings": warnings,
+        }
+
+        self.last_validated_snapshot = snapshot
+        return snapshot
+
+    def get_validated_snapshot(self) -> dict:
+        """Son üretilen doğrulanmış snapshot'ın yüzeysel kopyasını (shallow copy) döndürür."""
+        return dict(self.last_validated_snapshot)
+
+    def interpret_diagnostic_snapshot(self, snapshot=None, dtcs=None, correlation_anomalies=None) -> dict:
+        """
+        V211 (Phase E-6): Teşhis Yorumlama & Bulgular Katmanı (Diagnostic Interpretation / Findings Layer).
+        Doğrulanmış snapshot (E-5) ve mevcut teşhis verilerini analiz ederek deterministik,
+        muhafazakar ve yapılandırılmış bulgular (findings) üretir.
+        Kesinlikle ECU iletişimi (I/O) yapmaz.
+        """
+        target_snapshot = snapshot if snapshot is not None else self.last_validated_snapshot
+        now = time.time()
+
+        if not target_snapshot or not isinstance(target_snapshot, dict):
+            empty_interpretation = {
+                "timestamp": now,
+                "status": STATUS_NO_DATA,
+                "quality": QUALITY_INVALID,
+                "overall_severity": SEVERITY_INFO,
+                "finding_count": 0,
+                "findings": [],
+                "summary": "No diagnostic snapshot data available for interpretation.",
+            }
+            self.last_diagnostic_findings = []
+            self.last_diagnostic_interpretation = empty_interpretation
+            return empty_interpretation
+
+        findings = []
+        seen_finding_ids = set()
+
+        def _add_finding(f_id, severity, category, title, message, evidence, confidence, source):
+            if f_id in seen_finding_ids:
+                return
+            seen_finding_ids.add(f_id)
+            bounded_conf = round(max(0.0, min(1.0, float(confidence))), 2)
+            findings.append({
+                "id": f_id,
+                "severity": severity,
+                "category": category,
+                "title": title,
+                "message": message,
+                "evidence": evidence,
+                "confidence": bounded_conf,
+                "source": source,
+            })
+
+        results = target_snapshot.get("results", [])
+
+        # Kategori haritalama yardımcısı
+        def _get_sensor_category(sensor_id):
+            sid = str(sensor_id).upper()
+            if "ECT" in sid or "TEMP" in sid or "COOL" in sid:
+                return "COOLING"
+            elif "RPM" in sid or "SPEED" in sid or "TIMING" in sid or "CRANK" in sid or "CAM" in sid:
+                return "ENGINE"
+            elif "FUEL" in sid or "STFT" in sid or "LTFT" in sid or "RAIL" in sid:
+                return "FUEL"
+            elif "MAF" in sid or "MAP" in sid or "TPS" in sid or "AIR" in sid or "THROTTLE" in sid:
+                return "AIR"
+            elif "VOLT" in sid or "BAT" in sid or "ALT" in sid:
+                return "ELECTRICAL"
+            return "SENSOR"
+
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+
+            item_type = str(item.get("type", "")).strip().upper()
+            item_id = str(item.get("id", "")).strip().upper()
+            hdr = str(item.get("header", "7DF")).strip().upper()
+            req = str(item.get("request", "")).strip().upper()
+            raw_status = item.get("status")
+            reported_quality = item.get("quality")
+            val = item.get("value")
+            resp = item.get("response")
+            err = item.get("error")
+            validation = item.get("validation", {})
+            is_fresh = validation.get("fresh", True)
+            is_accepted = validation.get("accepted", False)
+            sensor_cat = _get_sensor_category(item_id)
+
+            # -------------------------------------------------------------
+            # Rule 1: Physical Plausibility Findings (C-3 entegrasyonu)
+            # -------------------------------------------------------------
+            if raw_status == STATUS_VALID and reported_quality == QUALITY_IMPLAUSIBLE:
+                _add_finding(
+                    f_id=f"FINDING_{item_id}_IMPLAUSIBLE",
+                    severity=SEVERITY_CRITICAL,
+                    category=sensor_cat,
+                    title=f"{item_id} measurement is physically implausible",
+                    message=f"{item_id} reading ({val}) is outside plausible physical limits; sensor circuit, wiring, or ECU interpretation should be inspected.",
+                    evidence={
+                        "sensor": item_id,
+                        "value": val,
+                        "status": raw_status,
+                        "quality": reported_quality,
+                        "fresh": is_fresh,
+                    },
+                    confidence=0.95,
+                    source="PLAUSIBILITY",
+                )
+
+            # -------------------------------------------------------------
+            # Rule 2: Freshness / Stale Data Findings (C-2 entegrasyonu)
+            # -------------------------------------------------------------
+            if raw_status == STATUS_VALID and (not is_fresh or reported_quality == QUALITY_STALE):
+                _add_finding(
+                    f_id=f"FINDING_{item_id}_STALE",
+                    severity=SEVERITY_WARNING,
+                    category=sensor_cat,
+                    title=f"{item_id} data is stale",
+                    message=f"{item_id} measurement is stale; subsequent diagnostic assessment for this subsystem may be unreliable.",
+                    evidence={
+                        "sensor": item_id,
+                        "value": val,
+                        "status": raw_status,
+                        "quality": reported_quality,
+                        "fresh": False,
+                    },
+                    confidence=0.85,
+                    source="FRESHNESS",
+                )
+
+            # -------------------------------------------------------------
+            # Rule 3: Communication / Timeout Findings (İletişim bütünlüğü)
+            # -------------------------------------------------------------
+            if raw_status in (STATUS_TIMEOUT, STATUS_NO_CONNECTION, STATUS_WORKER_DOWN, STATUS_SERIAL_ERROR):
+                sev = SEVERITY_CRITICAL if raw_status in (STATUS_NO_CONNECTION, STATUS_WORKER_DOWN) else SEVERITY_WARNING
+                _add_finding(
+                    f_id=f"FINDING_{item_id}_COMM_TIMEOUT" if raw_status == STATUS_TIMEOUT else f"FINDING_{item_id}_COMM_ERROR",
+                    severity=sev,
+                    category="COMMUNICATION",
+                    title=f"ECU communication failure for {item_id}",
+                    message=f"ECU request {req or item_id} on header {hdr} failed ({raw_status}); communication link or ECU availability should be verified.",
+                    evidence={
+                        "type": item_type,
+                        "id": item_id,
+                        "header": hdr,
+                        "status": raw_status,
+                        "error": err,
+                    },
+                    confidence=1.0,
+                    source="COMMUNICATION",
+                )
+
+            # -------------------------------------------------------------
+            # Rule 4: Diagnostic NRC Findings (Yetki / Destek reddi)
+            # -------------------------------------------------------------
+            elif raw_status == STATUS_NRC:
+                nrc_code = None
+                if err and "NRC 0x" in err:
+                    nrc_code = err.split("NRC 0x")[1].split(":")[0].strip()
+                elif resp and "7F" in resp:
+                    idx = resp.find("7F")
+                    if len(resp) >= idx + 6:
+                        nrc_code = resp[idx+4:idx+6]
+
+                nrc_desc = NRC_MAP.get(nrc_code, "Unknown NRC") if nrc_code else "Negative Response Code"
+                _add_finding(
+                    f_id=f"FINDING_{item_id}_NRC_{nrc_code or 'UNKNOWN'}",
+                    severity=SEVERITY_WARNING,
+                    category="DIAGNOSTIC",
+                    title=f"Diagnostic service rejected: NRC 0x{nrc_code or '??'}",
+                    message=f"ECU rejected request {req or item_id} on header {hdr} with NRC 0x{nrc_code or '??'} ({nrc_desc}); service access or vehicle state prerequisite not met.",
+                    evidence={
+                        "type": item_type,
+                        "id": item_id,
+                        "header": hdr,
+                        "status": STATUS_NRC,
+                        "nrc": nrc_code,
+                        "nrc_desc": nrc_desc,
+                    },
+                    confidence=1.0,
+                    source="NRC",
+                )
+
+            # -------------------------------------------------------------
+            # Rule 5: DID Mismatch Findings (Yanıt çerçeve bütünlüğü)
+            # -------------------------------------------------------------
+            elif raw_status == STATUS_DID_MISMATCH:
+                _add_finding(
+                    f_id=f"FINDING_{item_id}_DID_MISMATCH",
+                    severity=SEVERITY_WARNING,
+                    category="DIAGNOSTIC",
+                    title=f"Diagnostic response DID mismatch on {item_id}",
+                    message=f"Response for {item_id} on header {hdr} contained unexpected framing or did not start with expected DID identifier; transport framing or ECU software variant should be verified.",
+                    evidence={
+                        "type": item_type,
+                        "id": item_id,
+                        "header": hdr,
+                        "status": STATUS_DID_MISMATCH,
+                        "response": resp,
+                    },
+                    confidence=0.90,
+                    source="PROTOCOL_INTEGRITY",
+                )
+
+            # -------------------------------------------------------------
+            # Rule 6: Yüksek Güvenilirlikli Eşik Kontrolleri (Sadece taze & geçerli veriler)
+            # -------------------------------------------------------------
+            if is_accepted and is_fresh and raw_status == STATUS_VALID and reported_quality == QUALITY_GOOD and isinstance(val, (int, float)):
+                if item_id == "ECT" and val > 115:
+                    _add_finding(
+                        f_id="FINDING_ECT_HIGH",
+                        severity=SEVERITY_WARNING,
+                        category="COOLING",
+                        title="Engine coolant temperature is elevated",
+                        message=f"ECT reading is {val}°C (above normal threshold 115°C); cooling system operation and coolant level should be inspected.",
+                        evidence={
+                            "sensor": "ECT",
+                            "value": val,
+                            "unit": "C",
+                            "status": STATUS_VALID,
+                            "quality": QUALITY_GOOD,
+                            "fresh": True,
+                        },
+                        confidence=0.90,
+                        source="DIAGNOSTIC_THRESHOLD",
+                    )
+
+        # -----------------------------------------------------------------
+        # Rule 7: DTC Bilgisi Bulguları
+        # -----------------------------------------------------------------
+        dtc_list = dtcs if dtcs is not None else target_snapshot.get("dtcs")
+        if dtc_list is None:
+            dtc_list = self.sensor_cache.get("DTC_List", [])
+
+        if dtc_list and isinstance(dtc_list, list):
+            for dtc in dtc_list:
+                clean_dtc = str(dtc).strip().upper()
+                if not clean_dtc:
+                    continue
+                _add_finding(
+                    f_id=f"FINDING_DTC_{clean_dtc}",
+                    severity=SEVERITY_CRITICAL if clean_dtc.startswith("P0") else SEVERITY_WARNING,
+                    category="DIAGNOSTIC",
+                    title=f"Diagnostic Trouble Code active: {clean_dtc}",
+                    message=f"Active diagnostic trouble code {clean_dtc} confirmed in ECU fault memory.",
+                    evidence={
+                        "dtc": clean_dtc,
+                        "source": "DTC_MEMORY",
+                    },
+                    confidence=1.0,
+                    source="DTC",
+                )
+
+        # -----------------------------------------------------------------
+        # Rule 8: Çapraz Sensör Korelasyon Bulguları (Phase C-5 entegrasyonu)
+        # -----------------------------------------------------------------
+        anomalies = correlation_anomalies if correlation_anomalies is not None else target_snapshot.get("correlation_anomalies")
+        if anomalies and isinstance(anomalies, list):
+            for anom in anomalies:
+                if not isinstance(anom, dict):
+                    continue
+                anom_id = anom.get("id") or anom.get("rule_name") or "CROSS_SENSOR"
+                _add_finding(
+                    f_id=f"FINDING_CORRELATION_{anom_id}",
+                    severity=anom.get("severity", SEVERITY_WARNING),
+                    category="SENSOR",
+                    title=anom.get("title", f"Sensor correlation anomaly ({anom_id})"),
+                    message=anom.get("message", "Cross-sensor physical consistency check failed; physical subsystem or related sensor circuits should be inspected."),
+                    evidence=anom.get("evidence", anom),
+                    confidence=anom.get("confidence", 0.85),
+                    source="CORRELATION",
+                )
+
+        # -----------------------------------------------------------------
+        # Deterministik Sıralama:
+        # Severity (CRITICAL -> WARNING -> INFO) -> Category -> Finding ID
+        # -----------------------------------------------------------------
+        severity_order = {SEVERITY_CRITICAL: 1, SEVERITY_WARNING: 2, SEVERITY_INFO: 3}
+        findings.sort(key=lambda f: (
+            severity_order.get(f["severity"], 99),
+            f["category"],
+            f["id"]
+        ))
+
+        # Genel ciddiyet (overall severity)
+        if any(f["severity"] == SEVERITY_CRITICAL for f in findings):
+            overall_sev = SEVERITY_CRITICAL
+        elif any(f["severity"] == SEVERITY_WARNING for f in findings):
+            overall_sev = SEVERITY_WARNING
+        else:
+            overall_sev = SEVERITY_INFO
+
+        summary = f"{len(findings)} diagnostic finding{'s' if len(findings) != 1 else ''} detected." if findings else "No diagnostic anomalies or findings detected."
+
+        interpretation = {
+            "timestamp": now,
+            "status": target_snapshot.get("status", STATUS_VALID),
+            "quality": target_snapshot.get("quality", QUALITY_GOOD),
+            "overall_severity": overall_sev,
+            "finding_count": len(findings),
+            "findings": findings,
+            "summary": summary,
+        }
+
+        self.last_diagnostic_findings = findings
+        self.last_diagnostic_interpretation = interpretation
+        return interpretation
+
+    def get_diagnostic_findings(self) -> list:
+        """Son üretilen teşhis bulgularının yüzeysel kopyasını (shallow copy) döndürür."""
+        return list(self.last_diagnostic_findings)
+
+    def generate_diagnostic_recommendations(self, findings=None) -> dict:
+        """
+        V212 (Phase E-7): Teşhis Önerileri ve Eylem Önceliklendirme Katmanı (Diagnostic Recommendation & Action Prioritization).
+        Phase E-6 bulgularını (findings) tüketerek deterministik, muhafazakar ve önceliklendirilmiş
+        teşhis eylemleri (recommendations) üretir.
+        Kesinlikle ECU iletişimi (I/O) yapmaz, otomatik aktüasyon veya silme işlemi yürütmez.
+        """
+        now = time.time()
+
+        if findings is None:
+            raw_findings = self.last_diagnostic_findings
+        elif isinstance(findings, dict):
+            raw_findings = findings.get("findings", [])
+        elif isinstance(findings, list):
+            raw_findings = findings
+        else:
+            raw_findings = []
+
+        if not raw_findings:
+            empty_result = {
+                "timestamp": now,
+                "recommendation_count": 0,
+                "overall_priority": RECOMMENDATION_PRIORITY_INFO,
+                "recommendations": [],
+                "summary": "No diagnostic recommendations generated.",
+            }
+            self.last_diagnostic_recommendations = []
+            self.last_diagnostic_recommendations_result = empty_result
+            return empty_result
+
+        # Subsystem grouping & consolidation dictionary
+        groups = {}
+        for f in raw_findings:
+            if not isinstance(f, dict):
+                continue
+            f_id = str(f.get("id", "")).strip()
+            f_src = str(f.get("source", "")).strip().upper()
+            f_cat = str(f.get("category", "DIAGNOSTIC")).strip().upper()
+            f_ev = f.get("evidence", {}) if isinstance(f.get("evidence"), dict) else {}
+
+            # Determine grouping key for consolidation
+            if f_src == "COMMUNICATION":
+                g_key = "COMMUNICATION"
+            elif f_src == "DTC":
+                dtc_val = str(f_ev.get("dtc") or f_id.replace("FINDING_DTC_", "")).strip().upper()
+                g_key = f"DTC_{dtc_val}"
+            elif f_src in ("NRC", "PROTOCOL_INTEGRITY"):
+                req_id = str(f_ev.get("id") or f_id).strip().upper()
+                g_key = f"DIAG_{req_id}"
+            elif f_cat == "COOLING" or "ECT" in f_id or "COOL" in f_id:
+                g_key = "COOLING"
+            elif "MAP" in f_id or "MANIFOLD" in f_id:
+                g_key = "AIR_MAP"
+            elif "MAF" in f_id:
+                g_key = "AIR_MAF"
+            elif "TPS" in f_id or "THROTTLE" in f_id:
+                g_key = "AIR_TPS"
+            elif "SPEED" in f_id or "VSS" in f_id:
+                g_key = "ENGINE_SPEED"
+            elif "RPM" in f_id:
+                g_key = "ENGINE_RPM"
+            elif f_src == "CORRELATION":
+                g_key = f"CORR_{f_id}"
+            else:
+                g_key = f"FINDING_{f_id}"
+
+            if g_key not in groups:
+                groups[g_key] = []
+            groups[g_key].append(f)
+
+        recommendations = []
+
+        for g_key, g_findings in groups.items():
+            # Deduplicate finding IDs
+            seen_fids = set()
+            unique_findings = []
+            for f in g_findings:
+                fid = f.get("id")
+                if fid and fid not in seen_fids:
+                    seen_fids.add(fid)
+                    unique_findings.append(f)
+
+            if not unique_findings:
+                continue
+
+            finding_ids = sorted(seen_fids)
+            confidences = [f.get("confidence", 0.8) for f in unique_findings if isinstance(f.get("confidence"), (int, float))]
+            agg_conf = round(max(0.0, min(1.0, max(confidences) if confidences else 0.8)), 2)
+
+            has_critical = any(f.get("severity") == SEVERITY_CRITICAL for f in unique_findings)
+            has_warning = any(f.get("severity") == SEVERITY_WARNING for f in unique_findings)
+
+            # Check special source findings within this group
+            stale_finding = next((f for f in unique_findings if f.get("source") == "FRESHNESS"), None)
+            comm_finding = next((f for f in unique_findings if f.get("source") == "COMMUNICATION"), None)
+            plaus_finding = next((f for f in unique_findings if f.get("source") == "PLAUSIBILITY"), None)
+            thresh_finding = next((f for f in unique_findings if f.get("source") == "DIAGNOSTIC_THRESHOLD"), None)
+            dtc_finding = next((f for f in unique_findings if f.get("source") == "DTC"), None)
+            nrc_finding = next((f for f in unique_findings if f.get("source") == "NRC"), None)
+            proto_finding = next((f for f in unique_findings if f.get("source") == "PROTOCOL_INTEGRITY"), None)
+            corr_finding = next((f for f in unique_findings if f.get("source") == "CORRELATION"), None)
+
+            # 1. COMMUNICATION
+            if g_key == "COMMUNICATION" or comm_finding:
+                sev = SEVERITY_CRITICAL if has_critical else SEVERITY_WARNING
+                pri = RECOMMENDATION_PRIORITY_CRITICAL if has_critical else RECOMMENDATION_PRIORITY_WARNING
+                recommendations.append({
+                    "id": "REC_COMMUNICATION_LINK_INSPECTION",
+                    "priority": pri,
+                    "severity": sev,
+                    "category": "COMMUNICATION",
+                    "action_type": ACTION_CHECK_CONNECTION,
+                    "title": "Inspect diagnostic communication link and ECU interface",
+                    "action": "Inspect OBD interface connection, adapter cabling, vehicle diagnostic port, and ECU power/ground before suspecting an ECU fault.",
+                    "reason": "ECU communication timeout or bus communication failure detected.",
+                    "finding_ids": finding_ids,
+                    "confidence": agg_conf,
+                })
+
+            # 2. DTC
+            elif dtc_finding:
+                dtc_code = str(dtc_finding.get("evidence", {}).get("dtc") or dtc_finding.get("id").replace("FINDING_DTC_", "")).strip().upper()
+                is_crit = has_critical or dtc_code.startswith("P0")
+                sev = SEVERITY_CRITICAL if is_crit else SEVERITY_WARNING
+                pri = RECOMMENDATION_PRIORITY_CRITICAL if is_crit else RECOMMENDATION_PRIORITY_WARNING
+                recommendations.append({
+                    "id": f"REC_DTC_{dtc_code}_REVIEW",
+                    "priority": pri,
+                    "severity": sev,
+                    "category": "DIAGNOSTIC",
+                    "action_type": ACTION_REVIEW_DTC,
+                    "title": f"Follow diagnostic procedure for active DTC {dtc_code}",
+                    "action": f"Inspect active DTC {dtc_code} and follow the manufacturer's guided diagnostic procedure; verify circuit wiring, power, and sensor readings before replacing parts.",
+                    "reason": f"Active diagnostic trouble code {dtc_code} confirmed in ECU fault memory.",
+                    "finding_ids": finding_ids,
+                    "confidence": agg_conf,
+                })
+
+            # 3. NRC
+            elif nrc_finding:
+                nrc_code = str(nrc_finding.get("evidence", {}).get("nrc", "")).strip().upper()
+                nrc_desc = nrc_finding.get("evidence", {}).get("nrc_desc", "")
+                req_id = str(nrc_finding.get("evidence", {}).get("id") or "SERVICE").strip().upper()
+                if nrc_code == "33":
+                    rec_id = f"REC_{req_id}_SECURITY_ACCESS"
+                    title = f"Review diagnostic access prerequisites for {req_id}"
+                    action = f"Diagnostic request for {req_id} requires security access or specific vehicle operating state; verify access prerequisites (do not attempt automated SecurityAccess)."
+                    reason = f"ECU returned NRC 0x33 ({nrc_desc or 'Security Access Denied'})."
+                elif nrc_code == "31":
+                    rec_id = f"REC_{req_id}_CAPABILITY_CHECK"
+                    title = f"Verify ECU capability and service support for {req_id}"
+                    action = f"Requested diagnostic DID/service ({req_id}) is unsupported or unavailable on this ECU variant; verify vehicle configuration and diagnostic definition without assuming component failure."
+                    reason = f"ECU returned NRC 0x31 ({nrc_desc or 'Request Out of Range'})."
+                else:
+                    rec_id = f"REC_{req_id}_NRC_{nrc_code or 'REQ'}"
+                    title = f"Verify diagnostic request prerequisites for {req_id}"
+                    action = f"Diagnostic request returned NRC 0x{nrc_code or '??'} ({nrc_desc}); verify service prerequisites and ECU support."
+                    reason = f"ECU rejected request with NRC 0x{nrc_code or '??'}."
+                recommendations.append({
+                    "id": rec_id,
+                    "priority": RECOMMENDATION_PRIORITY_WARNING,
+                    "severity": SEVERITY_WARNING,
+                    "category": "DIAGNOSTIC",
+                    "action_type": ACTION_CHECK_CONFIGURATION,
+                    "title": title,
+                    "action": action,
+                    "reason": reason,
+                    "finding_ids": finding_ids,
+                    "confidence": agg_conf,
+                })
+
+            # 4. PROTOCOL INTEGRITY / DID MISMATCH
+            elif proto_finding:
+                req_id = str(proto_finding.get("evidence", {}).get("id") or "DID").strip().upper()
+                recommendations.append({
+                    "id": f"REC_{req_id}_RESPONSE_INTEGRITY",
+                    "priority": RECOMMENDATION_PRIORITY_WARNING,
+                    "severity": SEVERITY_WARNING,
+                    "category": "DIAGNOSTIC",
+                    "action_type": ACTION_CHECK_CONFIGURATION,
+                    "title": f"Verify diagnostic response framing and ECU variant for {req_id}",
+                    "action": f"Verify ECU header, diagnostic response integrity, and DID definition configuration for {req_id}.",
+                    "reason": f"Diagnostic response for {req_id} contained unexpected framing or DID identifier mismatch.",
+                    "finding_ids": finding_ids,
+                    "confidence": agg_conf,
+                })
+
+            # 5. COOLING / ECT SUBSYSTEM (Consolidated)
+            elif g_key == "COOLING":
+                if stale_finding and not plaus_finding and not thresh_finding:
+                    recommendations.append({
+                        "id": "REC_ECT_DATA_REACQUIRE",
+                        "priority": RECOMMENDATION_PRIORITY_WARNING,
+                        "severity": SEVERITY_WARNING,
+                        "category": "COOLING",
+                        "action_type": ACTION_REACQUIRE,
+                        "title": "Reacquire ECT data and verify signal freshness",
+                        "action": "Reacquire engine coolant temperature measurement and verify diagnostic communication before proceeding with cooling-system diagnosis.",
+                        "reason": "ECT measurement is stale; verify data stream freshness.",
+                        "finding_ids": finding_ids,
+                        "confidence": agg_conf,
+                    })
+                elif stale_finding and (plaus_finding or thresh_finding):
+                    # Data integrity conflict: prioritize reacquisition before mechanical conclusions
+                    recommendations.append({
+                        "id": "REC_ECT_DATA_REACQUIRE",
+                        "priority": RECOMMENDATION_PRIORITY_WARNING,
+                        "severity": SEVERITY_WARNING,
+                        "category": "COOLING",
+                        "action_type": ACTION_REACQUIRE,
+                        "title": "Reacquire ECT data and verify sensor signal integrity",
+                        "action": "Reacquire ECT measurement and verify sensor signal integrity and communication before suspecting mechanical cooling system faults.",
+                        "reason": "ECT data is stale/unreliable; data validation must precede mechanical diagnosis.",
+                        "finding_ids": finding_ids,
+                        "confidence": agg_conf,
+                    })
+                else:
+                    pri = RECOMMENDATION_PRIORITY_CRITICAL if has_critical else RECOMMENDATION_PRIORITY_WARNING
+                    sev = SEVERITY_CRITICAL if has_critical else SEVERITY_WARNING
+                    reasons = []
+                    if plaus_finding:
+                        reasons.append("ECT measurement is physically implausible")
+                    if thresh_finding:
+                        reasons.append("ECT temperature is elevated")
+                    if corr_finding:
+                        reasons.append("cooling correlation anomaly detected")
+                    reason_str = "; ".join(reasons) if reasons else "Cooling system parameter anomaly detected."
+
+                    recommendations.append({
+                        "id": "REC_COOLING_INSPECTION",
+                        "priority": pri,
+                        "severity": sev,
+                        "category": "COOLING",
+                        "action_type": ACTION_INSPECT,
+                        "title": "Inspect engine coolant temperature system and sensor circuit",
+                        "action": "Verify ECT sensor reading and inspect coolant level, sensor, connector, wiring, and cooling-system operation.",
+                        "reason": reason_str,
+                        "finding_ids": finding_ids,
+                        "confidence": agg_conf,
+                    })
+
+            # 6. AIR / INTAKE SUBSYSTEMS (MAP, MAF, TPS)
+            elif g_key in ("AIR_MAP", "AIR_MAF", "AIR_TPS"):
+                sensor = "MAP" if "MAP" in g_key else ("MAF" if "MAF" in g_key else "TPS")
+                if stale_finding and not plaus_finding:
+                    recommendations.append({
+                        "id": f"REC_{sensor}_DATA_REACQUIRE",
+                        "priority": RECOMMENDATION_PRIORITY_WARNING,
+                        "severity": SEVERITY_WARNING,
+                        "category": "AIR",
+                        "action_type": ACTION_REACQUIRE,
+                        "title": f"Reacquire {sensor} data and verify signal freshness",
+                        "action": f"Reacquire {sensor} measurement and verify diagnostic communication before proceeding with intake system inspection.",
+                        "reason": f"{sensor} measurement is stale; verify data stream freshness.",
+                        "finding_ids": finding_ids,
+                        "confidence": agg_conf,
+                    })
+                elif stale_finding and plaus_finding:
+                    recommendations.append({
+                        "id": f"REC_{sensor}_DATA_REACQUIRE",
+                        "priority": RECOMMENDATION_PRIORITY_WARNING,
+                        "severity": SEVERITY_WARNING,
+                        "category": "AIR",
+                        "action_type": ACTION_REACQUIRE,
+                        "title": f"Reacquire {sensor} data and verify sensor signal integrity",
+                        "action": f"Reacquire {sensor} measurement and verify diagnostic communication before suspecting intake/vacuum system mechanical faults.",
+                        "reason": f"{sensor} data is stale/unreliable; data validation must precede mechanical diagnosis.",
+                        "finding_ids": finding_ids,
+                        "confidence": agg_conf,
+                    })
+                else:
+                    pri = RECOMMENDATION_PRIORITY_CRITICAL if has_critical else RECOMMENDATION_PRIORITY_WARNING
+                    sev = SEVERITY_CRITICAL if has_critical else SEVERITY_WARNING
+                    recommendations.append({
+                        "id": f"REC_{sensor}_INSPECTION",
+                        "priority": pri,
+                        "severity": sev,
+                        "category": "AIR",
+                        "action_type": ACTION_INSPECT,
+                        "title": f"Inspect {sensor} sensor, connector, and intake/vacuum system",
+                        "action": f"Inspect {sensor} sensor, connector, wiring harness, and intake/vacuum system conditions.",
+                        "reason": f"{sensor} measurement is abnormal or physically implausible.",
+                        "finding_ids": finding_ids,
+                        "confidence": agg_conf,
+                    })
+
+            # 7. ENGINE / SPEED SUBSYSTEMS (RPM, SPEED)
+            elif g_key in ("ENGINE_RPM", "ENGINE_SPEED"):
+                sensor = "RPM" if "RPM" in g_key else "SPEED"
+                if stale_finding and not plaus_finding:
+                    recommendations.append({
+                        "id": f"REC_{sensor}_DATA_REACQUIRE",
+                        "priority": RECOMMENDATION_PRIORITY_WARNING,
+                        "severity": SEVERITY_WARNING,
+                        "category": "ENGINE",
+                        "action_type": ACTION_REACQUIRE,
+                        "title": f"Reacquire {sensor} data and verify signal freshness",
+                        "action": f"Reacquire {sensor} measurement and verify diagnostic communication before proceeding with mechanical inspection.",
+                        "reason": f"{sensor} measurement is stale; verify data stream freshness.",
+                        "finding_ids": finding_ids,
+                        "confidence": agg_conf,
+                    })
+                elif stale_finding and plaus_finding:
+                    recommendations.append({
+                        "id": f"REC_{sensor}_DATA_REACQUIRE",
+                        "priority": RECOMMENDATION_PRIORITY_WARNING,
+                        "severity": SEVERITY_WARNING,
+                        "category": "ENGINE",
+                        "action_type": ACTION_REACQUIRE,
+                        "title": f"Reacquire {sensor} data and verify signal integrity",
+                        "action": f"Reacquire {sensor} measurement and verify signal integrity before suspecting mechanical faults.",
+                        "reason": f"{sensor} data is stale/unreliable; data validation must precede mechanical diagnosis.",
+                        "finding_ids": finding_ids,
+                        "confidence": agg_conf,
+                    })
+                else:
+                    pri = RECOMMENDATION_PRIORITY_CRITICAL if has_critical else RECOMMENDATION_PRIORITY_WARNING
+                    sev = SEVERITY_CRITICAL if has_critical else SEVERITY_WARNING
+                    recommendations.append({
+                        "id": f"REC_{sensor}_INSPECTION",
+                        "priority": pri,
+                        "severity": sev,
+                        "category": "ENGINE",
+                        "action_type": ACTION_VERIFY if sensor == "SPEED" else ACTION_INSPECT,
+                        "title": f"Verify {sensor} signal, sensor circuit, and wiring",
+                        "action": f"Verify {sensor} reading, sensor wiring, connector, and signal integrity.",
+                        "reason": f"{sensor} measurement is abnormal or physically implausible.",
+                        "finding_ids": finding_ids,
+                        "confidence": agg_conf,
+                    })
+
+            # 8. CORRELATION
+            elif corr_finding:
+                anom_id = str(corr_finding.get("id", "")).replace("FINDING_CORRELATION_", "")
+                recommendations.append({
+                    "id": f"REC_CORRELATION_{anom_id}_VERIFY",
+                    "priority": RECOMMENDATION_PRIORITY_WARNING,
+                    "severity": SEVERITY_WARNING,
+                    "category": "SENSOR",
+                    "action_type": ACTION_VERIFY,
+                    "title": corr_finding.get("title", f"Verify sensor correlation ({anom_id})"),
+                    "action": "Verify involved sensor readings, wiring harnesses, and physical operating conditions to isolate multi-signal inconsistency.",
+                    "reason": corr_finding.get("message", "Cross-sensor physical consistency check failed."),
+                    "finding_ids": finding_ids,
+                    "confidence": agg_conf,
+                })
+
+            # 9. GENERAL / FALLBACK
+            else:
+                top_f = unique_findings[0]
+                pri = RECOMMENDATION_PRIORITY_CRITICAL if has_critical else (RECOMMENDATION_PRIORITY_WARNING if has_warning else RECOMMENDATION_PRIORITY_INFO)
+                sev = SEVERITY_CRITICAL if has_critical else (SEVERITY_WARNING if has_warning else SEVERITY_INFO)
+                f_src = top_f.get("source", "")
+                action_type = ACTION_REACQUIRE if f_src == "FRESHNESS" else ACTION_VERIFY
+                recommendations.append({
+                    "id": f"REC_{top_f.get('id', 'DIAGNOSTIC')}",
+                    "priority": pri,
+                    "severity": sev,
+                    "category": top_f.get("category", "DIAGNOSTIC"),
+                    "action_type": action_type,
+                    "title": top_f.get("title", "Review diagnostic finding"),
+                    "action": "Review diagnostic finding details and verify operating parameters.",
+                    "reason": top_f.get("message", "Diagnostic finding requires review."),
+                    "finding_ids": finding_ids,
+                    "confidence": agg_conf,
+                })
+
+        # Deduplicate recommendations by ID if any collision
+        final_recs = []
+        seen_rec_ids = set()
+        for r in recommendations:
+            r_id = r["id"]
+            if r_id not in seen_rec_ids:
+                seen_rec_ids.add(r_id)
+                final_recs.append(r)
+
+        # Deterministic sorting:
+        # Priority (1 -> 2 -> 3) -> Category -> Recommendation ID
+        final_recs.sort(key=lambda x: (
+            x["priority"],
+            x["category"],
+            x["id"]
+        ))
+
+        overall_priority = min((r["priority"] for r in final_recs), default=RECOMMENDATION_PRIORITY_INFO)
+        rec_count = len(final_recs)
+        summary = f"{rec_count} prioritized diagnostic action{'s' if rec_count != 1 else ''} recommended." if rec_count > 0 else "No diagnostic recommendations generated."
+
+        result = {
+            "timestamp": now,
+            "recommendation_count": rec_count,
+            "overall_priority": overall_priority,
+            "recommendations": final_recs,
+            "summary": summary,
+        }
+
+        self.last_diagnostic_recommendations = final_recs
+        self.last_diagnostic_recommendations_result = result
+        return result
+
+    def get_diagnostic_recommendations(self) -> list:
+        """Son üretilen teşhis önerilerinin yüzeysel kopyasını (shallow copy) döndürür."""
+        return list(self.last_diagnostic_recommendations)
+
+    def build_diagnostic_report(
+        self,
+        snapshot=None,
+        findings=None,
+        recommendations=None
+    ) -> dict:
+        """
+        V213 (Phase E-8): Teşhis Raporu ve Açıklanabilirlik Katmanı (Diagnostic Report / Explainability Layer).
+        Doğrulanmış snapshot (E-5), teşhis bulguları (E-6) ve önceliklendirilmiş önerileri (E-7)
+        tüketerek deterministik, yapılandırılmış ve insan tarafından okunabilir bir teşhis raporu üretir.
+        Kesinlikle ECU iletişimi (I/O) yapmaz, yeni arıza keşfi yapmaz veya verileri mutasyona uğratmaz.
+        """
+        now = time.time()
+
+        # 1. Input normalization & fallback
+        target_snapshot = snapshot if snapshot is not None else self.last_validated_snapshot
+        if not isinstance(target_snapshot, dict):
+            target_snapshot = {}
+
+        if findings is not None:
+            if isinstance(findings, dict):
+                raw_findings = findings.get("findings", [])
+            elif isinstance(findings, list):
+                raw_findings = findings
+            else:
+                raw_findings = []
+        else:
+            raw_findings = self.last_diagnostic_findings
+
+        if recommendations is not None:
+            if isinstance(recommendations, dict):
+                raw_recommendations = recommendations.get("recommendations", [])
+            elif isinstance(recommendations, list):
+                raw_recommendations = recommendations
+            else:
+                raw_recommendations = []
+        else:
+            raw_recommendations = self.last_diagnostic_recommendations
+
+        # Safe shallow copies of findings and recommendations
+        findings_copy = [dict(f) for f in raw_findings if isinstance(f, dict)]
+        recommendations_copy = [dict(r) for r in raw_recommendations if isinstance(r, dict)]
+
+        # 2. Overall status, severity, and quality derivation
+        status = target_snapshot.get("status", STATUS_VALID if (findings_copy or recommendations_copy or target_snapshot) else STATUS_NO_DATA)
+        
+        # Overall severity follows E-6 / findings: CRITICAL > WARNING > INFO
+        if any(f.get("severity") == SEVERITY_CRITICAL for f in findings_copy):
+            overall_severity = SEVERITY_CRITICAL
+        elif any(f.get("severity") == SEVERITY_WARNING for f in findings_copy):
+            overall_severity = SEVERITY_WARNING
+        else:
+            overall_severity = SEVERITY_INFO
+
+        # Overall quality
+        if "quality" in target_snapshot:
+            overall_quality = target_snapshot["quality"]
+        else:
+            if status in (STATUS_TIMEOUT, STATUS_NO_CONNECTION, STATUS_WORKER_DOWN, STATUS_SERIAL_ERROR):
+                overall_quality = QUALITY_ERROR
+            elif any(f.get("source") == "PLAUSIBILITY" for f in findings_copy):
+                overall_quality = QUALITY_IMPLAUSIBLE
+            elif any(f.get("source") == "FRESHNESS" for f in findings_copy):
+                overall_quality = QUALITY_STALE
+            else:
+                overall_quality = QUALITY_GOOD if (findings_copy or recommendations_copy or target_snapshot) else QUALITY_INVALID
+
+        # 3. Data quality summary from snapshot results
+        snapshot_results = target_snapshot.get("results", [])
+        dq_counts = {
+            "good": 0,
+            "stale": 0,
+            "implausible": 0,
+            "suspect": 0,
+            "invalid": 0,
+            "error": 0,
+            "total": len(snapshot_results) if isinstance(snapshot_results, list) else 0
+        }
+        if isinstance(snapshot_results, list):
+            for r in snapshot_results:
+                if not isinstance(r, dict):
+                    continue
+                q = r.get("quality")
+                val_fresh = r.get("validation", {}).get("fresh", True) if isinstance(r.get("validation"), dict) else True
+                if q == QUALITY_ERROR:
+                    dq_counts["error"] += 1
+                elif q == QUALITY_IMPLAUSIBLE:
+                    dq_counts["implausible"] += 1
+                elif q == QUALITY_INVALID:
+                    dq_counts["invalid"] += 1
+                elif q == QUALITY_SUSPECT:
+                    dq_counts["suspect"] += 1
+                elif q == QUALITY_STALE or (q == QUALITY_GOOD and not val_fresh):
+                    dq_counts["stale"] += 1
+                elif q == QUALITY_GOOD:
+                    dq_counts["good"] += 1
+                else:
+                    dq_counts["invalid"] += 1
+
+        # 4. Communication summary from snapshot results
+        comm_counts = {
+            "valid": 0,
+            "timeout": 0,
+            "nrc": 0,
+            "did_mismatch": 0,
+            "no_data": 0,
+            "error": 0,
+            "total": len(snapshot_results) if isinstance(snapshot_results, list) else 0
+        }
+        if isinstance(snapshot_results, list):
+            for r in snapshot_results:
+                if not isinstance(r, dict):
+                    continue
+                st = r.get("status")
+                if st == STATUS_VALID:
+                    comm_counts["valid"] += 1
+                elif st == STATUS_TIMEOUT:
+                    comm_counts["timeout"] += 1
+                elif st == STATUS_NRC:
+                    comm_counts["nrc"] += 1
+                elif st == STATUS_DID_MISMATCH:
+                    comm_counts["did_mismatch"] += 1
+                elif st == STATUS_NO_DATA or st == STATUS_EMPTY_RESPONSE:
+                    comm_counts["no_data"] += 1
+                elif st in (STATUS_NO_CONNECTION, STATUS_WORKER_DOWN, STATUS_SERIAL_ERROR):
+                    comm_counts["error"] += 1
+                else:
+                    comm_counts["error"] += 1
+
+        # 5. DTC summary
+        dtc_set = set()
+        if "dtcs" in target_snapshot and isinstance(target_snapshot["dtcs"], list):
+            for c in target_snapshot["dtcs"]:
+                if c:
+                    dtc_set.add(str(c).strip().upper())
+        for f in findings_copy:
+            if f.get("source") == "DTC":
+                c = f.get("evidence", {}).get("dtc") or f.get("id", "").replace("FINDING_DTC_", "")
+                if c:
+                    dtc_set.add(str(c).strip().upper())
+        if not dtc_set:
+            cached_dtcs = self.sensor_cache.get("DTC_List", [])
+            if isinstance(cached_dtcs, list):
+                for c in cached_dtcs:
+                    if c:
+                        dtc_set.add(str(c).strip().upper())
+
+        dtc_codes = sorted(dtc_set)
+        dtc_summary = {
+            "present": bool(dtc_codes),
+            "count": len(dtc_codes),
+            "codes": dtc_codes
+        }
+
+        # 6. Finding → Recommendation Linkage
+        finding_links = []
+        for f in findings_copy:
+            fid = f.get("id")
+            if not fid:
+                continue
+            linked_recs = [
+                r.get("id") for r in recommendations_copy
+                if isinstance(r.get("finding_ids"), list) and fid in r.get("finding_ids")
+            ]
+            finding_links.append({
+                "finding_id": fid,
+                "recommendation_ids": linked_recs
+            })
+
+        # 7. Executive Summary formulation
+        finding_count = len(findings_copy)
+        rec_count = len(recommendations_copy)
+        high_pri_count = sum(1 for r in recommendations_copy if r.get("priority") == RECOMMENDATION_PRIORITY_CRITICAL)
+
+        if finding_count == 0 and rec_count == 0:
+            summary = "No diagnostic issues detected; all monitored parameters are operating within normal baseline."
+        elif overall_quality in (QUALITY_ERROR, QUALITY_INVALID) and finding_count > 0:
+            summary = f"Diagnostic data quality is degraded ({overall_quality}); {finding_count} finding{'s' if finding_count != 1 else ''} and {rec_count} action{'s' if rec_count != 1 else ''} require data re-verification."
+        elif overall_quality == QUALITY_STALE:
+            summary = f"Diagnostic data stream is stale; {finding_count} finding{'s' if finding_count != 1 else ''} detected with data reacquisition prioritized."
+        elif high_pri_count > 0:
+            summary = f"{finding_count} diagnostic finding{'s' if finding_count != 1 else ''} detected; {high_pri_count} high-priority action{'s' if high_pri_count != 1 else ''} recommended."
+        else:
+            summary = f"{finding_count} diagnostic finding{'s' if finding_count != 1 else ''} detected; {rec_count} prioritized diagnostic action{'s' if rec_count != 1 else ''} recommended."
+
+        # 8. Report Metadata
+        prof_display = "UNKNOWN"
+        if self.vehicle_profile:
+            if hasattr(self.vehicle_profile, "motor_kodu"):
+                prof_display = self.vehicle_profile.motor_kodu
+            else:
+                prof_display = str(self.vehicle_profile)
+
+        metadata = {
+            "vehicle_profile": prof_display,
+            "measurement_count": dq_counts["total"],
+            "finding_count": finding_count,
+            "recommendation_count": rec_count,
+            "high_priority_action_count": high_pri_count,
+            "has_active_dtcs": dtc_summary["present"]
+        }
+
+        # 9. Deterministic Human-Readable Text Section
+        text_lines = [
+            "============================================================",
+            "                 SEYYANEN DIAGNOSTIC REPORT                 ",
+            "============================================================",
+            f"Timestamp:        {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now)) if now > 0 else 'N/A'}",
+            f"Vehicle Profile:  {prof_display}",
+            f"Overall Status:   {status}",
+            f"Data Quality:     {overall_quality}",
+            f"Severity:         {overall_severity}",
+            "",
+            "--- EXECUTIVE SUMMARY ---",
+            summary,
+            "",
+            f"--- DIAGNOSTIC FINDINGS ({finding_count}) ---"
+        ]
+
+        if findings_copy:
+            for idx, f in enumerate(findings_copy, 1):
+                text_lines.append(f"{idx}. [{f.get('severity', 'INFO')}] [{f.get('category', 'GENERAL')}] {f.get('id', 'UNKNOWN')}")
+                text_lines.append(f"   Title:      {f.get('title', 'N/A')}")
+                text_lines.append(f"   Message:    {f.get('message', 'N/A')}")
+                text_lines.append(f"   Confidence: {f.get('confidence', 0.0):.2f}")
+        else:
+            text_lines.append("No diagnostic anomalies or findings detected.")
+
+        text_lines.append("")
+        text_lines.append(f"--- RECOMMENDED ACTIONS ({rec_count}) ---")
+        if recommendations_copy:
+            for idx, r in enumerate(recommendations_copy, 1):
+                pri_label = f"Priority {r.get('priority', 3)}"
+                text_lines.append(f"{idx}. [{pri_label}] [{r.get('action_type', 'ACTION')}] {r.get('id', 'UNKNOWN')}")
+                text_lines.append(f"   Title:       {r.get('title', 'N/A')}")
+                text_lines.append(f"   Action:      {r.get('action', 'N/A')}")
+                text_lines.append(f"   Reason:      {r.get('reason', 'N/A')}")
+                if r.get("finding_ids"):
+                    text_lines.append(f"   Evidence:    {', '.join(r.get('finding_ids'))}")
+                text_lines.append(f"   Confidence:  {r.get('confidence', 0.0):.2f}")
+        else:
+            text_lines.append("No corrective or diagnostic actions required.")
+
+        text_lines.append("")
+        text_lines.append("--- DATA QUALITY & INTEGRITY ---")
+        text_lines.append(f"Total Measurements: {dq_counts['total']} | Good: {dq_counts['good']} | Stale: {dq_counts['stale']} | Implausible: {dq_counts['implausible']} | Suspect: {dq_counts['suspect']} | Invalid: {dq_counts['invalid']} | Error: {dq_counts['error']}")
+
+        text_lines.append("")
+        text_lines.append("--- COMMUNICATION SUMMARY ---")
+        text_lines.append(f"Valid: {comm_counts['valid']} | Timeout: {comm_counts['timeout']} | NRC: {comm_counts['nrc']} | DID Mismatch: {comm_counts['did_mismatch']} | No Data: {comm_counts['no_data']} | Error: {comm_counts['error']}")
+
+        text_lines.append("")
+        text_lines.append("--- ACTIVE DTCS ---")
+        if dtc_summary["present"]:
+            text_lines.append(f"Active Fault Codes ({dtc_summary['count']}): {', '.join(dtc_summary['codes'])}")
+        else:
+            text_lines.append("No active Diagnostic Trouble Codes detected in ECU memory.")
+
+        text_lines.append("============================================================")
+        report_text = "\n".join(text_lines)
+
+        report = {
+            "timestamp": now,
+            "status": status,
+            "overall_quality": overall_quality,
+            "overall_severity": overall_severity,
+            "summary": summary,
+            "finding_count": finding_count,
+            "recommendation_count": rec_count,
+            "findings": findings_copy,
+            "recommendations": recommendations_copy,
+            "finding_links": finding_links,
+            "data_quality": dq_counts,
+            "communication": comm_counts,
+            "dtc_summary": dtc_summary,
+            "metadata": metadata,
+            "text": report_text,
+        }
+
+        self.last_diagnostic_report = report
+        return report
+
+    def get_diagnostic_report(self) -> dict:
+        """Son üretilen teşhis raporunun yüzeysel kopyasını (shallow copy) döndürür."""
+        return dict(self.last_diagnostic_report)
+
+    def run_diagnostic_pipeline(
+        self,
+        headers=None,
+        dids=None,
+        mode21_ids=None,
+        services=None,
+        candidate_source=None,
+        include_standard_pids=False,
+        include_unsupported=False,
+        session=None,
+        abort_callback=None,
+    ) -> dict:
+        """
+        V214 (Phase E-9): Uçtan Uca Teşhis Hattı Orkestrasyonu (Diagnostic Pipeline Orchestration).
+        E-2 Keşif -> E-3 Planlama -> E-4 Yürütme -> E-5 Doğrulama/Snapshot -> 
+        E-6 Yorumlama -> E-7 Öneri -> E-8 Rapor aşamalarını sıralı, kontrollü hata sınırları (error boundaries)
+        ve deterministik durum takibi ile orkestre eder.
+        Mevcut katmanların mantığını yeniden yazmaz veya kopyalamaz; orkestrasyon ve sonuç birleştirme sağlar.
+        """
+        t_start_total = time.monotonic()
+        now = time.time()
+
+        stages = {
+            "discovery": STAGE_NOT_STARTED,
+            "planning": STAGE_NOT_STARTED,
+            "execution": STAGE_NOT_STARTED,
+            "validation": STAGE_NOT_STARTED,
+            "interpretation": STAGE_NOT_STARTED,
+            "recommendation": STAGE_NOT_STARTED,
+            "report": STAGE_NOT_STARTED,
+        }
+        timing = {
+            "discovery": 0.0,
+            "planning": 0.0,
+            "execution": 0.0,
+            "validation": 0.0,
+            "interpretation": 0.0,
+            "recommendation": 0.0,
+            "report": 0.0,
+            "total": 0.0,
+        }
+        errors = []
+
+        capabilities = []
+        plan = []
+        results = []
+        snapshot = {}
+        findings = []
+        recommendations = []
+        report = {}
+
+        # ---------------------------------------------------------------------
+        # STAGE 1: Discovery (E-2)
+        # ---------------------------------------------------------------------
+        stages["discovery"] = STAGE_RUNNING
+        t0 = time.monotonic()
+        try:
+            if services is not None or mode21_ids is not None:
+                capabilities = self.discover_advanced_capabilities(
+                    headers=headers,
+                    mode22_dids=dids,
+                    mode21_ids=mode21_ids,
+                    services=services,
+                    candidate_source=candidate_source,
+                    abort_callback=abort_callback,
+                )
+            else:
+                capabilities = self.discover_ecu_capabilities(
+                    headers=headers,
+                    dids=dids,
+                    candidate_dids=dids,
+                    candidate_source=candidate_source,
+                    include_standard_pids=include_standard_pids,
+                )
+            stages["discovery"] = STAGE_COMPLETE
+        except Exception as e:
+            stages["discovery"] = STAGE_FAILED
+            errors.append({
+                "stage": "discovery",
+                "type": type(e).__name__,
+                "message": str(e),
+            })
+            log_flush(f"[PIPELINE_ERROR] Stage 'discovery' failed: {e}")
+        finally:
+            timing["discovery"] = round(time.monotonic() - t0, 3)
+
+        # ---------------------------------------------------------------------
+        # STAGE 2: Planning (E-3)
+        # ---------------------------------------------------------------------
+        if stages["discovery"] == STAGE_COMPLETE:
+            stages["planning"] = STAGE_RUNNING
+            t0 = time.monotonic()
+            try:
+                plan = self.build_acquisition_plan(
+                    capabilities=capabilities,
+                    include_unsupported=include_unsupported,
+                )
+                stages["planning"] = STAGE_COMPLETE
+            except Exception as e:
+                stages["planning"] = STAGE_FAILED
+                errors.append({
+                    "stage": "planning",
+                    "type": type(e).__name__,
+                    "message": str(e),
+                })
+                log_flush(f"[PIPELINE_ERROR] Stage 'planning' failed: {e}")
+            finally:
+                timing["planning"] = round(time.monotonic() - t0, 3)
+        else:
+            stages["planning"] = STAGE_SKIPPED
+
+        # ---------------------------------------------------------------------
+        # STAGE 3: Execution (E-4)
+        # ---------------------------------------------------------------------
+        if stages["planning"] == STAGE_COMPLETE:
+            stages["execution"] = STAGE_RUNNING
+            t0 = time.monotonic()
+            try:
+                results = self.execute_acquisition_plan(
+                    plan=plan,
+                    session=session,
+                    abort_callback=abort_callback,
+                )
+                stages["execution"] = STAGE_COMPLETE
+            except Exception as e:
+                stages["execution"] = STAGE_FAILED
+                errors.append({
+                    "stage": "execution",
+                    "type": type(e).__name__,
+                    "message": str(e),
+                })
+                log_flush(f"[PIPELINE_ERROR] Stage 'execution' failed: {e}")
+            finally:
+                timing["execution"] = round(time.monotonic() - t0, 3)
+        else:
+            stages["execution"] = STAGE_SKIPPED
+
+        # ---------------------------------------------------------------------
+        # STAGE 4: Validation / Snapshot (E-5)
+        # ---------------------------------------------------------------------
+        if stages["execution"] == STAGE_COMPLETE:
+            stages["validation"] = STAGE_RUNNING
+            t0 = time.monotonic()
+            try:
+                snapshot = self.validate_acquisition_results(
+                    results=results,
+                )
+                stages["validation"] = STAGE_COMPLETE
+            except Exception as e:
+                stages["validation"] = STAGE_FAILED
+                errors.append({
+                    "stage": "validation",
+                    "type": type(e).__name__,
+                    "message": str(e),
+                })
+                log_flush(f"[PIPELINE_ERROR] Stage 'validation' failed: {e}")
+            finally:
+                timing["validation"] = round(time.monotonic() - t0, 3)
+        else:
+            stages["validation"] = STAGE_SKIPPED
+
+        # ---------------------------------------------------------------------
+        # STAGE 5: Interpretation / Findings (E-6)
+        # ---------------------------------------------------------------------
+        if stages["validation"] == STAGE_COMPLETE:
+            stages["interpretation"] = STAGE_RUNNING
+            t0 = time.monotonic()
+            try:
+                interp_result = self.interpret_diagnostic_snapshot(
+                    snapshot=snapshot,
+                )
+                findings = interp_result.get("findings", []) if isinstance(interp_result, dict) else []
+                stages["interpretation"] = STAGE_COMPLETE
+            except Exception as e:
+                stages["interpretation"] = STAGE_FAILED
+                errors.append({
+                    "stage": "interpretation",
+                    "type": type(e).__name__,
+                    "message": str(e),
+                })
+                log_flush(f"[PIPELINE_ERROR] Stage 'interpretation' failed: {e}")
+            finally:
+                timing["interpretation"] = round(time.monotonic() - t0, 3)
+        else:
+            stages["interpretation"] = STAGE_SKIPPED
+
+        # ---------------------------------------------------------------------
+        # STAGE 6: Recommendation / Prioritization (E-7)
+        # ---------------------------------------------------------------------
+        if stages["interpretation"] == STAGE_COMPLETE:
+            stages["recommendation"] = STAGE_RUNNING
+            t0 = time.monotonic()
+            try:
+                rec_result = self.generate_diagnostic_recommendations(
+                    findings=findings,
+                )
+                recommendations = rec_result.get("recommendations", []) if isinstance(rec_result, dict) else []
+                stages["recommendation"] = STAGE_COMPLETE
+            except Exception as e:
+                stages["recommendation"] = STAGE_FAILED
+                errors.append({
+                    "stage": "recommendation",
+                    "type": type(e).__name__,
+                    "message": str(e),
+                })
+                log_flush(f"[PIPELINE_ERROR] Stage 'recommendation' failed: {e}")
+            finally:
+                timing["recommendation"] = round(time.monotonic() - t0, 3)
+        else:
+            stages["recommendation"] = STAGE_SKIPPED
+
+        # ---------------------------------------------------------------------
+        # STAGE 7: Report / Explanation (E-8)
+        # ---------------------------------------------------------------------
+        if stages["recommendation"] == STAGE_COMPLETE:
+            stages["report"] = STAGE_RUNNING
+            t0 = time.monotonic()
+            try:
+                report = self.build_diagnostic_report(
+                    snapshot=snapshot,
+                    findings=findings,
+                    recommendations=recommendations,
+                )
+                stages["report"] = STAGE_COMPLETE
+            except Exception as e:
+                stages["report"] = STAGE_FAILED
+                errors.append({
+                    "stage": "report",
+                    "type": type(e).__name__,
+                    "message": str(e),
+                })
+                log_flush(f"[PIPELINE_ERROR] Stage 'report' failed: {e}")
+            finally:
+                timing["report"] = round(time.monotonic() - t0, 3)
+        else:
+            stages["report"] = STAGE_SKIPPED
+
+        timing["total"] = round(time.monotonic() - t_start_total, 3)
+
+        # ---------------------------------------------------------------------
+        # Status & Summary Determination
+        # ---------------------------------------------------------------------
+        all_completed = all(s == STAGE_COMPLETE for s in stages.values())
+        has_failed = any(s == STAGE_FAILED for s in stages.values())
+
+        if has_failed:
+            ok = False
+            pipeline_status = PIPELINE_FAILED
+            failed_stage = next((k for k, v in stages.items() if v == STAGE_FAILED), "unknown")
+            summary = f"Diagnostic pipeline stopped due to error during {failed_stage} stage."
+        elif all_completed:
+            ok = True
+            snap_quality = snapshot.get("quality", QUALITY_GOOD)
+            snap_complete = snapshot.get("complete", True)
+            if snap_quality in (QUALITY_ERROR, QUALITY_INVALID, QUALITY_STALE) or snap_complete is False:
+                pipeline_status = PIPELINE_PARTIAL
+                summary = f"Diagnostic pipeline partial: {len(capabilities)} capabilities evaluated, data quality {snap_quality}, {len(findings)} findings detected, {len(recommendations)} recommendations generated."
+            else:
+                pipeline_status = PIPELINE_COMPLETE
+                summary = f"Diagnostic pipeline completed: {len(capabilities)} capabilities evaluated, {len(findings)} findings detected, {len(recommendations)} recommendations generated."
+        else:
+            ok = False
+            pipeline_status = PIPELINE_PARTIAL
+            summary = "Diagnostic pipeline partially completed."
+
+        pipeline_result = {
+            "ok": ok,
+            "status": pipeline_status,
+            "timestamp": now,
+            "capabilities": capabilities,
+            "plan": plan,
+            "results": results,
+            "snapshot": snapshot,
+            "findings": findings,
+            "recommendations": recommendations,
+            "report": report,
+            "stages": stages,
+            "errors": errors,
+            "timing": timing,
+            "summary": summary,
+        }
+
+        self.last_diagnostic_pipeline = pipeline_result
+        return pipeline_result
+
+    def get_diagnostic_pipeline(self) -> dict:
+        """Son üretilen teşhis hattı sonucunun yüzeysel kopyasını (shallow copy) döndürür."""
+        return dict(self.last_diagnostic_pipeline)
 
     def baglanti_kontrol(self):
         """Otomatik Reconnect"""
@@ -4225,6 +5752,23 @@ class DiagnosticSession:
             abort_callback=lambda: self.state in (SESSION_STOPPING, SESSION_STOPPED),
         )
 
+    def discover_ecu_capabilities(
+        self,
+        headers=None,
+        dids=None,
+        include_standard_pids=False,
+        candidate_source=None,
+    ) -> list:
+        """
+        Oturum kapsamında ECU yetenek keşfini (Phase E-2) tetikler.
+        """
+        return self.engine.discover_ecu_capabilities(
+            headers=headers,
+            dids=dids,
+            include_standard_pids=include_standard_pids,
+            candidate_source=candidate_source,
+        )
+
     def build_acquisition_plan(self, capabilities=None, include_unsupported=False) -> list:
         """
         Oturum kapsamında doğrulanmış yeteneklerden bir okuma planı üretir.
@@ -4237,8 +5781,98 @@ class DiagnosticSession:
         """
         return self.engine.get_acquisition_plan()
 
-    def execute_acquisition_plan(self, plan=None) -> list:
+    def execute_acquisition_plan(self, plan=None, abort_callback=None) -> list:
         """
         Oturum kapsamında veri toplama planını yürütür.
         """
-        return self.engine.execute_acquisition_plan(plan=plan, session=self)
+        cb = abort_callback or (lambda: self.state in (SESSION_STOPPING, SESSION_STOPPED))
+        return self.engine.execute_acquisition_plan(plan=plan, session=self, abort_callback=cb)
+
+    def validate_acquisition_results(self, results=None) -> dict:
+        """
+        Oturum kapsamında veri toplama sonuçlarını doğrular ve snapshot üretir.
+        """
+        return self.engine.validate_acquisition_results(results=results)
+
+    def get_validated_snapshot(self) -> dict:
+        """
+        Oturum kapsamında doğrulanmış son snapshot kopyasını döndürür.
+        """
+        return self.engine.get_validated_snapshot()
+
+    def interpret_diagnostic_snapshot(self, snapshot=None, dtcs=None, correlation_anomalies=None) -> dict:
+        """
+        Oturum kapsamında teşhis snapshot'ını yorumlar ve bulguları üretir.
+        """
+        return self.engine.interpret_diagnostic_snapshot(
+            snapshot=snapshot,
+            dtcs=dtcs,
+            correlation_anomalies=correlation_anomalies,
+        )
+
+    def get_diagnostic_findings(self) -> list:
+        """
+        Oturumun son teşhis bulguları listesini döndürür.
+        """
+        return self.engine.get_diagnostic_findings()
+
+    def generate_diagnostic_recommendations(self, findings=None) -> dict:
+        """
+        Oturum kapsamında teşhis bulgularını yorumlayarak önceliklendirilmiş eylemleri üretir.
+        """
+        return self.engine.generate_diagnostic_recommendations(findings=findings)
+
+    def get_diagnostic_recommendations(self) -> list:
+        """
+        Oturumun son teşhis önerileri listesini döndürür.
+        """
+        return self.engine.get_diagnostic_recommendations()
+
+    def build_diagnostic_report(self, snapshot=None, findings=None, recommendations=None) -> dict:
+        """
+        Oturum kapsamında doğrulanmış snapshot, bulgular ve önerilerden teşhis raporu oluşturur.
+        """
+        return self.engine.build_diagnostic_report(
+            snapshot=snapshot,
+            findings=findings,
+            recommendations=recommendations,
+        )
+
+    def get_diagnostic_report(self) -> dict:
+        """
+        Oturumun son teşhis raporunun kopyasını döndürür.
+        """
+        return self.engine.get_diagnostic_report()
+
+    def run_diagnostic_pipeline(
+        self,
+        headers=None,
+        dids=None,
+        mode21_ids=None,
+        services=None,
+        candidate_source=None,
+        include_standard_pids=False,
+        include_unsupported=False,
+        abort_callback=None,
+    ) -> dict:
+        """
+        Oturum kapsamında tam teşhis hattını (E-2 -> E-8) orkestre eder.
+        """
+        cb = abort_callback or (lambda: self.state in (SESSION_STOPPING, SESSION_STOPPED))
+        return self.engine.run_diagnostic_pipeline(
+            headers=headers,
+            dids=dids,
+            mode21_ids=mode21_ids,
+            services=services,
+            candidate_source=candidate_source,
+            include_standard_pids=include_standard_pids,
+            include_unsupported=include_unsupported,
+            session=self,
+            abort_callback=cb,
+        )
+
+    def get_diagnostic_pipeline(self) -> dict:
+        """
+        Oturumun son teşhis hattı sonucunun kopyasını döndürür.
+        """
+        return self.engine.get_diagnostic_pipeline()
