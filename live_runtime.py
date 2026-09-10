@@ -36,7 +36,7 @@ LIVE_ERROR = "LIVE_ERROR"
 
 VALID_TRANSITIONS = {
     LIVE_IDLE: {LIVE_STARTING},
-    LIVE_STARTING: {LIVE_RUNNING, LIVE_DEGRADED, LIVE_ERROR, LIVE_STOPPED},
+    LIVE_STARTING: {LIVE_RUNNING, LIVE_DEGRADED, LIVE_ERROR, LIVE_STOPPED, LIVE_STOPPING},
     LIVE_RUNNING: {LIVE_DEGRADED, LIVE_STOPPING, LIVE_ERROR},
     LIVE_DEGRADED: {LIVE_RUNNING, LIVE_STOPPING, LIVE_ERROR},
     LIVE_STOPPING: {LIVE_STOPPED, LIVE_ERROR},
@@ -101,7 +101,10 @@ class LiveAcquisitionRuntime:
         else:
             try:
                 from live_quality import LiveQualityAssessor
-                self.quality_assessor = LiveQualityAssessor(engine=self.engine)
+                self.quality_assessor = LiveQualityAssessor(
+                    engine=self.engine,
+                    history_maxlen=self.history_maxlen,
+                )
             except Exception as e:
                 logging.warning(f"Could not initialize LiveQualityAssessor: {e}")
                 self.quality_assessor = None
@@ -166,6 +169,8 @@ class LiveAcquisitionRuntime:
 
         # Runtime Statistics
         self._stats_lock = threading.Lock()
+        self._reconnect_lock = threading.Lock()
+        self._dtc_poll_lock = threading.Lock()
         self._cycle_count = 0
         self._successful_reads = 0
         self._failed_reads = 0
@@ -318,6 +323,9 @@ class LiveAcquisitionRuntime:
                 return dict(sample) if sample else None
             return {p: dict(s) for p, s in self._latest_successful_by_pid.items()}
 
+    # Alias for naming consistency
+    get_latest_successful_sample = get_latest_successful
+
     def get_recent_samples(self, limit: Optional[int] = None, pid: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Returns recent samples from the bounded history buffer (oldest to newest).
@@ -359,7 +367,9 @@ class LiveAcquisitionRuntime:
             "failed_reads": fail,
             "total_reads": total_reads,
             "elapsed_time": round(elapsed, 3),
+            "elapsed_time_sec": round(elapsed, 3),
             "effective_sample_rate": round(sample_rate, 2),
+            "sample_rate_sps": round(sample_rate, 2),
             "pids_count": len(self.pids),
             "history_size": history_size,
             "history_maxlen": self.history_maxlen,
@@ -463,11 +473,25 @@ class LiveAcquisitionRuntime:
         """
         Polls DTCs from vehicle using existing read_diagnostic_trouble_codes
         without spawning a secondary serial worker, and feeds result to F-4.
+        Thread-safe, serialized, and failure-isolated.
         """
-        if not hasattr(self.engine, "read_diagnostic_trouble_codes"):
-            return {}
-        dtc_read_result = self.engine.read_diagnostic_trouble_codes(header=header)
-        return self.process_dtc_snapshot(dtc_read_result)
+        with self._dtc_poll_lock:
+            if not hasattr(self.engine, "read_diagnostic_trouble_codes"):
+                return {}
+            try:
+                dtc_read_result = self.engine.read_diagnostic_trouble_codes(header=header)
+            except Exception as e:
+                logging.error(f"LiveRuntime: Exception during DTC read: {e}")
+                dtc_read_result = {
+                    "type": "DTC",
+                    "status": STATUS_SERIAL_ERROR,
+                    "codes": [],
+                    "details": [],
+                    "raw_response": [],
+                    "timestamp": time.time(),
+                    "error": str(e),
+                }
+            return self.process_dtc_snapshot(dtc_read_result)
 
     def get_dtc_state(self, code: str) -> Optional[Dict[str, Any]]:
         """Returns lifecycle state for a single DTC code."""
@@ -560,35 +584,46 @@ class LiveAcquisitionRuntime:
         Non-blocking cancellation through _stop_event.
         Returns True if reconnection and probe succeeded.
         """
-        logging.info("LiveRuntime: Initiating controlled reconnection...")
-        for attempt in range(1, max_attempts + 1):
-            if self._stop_event.is_set():
-                logging.info("LiveRuntime: Reconnection cancelled by stop event.")
-                return False
+        if not self._reconnect_lock.acquire(blocking=False):
+            logging.warning("LiveRuntime: Reconnection already in progress. Duplicate call rejected.")
+            return False
 
-            backoff = 0.2 if attempt == 1 else min(2.0, 0.2 * (2 ** (attempt - 1)))
-            if self._stop_event.wait(timeout=backoff):
-                return False
+        try:
+            self._stop_event.clear()
+            logging.info("LiveRuntime: Initiating controlled reconnection...")
+            for attempt in range(1, max_attempts + 1):
+                if self._stop_event.is_set():
+                    logging.info("LiveRuntime: Reconnection cancelled by stop event.")
+                    return False
 
-            try:
-                if hasattr(self.engine, "baglan") and self.engine.baglan():
-                    # Post-reconnect verification probe
-                    probe_pid = self.pids[0] if self.pids else "010C"
-                    res = self.engine.komut_gonder(probe_pid, timeout=1.0)
-                    probe_status = getattr(self.engine, "last_response_status", STATUS_VALID)
-                    if probe_status == STATUS_VALID or res:
-                        logging.info(f"LiveRuntime: Reconnected successfully on attempt {attempt}.")
-                        if hasattr(self, "safety_manager") and self.safety_manager:
-                            self.safety_manager.reset_faults()
-                        with self._state_lock:
-                            if self._state in (LIVE_ERROR, LIVE_DEGRADED):
-                                self._transition_state(LIVE_RUNNING)
-                        return True
-            except Exception as e:
-                logging.warning(f"LiveRuntime reconnect attempt {attempt} failed: {e}")
+                backoff = 0.2 if attempt == 1 else min(2.0, 0.2 * (2 ** (attempt - 1)))
+                if self._stop_event.wait(timeout=backoff):
+                    return False
 
-        logging.error(f"LiveRuntime: Reconnection failed after {max_attempts} attempts.")
-        return False
+                try:
+                    if hasattr(self.engine, "baglan") and self.engine.baglan():
+                        # Post-reconnect verification probe
+                        probe_pid = self.pids[0] if self.pids else "010C"
+                        res = self.engine.komut_gonder(probe_pid, timeout=1.0)
+                        probe_status = getattr(self.engine, "last_response_status", STATUS_VALID)
+                        if probe_status == STATUS_VALID or res:
+                            logging.info(f"LiveRuntime: Reconnected successfully on attempt {attempt}.")
+                            if hasattr(self, "safety_manager") and self.safety_manager:
+                                self.safety_manager.reset_faults()
+                            with self._state_lock:
+                                if self._state in (LIVE_ERROR, LIVE_DEGRADED):
+                                    if self._worker_thread and self._worker_thread.is_alive():
+                                        self._transition_state(LIVE_RUNNING)
+                                    else:
+                                        self._transition_state(LIVE_STOPPED)
+                            return True
+                except Exception as e:
+                    logging.warning(f"LiveRuntime reconnect attempt {attempt} failed: {e}")
+
+            logging.error(f"LiveRuntime: Reconnection failed after {max_attempts} attempts.")
+            return False
+        finally:
+            self._reconnect_lock.release()
 
     def reset_runtime_faults(self) -> None:
         """

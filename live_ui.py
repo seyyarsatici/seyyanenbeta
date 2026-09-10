@@ -28,7 +28,7 @@ from PyQt6.QtWidgets import (
     QProgressBar, QButtonGroup
 )
 from PyQt6.QtGui import QFont, QColor, QPalette
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QThread
 
 try:
     from pyqtgraph import PlotWidget, mkPen
@@ -138,6 +138,14 @@ class LivePresentationModel:
             return f"{delta:.1f} s"
         else:
             return f"{int(delta // 60)} dk"
+
+    @staticmethod
+    def format_runtime_stats(stats: Dict[str, Any]) -> str:
+        """Formats session statistics safely adhering to canonical contract."""
+        cycle = stats.get("cycle_count", 0)
+        rate = stats.get("effective_sample_rate", stats.get("sample_rate_sps", 0.0))
+        elapsed = stats.get("elapsed_time", stats.get("elapsed_time_sec", 0.0))
+        return f"Döngü: {cycle} | Hız: {rate:.1f} sps | Süre: {elapsed:.1f}s"
 
     @staticmethod
     def get_quality_badge(quality: str) -> Dict[str, str]:
@@ -256,6 +264,53 @@ class LiveTrendWidget(QWidget):
 
 
 # =====================================================================
+# 2.5 ASYNCHRONOUS GUI BACKGROUND WORKERS (NON-BLOCKING SERIAL I/O)
+# =====================================================================
+
+class LiveReconnectWorker(QThread):
+    """
+    Dedicated background worker for non-blocking serial reconnection.
+    Executes connection retries, backoff, and probe verification without freezing the Qt event loop.
+    """
+    reconnect_finished = pyqtSignal(bool, str)
+
+    def __init__(self, runtime: LiveAcquisitionRuntime, max_attempts: int = 3, timeout: float = 1.5):
+        super().__init__()
+        self.runtime = runtime
+        self.max_attempts = max_attempts
+        self.timeout = timeout
+
+    def run(self):
+        try:
+            ok = self.runtime.reconnect(max_attempts=self.max_attempts, timeout=self.timeout)
+            msg = "ECU bağlantısı başarıyla yeniden kuruldu ve doğrulandı." if ok else "Yeniden bağlanma başarısız oldu. Port ve kablo bağlantılarını kontrol edin."
+            self.reconnect_finished.emit(ok, msg)
+        except Exception as e:
+            self.reconnect_finished.emit(False, f"Yeniden bağlanma hatası: {e}")
+
+
+class LiveDTCPollWorker(QThread):
+    """
+    Dedicated background worker for non-blocking Mode 03 DTC polling.
+    Safely executes vehicle DTC query and lifecycle processing off the GUI thread.
+    """
+    dtc_poll_finished = pyqtSignal(dict)
+    dtc_poll_error = pyqtSignal(str)
+
+    def __init__(self, runtime: LiveAcquisitionRuntime, header: Optional[str] = None):
+        super().__init__()
+        self.runtime = runtime
+        self.header = header
+
+    def run(self):
+        try:
+            res = self.runtime.poll_dtcs(header=self.header)
+            self.dtc_poll_finished.emit(res)
+        except Exception as e:
+            self.dtc_poll_error.emit(str(e))
+
+
+# =====================================================================
 # 3. MAIN LIVE DIAGNOSTIC WIDGET
 # =====================================================================
 
@@ -274,6 +329,8 @@ class LiveDiagnosticWidget(QWidget):
         super().__init__(parent)
         self.runtime = runtime
         self._owns_runtime = False
+        self._reconnect_worker: Optional[LiveReconnectWorker] = None
+        self._dtc_worker: Optional[LiveDTCPollWorker] = None
         
         # Categorized PID catalog for filtering
         self.categories = {
@@ -634,15 +691,19 @@ class LiveDiagnosticWidget(QWidget):
                 self.badge_state.setStyleSheet("background-color: #95A5A6; color: #FFFFFF; border-radius: 4px;")
 
             # Button States strictly derived from backend state
-            self.btn_start.setEnabled(state in (LIVE_IDLE, LIVE_STOPPED))
-            self.btn_stop.setEnabled(state in (LIVE_RUNNING, LIVE_DEGRADED, LIVE_STARTING))
-            self.btn_reconnect.setEnabled(state in (LIVE_ERROR, LIVE_DEGRADED, LIVE_STOPPED, LIVE_IDLE))
+            is_reconnecting = bool(self._reconnect_worker and self._reconnect_worker.isRunning())
+            if is_reconnecting:
+                self.btn_start.setEnabled(False)
+                self.btn_stop.setEnabled(False)
+                self.btn_reconnect.setEnabled(False)
+            else:
+                self.btn_start.setEnabled(state in (LIVE_IDLE, LIVE_STOPPED))
+                self.btn_stop.setEnabled(state in (LIVE_RUNNING, LIVE_DEGRADED, LIVE_STARTING))
+                self.btn_reconnect.setEnabled(state in (LIVE_ERROR, LIVE_DEGRADED, LIVE_STOPPED, LIVE_IDLE))
 
             # Runtime stats
             stats = self.runtime.get_runtime_stats()
-            self.lbl_stats.setText(
-                f"Döngü: {stats.get('cycle_count', 0)} | Hız: {stats.get('sample_rate_sps', 0.0):.1f} sps | Süre: {stats.get('elapsed_time_sec', 0.0):.1f}s"
-            )
+            self.lbl_stats.setText(LivePresentationModel.format_runtime_stats(stats))
 
             # 2. Update Live PID Table
             self._update_live_table()
@@ -850,17 +911,29 @@ class LiveDiagnosticWidget(QWidget):
             self.update_ui_state()
 
     def on_reconnect_clicked(self):
-        """Triggers safe bounded reconnect with post-reconnect probe."""
-        if self.runtime:
-            self.badge_connection.setText("YENİDEN BAĞLANIYOR...")
-            self.badge_connection.setStyleSheet("background-color: #F1C40F; color: #2C3E50; border-radius: 4px;")
-            QApplication.processEvents()
-            ok = self.runtime.reconnect(max_attempts=3, timeout=1.5)
-            if ok:
-                QMessageBox.information(self, "Bağlantı Başarılı", "ECU bağlantısı başarıyla yeniden kuruldu ve doğrulandı.")
-            else:
-                QMessageBox.critical(self, "Bağlantı Hatası", "Yeniden bağlanma başarısız oldu. Port ve kablo bağlantılarını kontrol edin.")
-            self.update_ui_state()
+        """Triggers safe bounded reconnect asynchronously without blocking GUI event loop."""
+        if not self.runtime:
+            return
+        if self._reconnect_worker and self._reconnect_worker.isRunning():
+            return  # Prevent duplicate reconnect workers / reconnect storms
+
+        self.badge_connection.setText("YENİDEN BAĞLANIYOR...")
+        self.badge_connection.setStyleSheet("background-color: #F1C40F; color: #2C3E50; border-radius: 4px; padding: 4px;")
+        self.btn_reconnect.setEnabled(False)
+        self.btn_start.setEnabled(False)
+        self.btn_stop.setEnabled(False)
+
+        self._reconnect_worker = LiveReconnectWorker(self.runtime, max_attempts=3, timeout=1.5)
+        self._reconnect_worker.reconnect_finished.connect(self._on_reconnect_completed)
+        self._reconnect_worker.start()
+
+    def _on_reconnect_completed(self, ok: bool, msg: str):
+        """Slot invoked safely on Qt GUI thread when reconnect finishes."""
+        if ok:
+            QMessageBox.information(self, "Bağlantı Başarılı", msg)
+        else:
+            QMessageBox.critical(self, "Bağlantı Hatası", msg)
+        self.update_ui_state()
 
     def on_filter_changed(self, category: str):
         """Changes active PID filter category."""
@@ -879,24 +952,46 @@ class LiveDiagnosticWidget(QWidget):
             self.trend_widget.set_pid(pid, meta.get("name", pid), meta.get("unit", ""))
 
     def on_poll_dtc_clicked(self):
-        """Polls DTCs safely via Mode 03 using runtime.poll_dtcs()."""
-        if self.runtime:
-            self.btn_poll_dtc.setEnabled(False)
-            self.btn_poll_dtc.setText("Sorgulanıyor...")
-            QApplication.processEvents()
-            try:
-                res = self.runtime.poll_dtcs()
-                active = res.get("active_dtcs", [])
-                if active:
-                    QMessageBox.warning(self, "DTC Bulundu", f"{len(active)} adet aktif arıza kodu tespit edildi:\n" + ", ".join(active))
-                else:
-                    QMessageBox.information(self, "DTC Sonucu", "ECU üzerinde aktif arıza kodu tespit edilmedi (Temiz).")
-            except Exception as e:
-                QMessageBox.critical(self, "Hata", f"DTC sorgulama sırasında hata: {e}")
-            finally:
-                self.btn_poll_dtc.setEnabled(True)
-                self.btn_poll_dtc.setText("🔍 DTC Sorgula (Mode 03)")
-                self.update_ui_state()
+        """Polls DTCs safely via Mode 03 asynchronously using LiveDTCPollWorker."""
+        if not self.runtime:
+            return
+        if self._dtc_worker and self._dtc_worker.isRunning():
+            return  # Prevent rapid repeated clicks
+
+        self.btn_poll_dtc.setEnabled(False)
+        self.btn_poll_dtc.setText("Sorgulanıyor...")
+
+        self._dtc_worker = LiveDTCPollWorker(self.runtime)
+        self._dtc_worker.dtc_poll_finished.connect(self._on_dtc_poll_completed)
+        self._dtc_worker.dtc_poll_error.connect(self._on_dtc_poll_error)
+        self._dtc_worker.start()
+
+    def _on_dtc_poll_completed(self, res: dict):
+        """Slot invoked on Qt GUI thread when DTC poll finishes successfully."""
+        try:
+            active = res.get("active_dtcs", [])
+            is_valid = res.get("is_valid_acquisition", True)
+            if not is_valid:
+                err_msg = res.get("error", "İletişim hatası")
+                QMessageBox.warning(self, "DTC Okunamadı", f"DTC sorgusu başarısız oldu:\n{err_msg}")
+            elif active:
+                codes_list = [d["code"] if isinstance(d, dict) else str(d) for d in active]
+                QMessageBox.warning(self, "DTC Bulundu", f"{len(active)} adet aktif arıza kodu tespit edildi:\n" + ", ".join(codes_list))
+            else:
+                QMessageBox.information(self, "DTC Sonucu", "ECU üzerinde aktif arıza kodu tespit edilmedi (Temiz).")
+        finally:
+            self.btn_poll_dtc.setEnabled(True)
+            self.btn_poll_dtc.setText("🔍 DTC Sorgula (Mode 03)")
+            self.update_ui_state()
+
+    def _on_dtc_poll_error(self, err_msg: str):
+        """Slot invoked on Qt GUI thread if DTC poll raised an unexpected exception."""
+        try:
+            QMessageBox.critical(self, "Hata", f"DTC sorgulama sırasında hata: {err_msg}")
+        finally:
+            self.btn_poll_dtc.setEnabled(True)
+            self.btn_poll_dtc.setText("🔍 DTC Sorgula (Mode 03)")
+            self.update_ui_state()
 
     def on_reset_faults_clicked(self):
         """Resets in-memory runtime safety faults. Strictly zero Mode 04."""
@@ -906,8 +1001,12 @@ class LiveDiagnosticWidget(QWidget):
             self.update_ui_state()
 
     def closeEvent(self, event):
-        """Clean shutdown of timer."""
+        """Clean shutdown of timer and background workers without orphan threads."""
         self.update_timer.stop()
+        if self._reconnect_worker and self._reconnect_worker.isRunning():
+            self._reconnect_worker.wait(1000)
+        if self._dtc_worker and self._dtc_worker.isRunning():
+            self._dtc_worker.wait(1000)
         super().closeEvent(event)
 
 

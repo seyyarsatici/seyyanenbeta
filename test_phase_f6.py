@@ -451,6 +451,9 @@ def run_all_tests():
     with patch.object(runtime, "reconnect", return_value=True) as mock_reconn:
         with patch("PyQt6.QtWidgets.QMessageBox.information") as mock_info:
             widget.on_reconnect_clicked()
+            if widget._reconnect_worker:
+                widget._reconnect_worker.wait(2000)
+            app.processEvents()
             mock_reconn.assert_called_once()
             mock_info.assert_called_once()
     print("✅ TEST 19 PASSED: Reconnection triggers safe high-level runtime reconnect.")
@@ -462,6 +465,9 @@ def run_all_tests():
     with patch.object(runtime, "poll_dtcs", return_value={"is_valid": True, "active_dtcs": []}) as mock_poll:
         with patch("PyQt6.QtWidgets.QMessageBox.information") as mock_info:
             widget.on_poll_dtc_clicked()
+            if widget._dtc_worker:
+                widget._dtc_worker.wait(2000)
+            app.processEvents()
             mock_poll.assert_called_once()
             mock_info.assert_called_once()
     print("✅ TEST 20 PASSED: Poll DTCs invokes poll_dtcs() without raw serial commands.")
