@@ -48,6 +48,11 @@ class MockSerial:
         # [G3] Hata Enjeksiyonu Sayacı
         self._query_count = 0
 
+        # Phase F-5: Deterministic Fault Injection Hooks
+        self.force_timeout = False
+        self.force_serial_error = False
+        self.force_malformed = False
+
         # Araç Sensör Verileri (Başlangıç KOEO)
         self.sim_data = {
             "RPM": 0, "ECT": 35, "SPEED": 0, "MAP": 101,
@@ -74,6 +79,12 @@ class MockSerial:
     def write(self, data):
         if not self.is_open:
             return 0
+        if getattr(self, "force_serial_error", False):
+            import serial
+            raise serial.SerialException("Injected SerialException on write")
+        if getattr(self, "force_timeout", False):
+            # Drops command so no response is generated -> causes timeout
+            return len(data)
         if time.time() < self._locked_until:
             return len(data)
         try:
@@ -110,6 +121,12 @@ class MockSerial:
     def close(self):
         self.is_open = False
         print("🔌 MOCK SİMÜLATÖR KAPATILDI")
+
+    def reset_fault_injection(self):
+        """Phase F-5: Clears all injected faults, returning MockSerial to normal mode."""
+        self.force_timeout = False
+        self.force_serial_error = False
+        self.force_malformed = False
 
     # -----------------------------------------------------------------
     # [G5] GECİKME HESABI - Protokole Göre
@@ -233,6 +250,12 @@ class MockSerial:
     def _process_command(self, cmd):
         self._buffer = []
         clean = cmd.replace(" ", "")
+
+        # Phase F-5: Malformed response fault injection
+        if getattr(self, "force_malformed", False) and not clean.startswith("AT"):
+            self._schedule_response("GARBAGE NOT HEX ??!!", self._get_delay(0.01))
+            self._schedule_response(">", self._get_delay(0.02))
+            return
 
         # =============================================================
         # AT KOMUTLARI

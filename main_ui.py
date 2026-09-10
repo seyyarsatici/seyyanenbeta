@@ -30,6 +30,14 @@ except ImportError:
     ANALYSIS_MODULES_AVAILABLE = False
     print("UYARI: 'expert_system.py' veya 'raporlayici.py' bulunamadı. Rapor oluşturma devre dışı.")
 
+try:
+    from live_ui import LiveDiagnosticWidget
+    LIVE_UI_AVAILABLE = True
+except ImportError as e:
+    LIVE_UI_AVAILABLE = False
+    print(f"UYARI: 'live_ui.py' bulunamadı veya içe aktarılamadı: {e}")
+
+
 
 class MainUI(QMainWindow):
     """Otomotiv Teşhis Cihazı - Masaüstü Arayüzü"""
@@ -99,8 +107,8 @@ class MainUI(QMainWindow):
         # Buton bağlantıları
         self.btn_import_record.clicked.connect(self.open_file_dialog)
         self.btn_scan_vehicle.clicked.connect(lambda: print("[LOG] Araç Tara Başladı..."))
-        self.btn_obd_query.clicked.connect(lambda: print("[LOG] OBD Sorgu Başladı..."))
-        self.btn_obd_connect.clicked.connect(lambda: print("[LOG] OBD Bağlantısı Deneniyor..."))
+        self.btn_obd_query.clicked.connect(self.open_live_diagnostics)
+        self.btn_obd_connect.clicked.connect(self.open_live_diagnostics)
         self.btn_rename_file.clicked.connect(self.rename_selected_file)
         
         top_layout.addWidget(self.btn_scan_vehicle)
@@ -455,6 +463,30 @@ class MainUI(QMainWindow):
             # GÖREV 2 (Çözüm 1): İşlem bitince sıralamayı tekrar aç
             self.table.setSortingEnabled(True)
     
+    def open_live_diagnostics(self):
+        """Phase F-6: Canlı OBD Teşhis ve Telemetri panelini aç."""
+        if not LIVE_UI_AVAILABLE:
+            QMessageBox.warning(self, "Uyarı", "Canlı teşhis modülü (live_ui.py) yüklenemedi.")
+            return
+
+        if not hasattr(self, "live_diagnostic_panel") or self.live_diagnostic_panel is None:
+            from motor import AutoExpertEngine
+            from live_runtime import LiveAcquisitionRuntime
+            if not hasattr(self, "engine") or self.engine is None:
+                self.engine = AutoExpertEngine()
+            
+            # Start connection if not yet connected
+            if hasattr(self.engine, "ser") and self.engine.ser is not None:
+                if not getattr(self.engine.ser, "is_open", False):
+                    self.engine.baglan()
+            
+            self.live_runtime = LiveAcquisitionRuntime(engine=self.engine)
+            self.live_diagnostic_panel = LiveDiagnosticWidget(runtime=self.live_runtime, parent=self)
+            self.analysis_stack.addWidget(self.live_diagnostic_panel)
+
+        self.analysis_stack.setCurrentWidget(self.live_diagnostic_panel)
+        print("[LOG] Canlı Teşhis Paneli açıldı.")
+
     def analyze_file(self, filename: str, file_path: str):
         """Dosya analizi başlat - AnalysisPanel'i MainUI içine göm"""
         print(f"\n{'=' * 60}")
