@@ -52,6 +52,8 @@ class MockSerial:
         self.force_timeout = False
         self.force_serial_error = False
         self.force_malformed = False
+        # Phase G-1: Custom deterministic mock response dictionary
+        self.custom_responses = {}
 
         # Araç Sensör Verileri (Başlangıç KOEO)
         self.sim_data = {
@@ -127,6 +129,7 @@ class MockSerial:
         self.force_timeout = False
         self.force_serial_error = False
         self.force_malformed = False
+        self.custom_responses.clear()
 
     # -----------------------------------------------------------------
     # [G5] GECİKME HESABI - Protokole Göre
@@ -255,6 +258,32 @@ class MockSerial:
         if getattr(self, "force_malformed", False) and not clean.startswith("AT"):
             self._schedule_response("GARBAGE NOT HEX ??!!", self._get_delay(0.01))
             self._schedule_response(">", self._get_delay(0.02))
+            return
+
+        # Phase G-1 / G-4: Deterministic custom mock response hook (with header support)
+        hdr_key = f"{self.current_sim_header}:{clean}"
+        custom_dict = getattr(self, "custom_responses", {})
+        resp = None
+        has_custom = False
+        if hdr_key in custom_dict:
+            resp = custom_dict[hdr_key]
+            has_custom = True
+        elif clean in custom_dict:
+            resp = custom_dict[clean]
+            has_custom = True
+
+        if has_custom:
+            d = self._get_delay(0.01)
+            if isinstance(resp, list):
+                for i, line in enumerate(resp):
+                    self._schedule_response(line, d + i * 0.02)
+                self._schedule_response(">", d + len(resp) * 0.02 + 0.01)
+            elif resp is None:
+                # None simulates dropped packet / timeout
+                return
+            else:
+                self._schedule_response(str(resp), d)
+                self._schedule_response(">", d + 0.02)
             return
 
         # =============================================================

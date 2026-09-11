@@ -281,3 +281,60 @@
 2026-03-15 16:02:55,752 - INFO - MULTI-ECU-FILTER: 7EA kaynagýndan gelen yanýt reddedildi (pid=0101)
 2026-03-15 16:03:02,759 - INFO - MULTI-ECU-FILTER: 7EA kaynagýndan gelen yanýt reddedildi (pid=0101)
 2026-03-15 16:03:09,764 - INFO - MULTI-ECU-FILTER: 7EA kaynagýndan gelen yanýt reddedildi (pid=0101)
+2026-09-11 15:05:35,616 - WARNING - LiveRuntime: Reconnection already in progress. Duplicate call rejected.
+2026-09-11 15:05:35,693 - WARNING - LiveRuntime is already running or starting. Duplicate start call ignored.
+2026-09-11 15:05:36,945 - INFO - LiveRuntime: Initiating controlled reconnection...
+2026-09-11 15:05:37,149 - INFO - LiveRuntime: Reconnected successfully on attempt 1.
+2026-09-11 15:05:37,188 - WARNING - LiveAcquisitionRuntime on_sample callback raised exception: Simulated callback crash!
+2026-09-11 15:05:37,188 - WARNING - [RUNTIME_SAFETY] CALLBACK_FAILURE on on_sample_callback: Callback raised exception: Simulated callback crash!
+2026-09-11 15:05:37,189 - ERROR - [LIVE_INTEL_ERROR] Exception processing live intelligence: Rule error
+2026-09-11 15:05:37,190 - WARNING - [RUNTIME_SAFETY] TRANSIENT_TIMEOUT on PID_010C: Status: TIMEOUT
+2026-09-11 15:05:37,205 - WARNING - [RUNTIME_SAFETY] TRANSIENT_TIMEOUT on PID_010C: Status: TIMEOUT
+2026-09-11 15:05:40,090 - ERROR - LiveRuntime: Serial port disconnected during execution.
+2026-09-11 15:05:40,091 - CRITICAL - [RUNTIME_SAFETY] CONNECTION_LOST on SERIAL_PORT: Serial port disconnected during execution
+2026-09-11 15:05:40,092 - INFO - LiveRuntime: Initiating controlled reconnection...
+2026-09-11 15:05:40,303 - INFO - LiveRuntime: Reconnected successfully on attempt 1.
+2026-09-11 15:05:40,303 - INFO - LiveRuntime: Initiating controlled reconnection...
+2026-09-11 15:05:40,911 - ERROR - LiveRuntime: Reconnection failed after 2 attempts.
+2026-09-11 15:05:40,911 - CRITICAL - [RUNTIME_SAFETY] WORKER_FAILURE on LiveAcquisitionWorker: Worker thread died unexpectedly while state was active
+2026-09-11 15:05:40,911 - WARNING - LiveAcquisitionRuntime on_sample callback raised exception: division by zero
+2026-09-11 15:05:40,911 - WARNING - [RUNTIME_SAFETY] CALLBACK_FAILURE on on_sample_callback: Callback raised exception: division by zero
+2026-09-11 15:05:40,911 - WARNING - [RUNTIME_SAFETY] TRANSIENT_TIMEOUT on PID_010C: Status: TIMEOUT
+2026-09-11 15:32:45,126 - WARNING - LiveRuntime: Reconnection already in progress. Duplicate call rejected.
+2026-09-11 15:32:45,195 - WARNING - LiveRuntime is already running or starting. Duplicate start call ignored.
+2026-09-11 15:32:46,305 - INFO - LiveRuntime: Initiating controlled reconnection...
+2026-09-11 15:32:46,519 - INFO - LiveRuntime: Reconnected successfully on attempt 1.
+2026-09-11 15:32:46,531 - WARNING - LiveAcquisitionRuntime on_sample callback raised exception: Simulated callback crash!
+2026-09-11 15:32:46,531 - WARNING - [RUNTIME_SAFETY] CALLBACK_FAILURE on on_sample_callback: Callback raised exception: Simulated callback crash!
+2026-09-11 15:32:46,532 - ERROR - [LIVE_INTEL_ERROR] Exception processing live intelligence: Rule error
+2026-09-11 15:32:46,532 - WARNING - [RUNTIME_SAFETY] TRANSIENT_TIMEOUT on PID_010C: Status: TIMEOUT
+2026-09-11 15:32:46,540 - WARNING - [RUNTIME_SAFETY] TRANSIENT_TIMEOUT on PID_010C: Status: TIMEOUT
+2026-09-11 15:32:49,263 - ERROR - LiveRuntime: Serial port disconnected during execution.
+2026-09-11 15:32:49,263 - CRITICAL - [RUNTIME_SAFETY] CONNECTION_LOST on SERIAL_PORT: Serial port disconnected during execution
+2026-09-11 15:32:49,264 - INFO - LiveRuntime: Initiating controlled reconnection...
+2026-09-11 15:32:49,465 - INFO - LiveRuntime: Reconnected successfully on attempt 1.
+2026-09-11 15:32:49,466 - INFO - LiveRuntime: Initiating controlled reconnection...
+2026-09-11 15:32:50,078 - ERROR - LiveRuntime: Reconnection failed after 2 attempts.
+2026-09-11 15:32:50,078 - CRITICAL - [RUNTIME_SAFETY] WORKER_FAILURE on LiveAcquisitionWorker: Worker thread died unexpectedly while state was active
+2026-09-11 15:32:50,079 - WARNING - LiveAcquisitionRuntime on_sample callback raised exception: division by zero
+2026-09-11 15:32:50,079 - WARNING - [RUNTIME_SAFETY] CALLBACK_FAILURE on on_sample_callback: Callback raised exception: division by zero
+2026-09-11 15:32:50,079 - WARNING - [RUNTIME_SAFETY] TRANSIENT_TIMEOUT on PID_010C: Status: TIMEOUT
+2026-09-11 15:47:55,364 - WARNING - LiveRuntime: Reconnection already in progress. Duplicate call rejected.
+2026-09-11 15:47:55,434 - WARNING - LiveRuntime is already running or starting. Duplicate start call ignored.
+2026-09-11 15:47:56,645 - INFO - LiveRuntime: Initiating controlled reconnection...
+2026-09-11 15:47:56,858 - INFO - LiveRuntime: Reconnected successfully on attempt 1.
+2026-09-11 15:47:56,873 - WARNING - LiveAcquisitionRuntime on_sample callback raised exception: Simulated callback crash!
+2026-09-11 15:47:56,873 - WARNING - [RUNTIME_SAFETY] CALLBACK_FAILURE on on_sample_callback: Callback raised exception: Simulated callback crash!
+2026-09-11 15:47:56,873 - ERROR - [LIVE_INTEL_ERROR] Exception processing live intelligence: Rule error
+2026-09-11 15:47:56,874 - WARNING - [RUNTIME_SAFETY] TRANSIENT_TIMEOUT on PID_010C: Status: TIMEOUT
+2026-09-11 15:47:56,883 - WARNING - [RUNTIME_SAFETY] TRANSIENT_TIMEOUT on PID_010C: Status: TIMEOUT
+2026-09-11 15:47:59,687 - ERROR - LiveRuntime: Serial port disconnected during execution.
+2026-09-11 15:47:59,688 - CRITICAL - [RUNTIME_SAFETY] CONNECTION_LOST on SERIAL_PORT: Serial port disconnected during execution
+2026-09-11 15:47:59,689 - INFO - LiveRuntime: Initiating controlled reconnection...
+2026-09-11 15:47:59,890 - INFO - LiveRuntime: Reconnected successfully on attempt 1.
+2026-09-11 15:47:59,890 - INFO - LiveRuntime: Initiating controlled reconnection...
+2026-09-11 15:48:00,497 - ERROR - LiveRuntime: Reconnection failed after 2 attempts.
+2026-09-11 15:48:00,497 - CRITICAL - [RUNTIME_SAFETY] WORKER_FAILURE on LiveAcquisitionWorker: Worker thread died unexpectedly while state was active
+2026-09-11 15:48:00,497 - WARNING - LiveAcquisitionRuntime on_sample callback raised exception: division by zero
+2026-09-11 15:48:00,497 - WARNING - [RUNTIME_SAFETY] CALLBACK_FAILURE on on_sample_callback: Callback raised exception: division by zero
+2026-09-11 15:48:00,497 - WARNING - [RUNTIME_SAFETY] TRANSIENT_TIMEOUT on PID_010C: Status: TIMEOUT

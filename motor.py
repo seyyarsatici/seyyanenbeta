@@ -623,6 +623,123 @@ class AutoExpertEngine:
         self.pid_manager = PIDManager(EXTENDED_PIDS_DIR)
         self.dtc_lookup = load_dtc_lookup_from_dbcsv()
         self.vehicle_hint = ""
+        # Phase G-1: Advanced ECU Services Transaction Manager
+        self._transaction_manager = None
+        # Phase G-2: Extended DID / PID Ecosystem
+        self._did_registry = None
+        self._batch_acquisition_manager = None
+        # Phase G-3: Advanced Fault Analysis
+        self._advanced_fault_analyzer = None
+
+
+    @property
+    def transaction_manager(self):
+        """
+        Phase G-1: Lazily creates or returns the authoritative DiagnosticTransactionManager
+        backed by EngineTransportAdapter(self).
+        """
+        if self._transaction_manager is None:
+            try:
+                from advanced_ecu_services import DiagnosticTransactionManager, EngineTransportAdapter
+                self._transaction_manager = DiagnosticTransactionManager(
+                    transport=EngineTransportAdapter(self)
+                )
+            except Exception as e:
+                log_flush(f"[ADVANCED_SERVICES_WARN] Could not initialize DiagnosticTransactionManager: {e}")
+        return self._transaction_manager
+
+    def execute_advanced_service(self, request):
+        """
+        Phase G-1: High-level API to execute an AdvancedServiceRequest.
+        """
+        tm = self.transaction_manager
+        if tm is None:
+            raise RuntimeError("DiagnosticTransactionManager is not available.")
+        return tm.execute_request(request)
+
+    @property
+    def did_registry(self):
+        """
+        Phase G-2: Thread-safe repository for all known DiagnosticDataDefinitions.
+        """
+        if self._did_registry is None:
+            try:
+                from extended_did import DiagnosticDefinitionRegistry
+                self._did_registry = DiagnosticDefinitionRegistry()
+            except Exception as e:
+                log_flush(f"[EXTENDED_DID_WARN] Could not initialize DiagnosticDefinitionRegistry: {e}")
+                self._did_registry = None
+        return self._did_registry
+
+    @property
+    def batch_acquisition_manager(self):
+        """
+        Phase G-2: Executes controlled, rate-limited, and failure-isolated acquisitions
+        of multiple PIDs/DIDs over Phase G-1 DiagnosticTransactionManager.
+        """
+        if self._batch_acquisition_manager is None:
+            try:
+                from extended_did import BatchAcquisitionManager
+                tm = self.transaction_manager
+                reg = self.did_registry
+                if tm is not None:
+                    self._batch_acquisition_manager = BatchAcquisitionManager(
+                        transaction_manager=tm,
+                        registry=reg,
+                    )
+            except Exception as e:
+                log_flush(f"[EXTENDED_DID_WARN] Could not initialize BatchAcquisitionManager: {e}")
+                self._batch_acquisition_manager = None
+        return self._batch_acquisition_manager
+
+    def acquire_identifier(self, definition, vehicle_context=None):
+        """
+        Phase G-2: High-level API to acquire a single DiagnosticDataDefinition.
+        """
+        bam = self.batch_acquisition_manager
+        if bam is None:
+            raise RuntimeError("BatchAcquisitionManager is not available.")
+        return bam.acquire_identifier(definition, vehicle_context=vehicle_context)
+
+    def acquire_identifier_batch(self, definitions, vehicle_context=None, inter_request_delay=0.01, cancel_event=None):
+        """
+        Phase G-2: High-level API to acquire a batch of DiagnosticDataDefinitions.
+        """
+        bam = self.batch_acquisition_manager
+        if bam is None:
+            raise RuntimeError("BatchAcquisitionManager is not available.")
+        return bam.acquire_batch(
+            definitions=definitions,
+            vehicle_context=vehicle_context,
+            inter_request_delay=inter_request_delay,
+            cancel_event=cancel_event,
+        )
+
+    @property
+    def advanced_fault_analyzer(self):
+        """
+        Phase G-3: Authoritative AdvancedFaultAnalyzer for deep time-series,
+        cross-sensor, operating condition, and hypothesis analysis.
+        """
+        if self._advanced_fault_analyzer is None:
+            try:
+                from advanced_fault_analysis import AdvancedFaultAnalyzer
+                self._advanced_fault_analyzer = AdvancedFaultAnalyzer()
+            except Exception as e:
+                log_flush(f"[ADVANCED_FAULT_ANALYSIS_WARN] Could not initialize AdvancedFaultAnalyzer: {e}")
+                self._advanced_fault_analyzer = None
+        return self._advanced_fault_analyzer
+
+    def analyze_diagnostic_dataset(self, dataset, vehicle_context=None):
+        """
+        Phase G-3: High-level API to execute advanced fault analysis on a DiagnosticDataSet.
+        """
+        analyzer = self.advanced_fault_analyzer
+        if analyzer is None:
+            raise RuntimeError("AdvancedFaultAnalyzer is not available.")
+        return analyzer.analyze_dataset(dataset, vehicle_context=vehicle_context)
+
+
 
 
     def evaluate(self, expr_str, context):
@@ -5583,6 +5700,61 @@ class AutoExpertEngine:
             except Exception as e:
                 log_flush(f"[BLOCK_PARSE_ERROR] Sirius D42 hesaplama hatası ({field}): {e}")
 
+    # ============================================================
+    # Phase G-4: Multi-ECU Diagnostics Integration
+    # ============================================================
+    @property
+    def multi_ecu_manager(self):
+        """
+        Phase G-4: Lazy-initialized Multi-ECU Diagnostic Manager.
+        """
+        if not hasattr(self, "_multi_ecu_manager") or self._multi_ecu_manager is None:
+            from advanced_ecu_services import DiagnosticTransactionManager, EngineTransportAdapter
+            from multi_ecu_diagnostics import MultiECUDiagnosticManager
+            transport = EngineTransportAdapter(self)
+            tx_manager = DiagnosticTransactionManager(transport=transport)
+            self._multi_ecu_manager = MultiECUDiagnosticManager(transaction_manager=tx_manager)
+        return self._multi_ecu_manager
+
+    def scan_vehicle_multiecu(self, targets=None, include_dtcs=True, include_data=True, custom_identifiers=None):
+        """
+        Phase G-4: Controlled multi-ECU vehicle scan.
+        """
+        return self.multi_ecu_manager.scan_vehicle(
+            targets=targets,
+            include_dtcs=include_dtcs,
+            include_data=include_data,
+            custom_identifiers=custom_identifiers,
+        )
+
+    # ============================================================
+    # Phase G-5: Vehicle-Wide Diagnostic Graph
+    # ============================================================
+    def build_vehicle_graph(self, scan_result=None, analysis_result=None, dataset=None):
+        """
+        Phase G-5: Vehicle-Wide Diagnostic Graph.
+        Builds and returns a DiagnosticGraph from vehicle context, multi-ECU scan results,
+        and fault analysis results.
+        """
+        from vehicle_diagnostic_graph import VehicleDiagnosticGraphBuilder
+        ctx = getattr(self, "vehicle_context", None)
+        builder = VehicleDiagnosticGraphBuilder(vehicle_context=ctx)
+        builder.build_vehicle_root()
+        if scan_result:
+            builder.ingest_g4_scan_result(scan_result)
+        if analysis_result:
+            builder.ingest_g3_analysis_result(analysis_result, dataset=dataset)
+        builder.discover_cross_ecu_relationships(dataset=dataset)
+        self._diagnostic_graph = builder.graph
+        return self._diagnostic_graph
+
+    @property
+    def diagnostic_graph(self):
+        """Phase G-5: Current diagnostic graph or lazy-built graph."""
+        if not hasattr(self, "_diagnostic_graph") or self._diagnostic_graph is None:
+            self.build_vehicle_graph()
+        return self._diagnostic_graph
+
 # ============================================================
 # Phase E-1: Live Diagnostic Session Orchestration
 # ============================================================
@@ -5966,3 +6138,33 @@ class DiagnosticSession:
         Oturumun son teşhis hattı sonucunun kopyasını döndürür.
         """
         return self.engine.get_diagnostic_pipeline()
+
+    @property
+    def multi_ecu_manager(self):
+        """Phase G-4: DiagnosticSession multi_ecu_manager property."""
+        return self.engine.multi_ecu_manager
+
+    def scan_vehicle_multiecu(self, targets=None, include_dtcs=True, include_data=True, custom_identifiers=None):
+        """Phase G-4: DiagnosticSession multi-ECU scan."""
+        return self.engine.scan_vehicle_multiecu(
+            targets=targets,
+            include_dtcs=include_dtcs,
+            include_data=include_data,
+            custom_identifiers=custom_identifiers,
+        )
+
+    # ============================================================
+    # Phase G-5: Vehicle-Wide Diagnostic Graph
+    # ============================================================
+    def build_vehicle_graph(self, scan_result=None, analysis_result=None, dataset=None):
+        """Phase G-5: DiagnosticSession build_vehicle_graph."""
+        return self.engine.build_vehicle_graph(
+            scan_result=scan_result,
+            analysis_result=analysis_result,
+            dataset=dataset,
+        )
+
+    @property
+    def diagnostic_graph(self):
+        """Phase G-5: DiagnosticSession diagnostic_graph property."""
+        return self.engine.diagnostic_graph
