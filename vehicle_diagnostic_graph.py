@@ -273,13 +273,21 @@ class GraphNode:
     A first-class node in the vehicle diagnostic graph.
     Represents an entity (Vehicle, ECU, Signal, DTC, Observation, Anomaly,
     Evidence, Hypothesis, Operating Condition, Acquisition Session).
+    Supports canonical node_id as well as legacy id alias.
     """
-    node_id: str
-    node_type: GraphNodeType
-    label: str
+    node_id: str = ""
+    node_type: GraphNodeType = GraphNodeType.ANOMALY
+    label: str = ""
     properties: Dict[str, Any] = field(default_factory=dict)
     provenance: Dict[str, Any] = field(default_factory=dict)
     created_at: float = field(default_factory=time.time)
+    id: Optional[str] = None
+
+    def __post_init__(self):
+        if self.id and not self.node_id:
+            self.node_id = self.id
+        elif self.node_id and not self.id:
+            self.id = self.node_id
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -293,10 +301,12 @@ class GraphNode:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "GraphNode":
+        nid = data.get("node_id") or data.get("id", "")
+        ntype = GraphNodeType(data.get("node_type") or data.get("type", "ANOMALY"))
         return cls(
-            node_id=data["node_id"],
-            node_type=GraphNodeType(data["node_type"]),
-            label=data["label"],
+            node_id=nid,
+            node_type=ntype,
+            label=data.get("label", ""),
             properties=data.get("properties", {}),
             provenance=data.get("provenance", {}),
             created_at=data.get("created_at", time.time()),
@@ -308,16 +318,30 @@ class GraphEdge:
     """
     A directed relationship connecting two nodes in the diagnostic graph.
     Strictly preserves confidence, evidence references, and provenance.
+    Supports canonical source_id/target_id as well as legacy source_node_id/target_node_id aliases.
     """
     edge_id: str
-    source_id: str
-    target_id: str
-    edge_type: GraphEdgeType
+    source_id: str = ""
+    target_id: str = ""
+    edge_type: GraphEdgeType = GraphEdgeType.DERIVED_FROM
     confidence: float = 1.0
     properties: Dict[str, Any] = field(default_factory=dict)
     evidence_refs: List[str] = field(default_factory=list)
     provenance: Dict[str, Any] = field(default_factory=dict)
     created_at: float = field(default_factory=time.time)
+    source_node_id: Optional[str] = None
+    target_node_id: Optional[str] = None
+
+    def __post_init__(self):
+        if self.source_node_id and not self.source_id:
+            self.source_id = self.source_node_id
+        elif self.source_id and not self.source_node_id:
+            self.source_node_id = self.source_id
+            
+        if self.target_node_id and not self.target_id:
+            self.target_id = self.target_node_id
+        elif self.target_id and not self.target_node_id:
+            self.target_node_id = self.target_id
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -334,10 +358,12 @@ class GraphEdge:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "GraphEdge":
+        src = data.get("source_id") or data.get("source_node_id", "")
+        tgt = data.get("target_id") or data.get("target_node_id", "")
         return cls(
             edge_id=data["edge_id"],
-            source_id=data["source_id"],
-            target_id=data["target_id"],
+            source_id=src,
+            target_id=tgt,
             edge_type=GraphEdgeType(data["edge_type"]),
             confidence=float(data.get("confidence", 1.0)),
             properties=data.get("properties", {}),

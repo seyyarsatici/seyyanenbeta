@@ -931,8 +931,8 @@ class AutomatedRootCauseAnalyzer:
             if ecu_node in graph.nodes:
                 edge = GraphEdge(
                     edge_id=f"edge:{cause_node_id}:{ecu_node}",
-                    source_node_id=cause_node_id,
-                    target_node_id=ecu_node,
+                    source_id=cause_node_id,
+                    target_id=ecu_node,
                     edge_type=GraphEdgeType.SUPPORTS_HYPOTHESIS,
                     properties={"causal_role": candidate.causal_role.value},
                 )

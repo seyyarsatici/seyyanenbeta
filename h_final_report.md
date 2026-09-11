@@ -170,6 +170,11 @@ python -m unittest test_phase_h_final.py test_phase_h5.py test_phase_h4.py test_
    - *Fix*: In `diagnostic_workflow_engine.py` line 1148, explicitly initialized `is_dtc_free=True` when DTCs are empty.
    - *Regression Test*: `test_scenario_c_dtc_free_diagnosis` in `test_phase_h_final.py`.
 
+2. **Graph Constructor Argument Harmonization (GraphEdge / GraphNode)**:
+   - *Defect*: Legacy Phase H call sites in `automated_test_sequencer.py` (lines 1902-1903) and `automated_root_cause_analyzer.py` (lines 934-935) passed `source_node_id` / `target_node_id` instead of canonical `source_id` / `target_id`. In parallel, legacy call sites passed `id` instead of `node_id`.
+   - *Fix*: Updated `GraphEdge` and `GraphNode` in `vehicle_diagnostic_graph.py` to support canonical and backwards-compatible aliases natively (`id` -> `node_id`, `source_node_id`/`target_node_id` -> `source_id`/`target_id`), refactored Phase H call sites to canonical signatures, and verified zero runtime warnings or errors under `-W error`.
+   - *Regression Test*: `test_T_graph_constructor_and_alias_compatibility` in `test_phase_i_final.py`.
+
 ---
 
 ## 24. Known Non-Blocking Limitations

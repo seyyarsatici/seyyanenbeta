@@ -625,6 +625,9 @@ class HistoricalCaseRepository:
         # Update Lifecycle Index
         self._lifecycle_index[case.lifecycle].add(cid)
 
+    # Alias for multi-store consistency (DiagnosticKnowledgeStore.register_rule, FailurePatternLibraryStore.register_pattern)
+    register_case = add_case
+
     def get_case(self, case_id: str) -> Optional[HistoricalDiagnosticCase]:
         return self._cases.get(case_id)
 

@@ -102,7 +102,16 @@ from automated_root_cause_analyzer import (
     CausalRole,
     RootCauseCertaintyLevel,
     AnalysisConclusionState,
+    RootCauseCandidate,
+    RootCauseAnalysis,
 )
+from evidence_driven_test_selector import (
+    EvidenceDrivenTestSelector,
+    DiagnosticTestCandidate,
+    TestSelectionContext,
+    TestSelectionDecision,
+)
+from guided_procedures import StepExecutionMode
 from diagnostic_knowledge_base import (
     KnowledgeLifecycle,
     KnowledgeProvenanceType,
@@ -289,6 +298,11 @@ class ReasoningCandidate:
     explanations: List[str] = field(default_factory=list)
     provenance: Optional[KnowledgeProvenance] = None
 
+    @property
+    def diagnostic_score(self) -> float:
+        """Explicit alias emphasizing that overall_score is a heuristic ranking metric, NOT a probability."""
+        return self.overall_score
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "candidate_id": self.candidate_id,
@@ -308,6 +322,7 @@ class ReasoningCandidate:
             "historical_relevance": round(self.historical_relevance, 3),
             "contradiction_penalty": round(self.contradiction_penalty, 3),
             "overall_score": round(self.overall_score, 3),
+            "diagnostic_score": round(self.overall_score, 3),
             "confidence": self.confidence.value,
             "explanations": list(self.explanations),
             "provenance": self.provenance.to_dict() if self.provenance else None,
@@ -437,6 +452,7 @@ class DiagnosticReasoningSession:
             "contradictions": [c.to_dict() for c in self.contradictions],
             "reasoning_trace": [s.to_dict() for s in self.reasoning_trace],
             "version": self.version,
+            "schema_version": self.version,
             "lifecycle": self.lifecycle.value,
             "metadata": dict(self.metadata),
         }
@@ -507,6 +523,7 @@ class AdvancedReasoningEngine:
         test_results: Optional[List[CaseTestResult]] = None,
         operating_conditions: Optional[List[OperatingCondition]] = None,
         hypotheses: Optional[List[FaultHypothesis]] = None,
+        root_cause_analysis: Optional[RootCauseAnalysis] = None,
         session_id: Optional[str] = None,
         max_candidates: int = 10,
         max_distinguishing_tests: int = 3,
@@ -647,6 +664,29 @@ class AdvancedReasoningEngine:
                     if sc.case.case_id not in candidate_map[rc_id].relevant_case_ids:
                         candidate_map[rc_id].relevant_case_ids.append(sc.case.case_id)
 
+        # 5d. Candidates from H-4 Canonical Root Cause Analyzer
+        if root_cause_analysis:
+            h4_candidates = []
+            if root_cause_analysis.primary_candidate:
+                h4_candidates.append(root_cause_analysis.primary_candidate)
+            h4_candidates.extend(root_cause_analysis.alternative_candidates)
+            h4_candidates.extend(root_cause_analysis.contributing_factors)
+            for rc in h4_candidates:
+                if rc and rc.candidate_id not in candidate_map:
+                    candidate_map[rc.candidate_id] = ReasoningCandidate(
+                        candidate_id=rc.candidate_id,
+                        hypothesis_title=rc.title,
+                        affected_system=rc.category,
+                        affected_ecu=rc.affected_ecu,
+                        candidate_role=rc.causal_role,
+                        causal_basis=rc.causal_basis,
+                        evidence_score=rc.confidence_score,
+                        provenance=KnowledgeProvenance(
+                            source_type=KnowledgeProvenanceType.SYSTEM_DERIVED,
+                            source_reference="H_4_ROOT_CAUSE_ANALYZER",
+                        ),
+                    )
+
         # Fallback default hypothesis if nothing generated
         if not candidate_map:
             def_id = "HYP_INSUFFICIENT_DATA"
@@ -656,6 +696,12 @@ class AdvancedReasoningEngine:
                 confidence=ReasoningUncertainty.INSUFFICIENT_EVIDENCE,
                 provenance=KnowledgeProvenance(source_type=KnowledgeProvenanceType.SYSTEM_DERIVED, source_reference="DEFAULT"),
             )
+
+        # 5e. Boundedness guard: Cap pre-fusion candidates to prevent combinatorial explosion
+        max_pre_fusion = max(50, max_candidates * 5)
+        if len(candidate_map) > max_pre_fusion:
+            keys = sorted(candidate_map.keys())[:max_pre_fusion]
+            candidate_map = {k: candidate_map[k] for k in keys}
 
         trace.append(ReasoningTraceStep(
             step_number=step_num,
@@ -778,6 +824,10 @@ class AdvancedReasoningEngine:
         # STEP 7: Causal Assessment & Role Assignment
         # -----------------------------------------------------------------
         for cid, cand in candidate_map.items():
+            # Invariant: If candidate was ingested from canonical H-4 RootCauseAnalysis, preserve its causal basis & role
+            if cand.provenance and cand.provenance.source_reference == "H_4_ROOT_CAUSE_ANALYZER":
+                continue
+
             # Invariant: Correlation != Causation
             has_test = any(c.source == "H_TEST_RESULT" for c in cand.supporting_contributions)
             has_tech = any(c.source == "I_4_HISTORICAL_CASE" and "Confirmed" in c.value_summary for c in cand.supporting_contributions)
@@ -883,6 +933,9 @@ class AdvancedReasoningEngine:
             for pm in matched_pattern_results:
                 if cand.candidate_id in pm.pattern.possible_hypotheses:
                     for dt in pm.pattern.distinguishing_tests:
+                        # Safety invariant: Only READ_ONLY distinguishing tests can ever be recommended
+                        if dt.safety_classification != ServiceSafetyClassification.READ_ONLY:
+                            continue
                         if dt.test_id not in seen_test_ids:
                             recommended_tests.append(dt)
                             seen_test_ids.add(dt.test_id)
@@ -949,7 +1002,7 @@ class AdvancedReasoningEngine:
                 source_reference="ADVANCED_REASONING_ENGINE",
             ),
             operating_conditions=conds,
-            candidates=list(candidate_map.values()),
+            candidates=ranked[:max_candidates],
             ranked_candidates=ranked[:max_candidates],
             overall_conclusion=overall_conclusion,
             overall_confidence=overall_confidence,
@@ -980,6 +1033,49 @@ class ReasoningWorkflowAdapter:
         return None
 
     @staticmethod
+    def to_h3_test_candidates(
+        session: DiagnosticReasoningSession,
+    ) -> List[DiagnosticTestCandidate]:
+        """
+        Converts distinguishing test recommendations into canonical H-3 DiagnosticTestCandidates.
+        Preserves H-3 as the sole authority for ranking and utility evaluation.
+        """
+        candidates: List[DiagnosticTestCandidate] = []
+        for dt in session.recommended_distinguishing_tests:
+            if dt.safety_classification != ServiceSafetyClassification.READ_ONLY:
+                continue
+            cand = DiagnosticTestCandidate(
+                candidate_id=f"cand_reasoning_{dt.test_id}",
+                title=dt.title,
+                description=dt.description,
+                target_ecu="ECM",
+                execution_mode=StepExecutionMode.MEASUREMENT if any(k in dt.description.lower() for k in ("voltage", "multimeter", "probe")) else StepExecutionMode.INFORMATIONAL,
+                safety_classification=dt.safety_classification,
+                target_hypotheses=list(dt.discriminated_hypotheses),
+                discriminated_hypotheses=list(dt.discriminated_hypotheses),
+                estimated_duration_s=60.0,
+                estimated_effort_cost=1.5,
+                provenance={"source": "I_5_ADVANCED_REASONING", "test_id": dt.test_id},
+            )
+            candidates.append(cand)
+        return candidates
+
+    @staticmethod
+    def select_canonical_test_via_h3(
+        session: DiagnosticReasoningSession,
+        selector: EvidenceDrivenTestSelector,
+        context: TestSelectionContext,
+    ) -> Optional[TestSelectionDecision]:
+        """
+        Delegates distinguishing test selection directly to canonical H-3 engine.
+        Ensures no duplicate test ranking algorithm competes with H-3.
+        """
+        candidates = ReasoningWorkflowAdapter.to_h3_test_candidates(session)
+        if not candidates:
+            return None
+        return selector.select_next_test(context, candidate_pool=candidates)
+
+    @staticmethod
     def format_technician_reasoning_summary(
         session: DiagnosticReasoningSession,
     ) -> Dict[str, Any]:
@@ -991,6 +1087,7 @@ class ReasoningWorkflowAdapter:
             "confidence": session.overall_confidence.value,
             "top_candidate": top.hypothesis_title if top else "None",
             "top_score": top.overall_score if top else 0.0,
+            "diagnostic_score": top.diagnostic_score if top else 0.0,
             "causal_basis": top.causal_basis.value if top else "UNKNOWN",
             "contradictions_count": len(session.contradictions),
             "distinguishing_test_recommended": (

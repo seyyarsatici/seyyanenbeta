@@ -1899,8 +1899,8 @@ class AutomatedTestSequencer:
             if ecu_node_id in self.diagnostic_graph.nodes:
                 edge = GraphEdge(
                     edge_id=f"edge:{ecu_node_id}:{obs_node_id}",
-                    source_node_id=ecu_node_id,
-                    target_node_id=obs_node_id,
+                    source_id=ecu_node_id,
+                    target_id=obs_node_id,
                     edge_type=GraphEdgeType.OBSERVES,
                     properties={"step_id": step.step_id},
                 )
