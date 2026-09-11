@@ -96,6 +96,16 @@ from multi_ecu_diagnostics import (
 )
 
 
+class VehicleIdentityMismatchError(ValueError):
+    """Raised when attempting to merge graphs or evidence from incompatible vehicles."""
+    pass
+
+
+class GraphValidationError(ValueError):
+    """Raised when a graph structure violates structural or diagnostic invariants."""
+    pass
+
+
 # =====================================================================
 # 1. GRAPH TAXONOMY & ENUMERATIONS
 # =====================================================================
@@ -423,6 +433,11 @@ class DiagnosticGraph:
 
         return edge
 
+    @property
+    def edges(self) -> List[GraphEdge]:
+        """Returns all edges in the graph as a list."""
+        return list(self._edges_by_id.values())
+
     def get_edge(self, edge_id: str) -> Optional[GraphEdge]:
         return self._edges_by_id.get(edge_id)
 
@@ -672,7 +687,7 @@ class DiagnosticGraph:
         """
         if self.vehicle_id != "vehicle:UNSET" and other.vehicle_id != "vehicle:UNSET":
             if self.vehicle_id != other.vehicle_id:
-                raise ValueError(
+                raise VehicleIdentityMismatchError(
                     f"Vehicle identity mismatch! Cannot merge graph of '{other.vehicle_id}' "
                     f"into graph of '{self.vehicle_id}'."
                 )
@@ -855,7 +870,10 @@ class VehicleDiagnosticGraphBuilder:
     ):
         self.vehicle_context = vehicle_context
         self.relationship_candidates = relationship_candidates or DEFAULT_RELATIONSHIP_CANDIDATES
-        self.graph = DiagnosticGraph()
+        v_id = make_vehicle_node_id(vehicle_context) if vehicle_context else "vehicle:UNSET"
+        self.graph = DiagnosticGraph(vehicle_id=v_id)
+        if vehicle_context:
+            self.build_vehicle_root()
 
     def build_vehicle_root(self) -> GraphNode:
         """Constructs and attaches the vehicle root node."""
@@ -1182,6 +1200,13 @@ class VehicleDiagnosticGraphBuilder:
                     }
                 )
 
+    ingest_multi_ecu_scan = ingest_g4_scan_result
+
+    def merge_graph(self, other_graph: DiagnosticGraph) -> DiagnosticGraph:
+        """Merges an external session DiagnosticGraph into this builder's graph."""
+        self.graph.merge_session_graph(other_graph)
+        return self.graph
+
     # -----------------------------------------------------------------
     # Ingestion from Phase G-3 (Fault Analysis Engine)
     # -----------------------------------------------------------------
@@ -1286,6 +1311,15 @@ class VehicleDiagnosticGraphBuilder:
 
             # Link Signal -> PRODUCES_EVIDENCE -> Anomaly (if signal exists)
             sig_node_id = make_signal_node_id(ecu_id, clean_sig, clean_sig)
+            if sig_node_id not in self.graph.nodes:
+                for sn in self.graph.get_nodes(GraphNodeType.SIGNAL):
+                    if sn.properties.get("ecu_id", "").upper() == ecu_id.upper() and (
+                        sn.properties.get("signal_name", "").upper() == clean_sig.upper() or
+                        sn.properties.get("canonical_name", "").upper() == clean_sig.upper() or
+                        sn.properties.get("canonical_name", "").upper().endswith(f":{clean_sig.upper()}")
+                    ):
+                        sig_node_id = sn.node_id
+                        break
             if sig_node_id in self.graph.nodes:
                 edge_id = make_edge_id(sig_node_id, GraphEdgeType.PRODUCES_EVIDENCE, ano_node_id)
                 self.graph.add_edge(GraphEdge(
@@ -1345,6 +1379,15 @@ class VehicleDiagnosticGraphBuilder:
                     elif len(parts) == 2:
                         ecu_s, sig_s = parts
                 sig_node_id = make_signal_node_id(ecu_s, sig_s, sig_s)
+                if sig_node_id not in self.graph.nodes:
+                    for sn in self.graph.get_nodes(GraphNodeType.SIGNAL):
+                        if sn.properties.get("ecu_id", "").upper() == ecu_s.upper() and (
+                            sn.properties.get("signal_name", "").upper() == sig_s.upper() or
+                            sn.properties.get("canonical_name", "").upper() == sig_s.upper() or
+                            sn.properties.get("canonical_name", "").upper().endswith(f":{sig_s.upper()}")
+                        ):
+                            sig_node_id = sn.node_id
+                            break
                 if sig_node_id in self.graph.nodes:
                     s_edge = make_edge_id(sig_node_id, GraphEdgeType.PRODUCES_EVIDENCE, ev_node_id)
                     if s_edge not in self.graph._edges_by_id:
@@ -1432,6 +1475,7 @@ class VehicleDiagnosticGraphBuilder:
         self,
         dataset: Optional[DiagnosticDataSet] = None,
         min_correlation: float = 0.65,
+        max_pairs: int = 100,
     ) -> List[GraphEdge]:
         """
         Discovers compatible cross-ECU relationships using the candidate catalog.
@@ -1504,6 +1548,8 @@ class VehicleDiagnosticGraphBuilder:
                     )
                     self.graph.add_edge(edge)
                     created_edges.append(edge)
+                    if len(created_edges) >= max_pairs:
+                        return created_edges
 
         return created_edges
 

@@ -618,13 +618,13 @@ class AnalysisResult:
     """Comprehensive, serializable result container of the G-3 diagnostic pipeline."""
     analysis_id: str
     dataset_id: str
-    vehicle_context: Optional[Dict[str, Any]]
-    session_start_time: float
-    session_end_time: float
-    duration_seconds: float
-    coverage_report: Dict[str, Any]
-    quality_summary: Dict[str, int]
-    operating_condition_summary: Dict[str, float]
+    vehicle_context: Optional[Dict[str, Any]] = None
+    session_start_time: float = 0.0
+    session_end_time: float = 0.0
+    duration_seconds: float = 0.0
+    coverage_report: Dict[str, Any] = field(default_factory=dict)
+    quality_summary: Dict[str, int] = field(default_factory=dict)
+    operating_condition_summary: Dict[str, float] = field(default_factory=dict)
     anomalies: List[Union[PointAnomaly, TemporalAnomaly]] = field(default_factory=list)
     evidence: List[FaultEvidence] = field(default_factory=list)
     dtc_correlations: List[DTCCorrelation] = field(default_factory=list)
