@@ -1145,6 +1145,7 @@ class DiagnosticWorkflowEngine:
                     category="AIR_FUEL",
                     affected_system="POWERTRAIN",
                     confidence=HypothesisConfidence.LOW,
+                    is_dtc_free=True,
                 )
                 workflow.active_hypotheses.append(hyp)
 
