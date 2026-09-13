@@ -136,6 +136,9 @@ class DenialReason(str, enum.Enum):
     RESOURCE_SCOPE_MISMATCH = "RESOURCE_SCOPE_MISMATCH"
     SESSION_MISMATCH = "SESSION_MISMATCH"
     SAFETY_POLICY_DENIED = "SAFETY_POLICY_DENIED"
+    ADAPTER_CAPABILITY_DENIED = "ADAPTER_CAPABILITY_DENIED"
+    ADAPTER_UNAVAILABLE = "ADAPTER_UNAVAILABLE"
+    CONTEXT_INVALID = "CONTEXT_INVALID"
     UNSUPPORTED_OPERATION = "UNSUPPORTED_OPERATION"
     STALE_AUTHORIZATION = "STALE_AUTHORIZATION"
     MALFORMED_INPUT = "MALFORMED_INPUT"
@@ -815,20 +818,29 @@ class SecurityManager:
 
     def authorize_diagnostic_operation(
         self,
-        context: AuthorizationContext,
+        context: Optional[AuthorizationContext],
         service_request: Optional[AdvancedServiceRequest] = None,
         safety_policy: Optional[ServiceSafetyPolicy] = None,
+        adapter: Optional[Any] = None,
+        required_capability: Optional[str] = None,
     ) -> AuthorizationDecision:
         """
-        Double-Gate Authoritative Evaluation.
-        Enforces:
-          Gate 1: J-5 Authorization Gate (User, Role, Permission, Resource Scope).
-          Gate 2: G-1/J-1 Diagnostic Safety Gate (ServiceSafetyPolicy, Prohibited Services).
+        Quadruple-Gate Authoritative Evaluation (J-Final Release Invariant):
+        1. Context Validity & J-5 Authorization Gate (User, Role, Permission, Resource Scope).
+        2. G-1/J-1 Diagnostic Safety Gate (ServiceSafetyPolicy, Prohibited Services).
+        3. J-1 Adapter Capability Gate (Connected adapter, Required capability check).
+        4. Context Validity Gate (Vehicle/ECU specificity matches active execution scope).
         
-        Invariant: BOTH gates must pass independently. Authorization can NEVER
-        override or weaken Diagnostic Safety.
+        Invariant: ALL gates must pass independently. A role permission alone is NEVER sufficient.
         """
-        # --- GATE 1: Authorization Evaluation ---
+        # --- GATE 1 & 4: Context & Authorization Evaluation ---
+        if context is None:
+            return AuthorizationDecision(
+                status=AuthorizationDecisionStatus.DENY,
+                reason=DenialReason.NO_AUTH_CONTEXT,
+                operation="unknown",
+            )
+
         auth_decision = self.authorize(context)
         if not auth_decision.is_allowed():
             return auth_decision
@@ -869,7 +881,54 @@ class SecurityManager:
                 )
                 return denied_decision
 
-        # Both gates passed
+        # --- GATE 3: Adapter Capability Evaluation ---
+        if adapter is not None:
+            conn_state = getattr(adapter, "connection_state", None)
+            from diagnostic_adapter import AdapterConnectionState
+            if conn_state != AdapterConnectionState.CONNECTED:
+                logger.warning(
+                    "Adapter Capability Gate Violation: Adapter '%s' is not connected (state: %s)",
+                    getattr(adapter, "adapter_id", "unknown"), conn_state
+                )
+                denied_decision = AuthorizationDecision(
+                    status=AuthorizationDecisionStatus.DENY,
+                    reason=DenialReason.ADAPTER_UNAVAILABLE,
+                    permission_evaluated=auth_decision.permission_evaluated,
+                    principal_id=context.user_id,
+                    resource=context.resource,
+                    operation=context.requested_operation,
+                    details={
+                        "gate": "ADAPTER_CAPABILITY",
+                        "adapter_id": getattr(adapter, "adapter_id", "unknown"),
+                        "connection_state": str(conn_state),
+                    },
+                )
+                return denied_decision
+
+            if required_capability:
+                caps = getattr(adapter, "capabilities", None)
+                has_cap = getattr(caps, required_capability, False) if caps else False
+                if not has_cap:
+                    logger.warning(
+                        "Adapter Capability Gate Violation: Adapter '%s' lacks required capability '%s'",
+                        getattr(adapter, "adapter_id", "unknown"), required_capability
+                    )
+                    denied_decision = AuthorizationDecision(
+                        status=AuthorizationDecisionStatus.DENY,
+                        reason=DenialReason.ADAPTER_CAPABILITY_DENIED,
+                        permission_evaluated=auth_decision.permission_evaluated,
+                        principal_id=context.user_id,
+                        resource=context.resource,
+                        operation=context.requested_operation,
+                        details={
+                            "gate": "ADAPTER_CAPABILITY",
+                            "adapter_id": getattr(adapter, "adapter_id", "unknown"),
+                            "missing_capability": required_capability,
+                        },
+                    )
+                    return denied_decision
+
+        # All gates passed
         return auth_decision
 
     # -----------------------------------------------------------------
@@ -892,7 +951,7 @@ class SecurityManager:
         if isinstance(recommendation, str):
             clean = recommendation.strip().upper().replace(" ", "")
             # Mode 04, UDS write/programming hex patterns
-            if clean in ("04", "14", "2E", "27", "2F", "34", "35", "36", "37") or clean.startswith(("2E", "2F", "34")):
+            if clean in ("04", "14", "2E", "27", "2F", "34", "35", "36", "37") or clean.startswith(("04", "14", "27", "2E", "2F", "34", "35", "36", "37", "3D")):
                 raise SecurityPolicyViolationError(
                     f"Security Violation: AI output '{recommendation}' attempted raw diagnostic command dispatch.",
                     principal_id=context.user_id,

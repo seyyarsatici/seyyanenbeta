@@ -258,6 +258,7 @@ class SchemaMigrationRegistry:
     version without data loss or silent misinterpretation.
     """
     _migrations: Dict[Tuple[str, int, int], Callable[[Dict[str, Any]], Dict[str, Any]]] = {}
+    _compatible_transitions: Set[Tuple[str, int, int]] = set()
 
     @classmethod
     def register_migration(
@@ -270,13 +271,33 @@ class SchemaMigrationRegistry:
         cls._migrations[(collection, from_ver, to_ver)] = handler
 
     @classmethod
+    def register_compatible_transition(
+        cls,
+        collection: str,
+        from_ver: int,
+        to_ver: int,
+    ) -> None:
+        """
+        Explicitly registers that a schema transition from from_ver to to_ver
+        is provably structurally compatible without mutation.
+        """
+        cls._compatible_transitions.add((collection, from_ver, to_ver))
+
+    @classmethod
     def migrate(cls, collection: str, data: Dict[str, Any]) -> Dict[str, Any]:
-        version = data.get("schema_version", 1)
+        version = int(data.get("schema_version", 1))
+        record_id = (
+            data.get("session_id")
+            or data.get("workflow_id")
+            or data.get("case_id")
+            or data.get("acquisition_id")
+            or "unknown"
+        )
         if version > CURRENT_SCHEMA_VERSION:
             raise UnsupportedSchemaVersionError(
                 f"Record schema version {version} exceeds maximum supported version {CURRENT_SCHEMA_VERSION}.",
                 collection=collection,
-                record_id=data.get("session_id") or data.get("workflow_id") or data.get("case_id")
+                record_id=record_id,
             )
 
         current_data = copy.deepcopy(data)
@@ -288,10 +309,17 @@ class SchemaMigrationRegistry:
                 current_data = cls._migrations[key](current_data)
                 curr_ver = next_ver
                 current_data["schema_version"] = curr_ver
-            else:
-                # Default safe forward compatibility bump if no structural transform required
+            elif key in cls._compatible_transitions:
                 curr_ver = next_ver
                 current_data["schema_version"] = curr_ver
+            else:
+                # Per J-Final migration policy: schema_version bump is NOT a migration.
+                # Must fail closed if unknown or unregistered transition.
+                raise UnsupportedSchemaVersionError(
+                    f"No registered migration or compatible transition from schema version {curr_ver} to {next_ver} for collection '{collection}'.",
+                    collection=collection,
+                    record_id=record_id,
+                )
 
         return current_data
 
@@ -326,6 +354,18 @@ class IPersistenceBackend(abc.ABC):
         ecu_id: Optional[str] = None,
     ) -> bool:
         """Saves or updates a structured record atomically."""
+        pass
+
+    @abc.abstractmethod
+    def save_records_batch(
+        self,
+        collection: str,
+        records: Sequence[Tuple[str, Dict[str, Any], Optional[bytes], Optional[str], Optional[str]]],
+    ) -> bool:
+        """
+        Saves multiple structured records atomically within a single batch/transaction.
+        Each record tuple is: (record_id, data, raw_payload, vehicle_id, ecu_id)
+        """
         pass
 
     @abc.abstractmethod
@@ -513,6 +553,55 @@ class SQLitePersistenceBackend(IPersistenceBackend):
             except Exception as e:
                 raise StorageBackendError(f"Database write failed for [{collection}:{record_id}]: {e}", collection, record_id) from e
 
+    def save_records_batch(
+        self,
+        collection: str,
+        records: Sequence[Tuple[str, Dict[str, Any], Optional[bytes], Optional[str], Optional[str]]],
+    ) -> bool:
+        """
+        Saves a batch of structured records efficiently inside a single database transaction.
+        Each record tuple is: (record_id, data, raw_payload, vehicle_id, ecu_id)
+        """
+        if not records:
+            return True
+        with self._lock:
+            self.initialize()
+            assert self._conn is not None
+            now = time.time()
+            query = """
+                INSERT INTO records (collection, record_id, schema_version, vehicle_id, ecu_id, created_at, updated_at, data_json, raw_blob)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(collection, record_id) DO UPDATE SET
+                    schema_version = excluded.schema_version,
+                    vehicle_id = COALESCE(excluded.vehicle_id, records.vehicle_id),
+                    ecu_id = COALESCE(excluded.ecu_id, records.ecu_id),
+                    updated_at = excluded.updated_at,
+                    data_json = excluded.data_json,
+                    raw_blob = COALESCE(excluded.raw_blob, records.raw_blob);
+            """
+            rows = []
+            for item in records:
+                rec_id, data, raw_payload, v_id, e_id = item
+                schema_ver = int(data.get("schema_version", CURRENT_SCHEMA_VERSION))
+                if not v_id:
+                    if isinstance(data.get("vehicle_context"), dict):
+                        v_id = data["vehicle_context"].get("vin") or data["vehicle_context"].get("vehicle_id")
+                    elif "vehicle_id" in data:
+                        v_id = data["vehicle_id"]
+                data_str = json.dumps(data, ensure_ascii=False)
+                ts = float(data.get("timestamp", now))
+                rows.append((collection, rec_id, schema_ver, v_id, e_id, ts, now, data_str, raw_payload))
+
+            try:
+                if self._in_transaction:
+                    self._conn.executemany(query, rows)
+                else:
+                    with self._conn:
+                        self._conn.executemany(query, rows)
+                return True
+            except Exception as e:
+                raise StorageBackendError(f"Database batch write failed for [{collection}] ({len(records)} records): {e}", collection) from e
+
     def get_record(self, collection: str, record_id: str) -> Optional[Dict[str, Any]]:
         with self._lock:
             self.initialize()
@@ -592,6 +681,9 @@ class SQLitePersistenceBackend(IPersistenceBackend):
                 if "since_timestamp" in filters and filters["since_timestamp"]:
                     query_parts.append("AND created_at >= ?")
                     params.append(float(filters["since_timestamp"]))
+                if "until_timestamp" in filters and filters["until_timestamp"]:
+                    query_parts.append("AND created_at <= ?")
+                    params.append(float(filters["until_timestamp"]))
 
             query_parts.append("ORDER BY created_at DESC LIMIT ? OFFSET ?;")
             params.extend([int(limit), int(offset)])
@@ -620,6 +712,12 @@ class SQLitePersistenceBackend(IPersistenceBackend):
                 if "ecu_id" in filters and filters["ecu_id"]:
                     query_parts.append("AND ecu_id = ?")
                     params.append(filters["ecu_id"])
+                if "since_timestamp" in filters and filters["since_timestamp"]:
+                    query_parts.append("AND created_at >= ?")
+                    params.append(float(filters["since_timestamp"]))
+                if "until_timestamp" in filters and filters["until_timestamp"]:
+                    query_parts.append("AND created_at <= ?")
+                    params.append(float(filters["until_timestamp"]))
 
             cur = self._conn.execute(" ".join(query_parts), params)
             row = cur.fetchone()
@@ -722,6 +820,17 @@ class InMemoryPersistenceBackend(IPersistenceBackend):
         with self._lock:
             return self._raw_store.get(collection, {}).get(record_id)
 
+    def save_records_batch(
+        self,
+        collection: str,
+        records: Sequence[Tuple[str, Dict[str, Any], Optional[bytes], Optional[str], Optional[str]]],
+    ) -> bool:
+        with self._lock:
+            for item in records:
+                rec_id, data, raw_payload, v_id, e_id = item
+                self.save_record(collection, rec_id, data, raw_payload, v_id, e_id)
+            return True
+
     def delete_record(self, collection: str, record_id: str) -> bool:
         with self._lock:
             if collection in self._store and record_id in self._store[collection]:
@@ -747,6 +856,8 @@ class InMemoryPersistenceBackend(IPersistenceBackend):
                     entries = [e for e in entries if e.get("ecu_id") == filters["ecu_id"]]
                 if "since_timestamp" in filters and filters["since_timestamp"]:
                     entries = [e for e in entries if e.get("created_at", 0) >= float(filters["since_timestamp"])]
+                if "until_timestamp" in filters and filters["until_timestamp"]:
+                    entries = [e for e in entries if e.get("created_at", 0) <= float(filters["until_timestamp"])]
 
             entries.sort(key=lambda x: x.get("created_at", 0), reverse=True)
             paginated = entries[offset: offset + limit]
@@ -1045,6 +1156,78 @@ class DiagnosticRepository:
             return None
         payload = self._backend.get_raw_payload(self.COLLECTION_RAW_ACQUISITIONS, acquisition_id)
         return (payload or b"", data)
+
+    def save_raw_acquisitions_batch(
+        self,
+        records: Sequence[Dict[str, Any]],
+    ) -> List[str]:
+        """
+        Efficiently stores a bulk batch of raw acquisition records.
+        Each item dictionary contains:
+          - session_id (str)
+          - source_ecu (str)
+          - command_or_pid (str)
+          - raw_payload (bytes)
+          - timestamp (float, optional)
+          - metadata (dict, optional)
+          - acquisition_id (str, optional)
+          - vehicle_id (str, optional)
+        """
+        if not records:
+            return []
+        batch = []
+        ids = []
+        now = time.time()
+        for r in records:
+            acq_id = r.get("acquisition_id") or f"raw_{uuid.uuid4().hex[:12]}"
+            ids.append(acq_id)
+            ts = float(r.get("timestamp", now))
+            raw_pl = r["raw_payload"]
+            rec = RawAcquisitionRecord(
+                acquisition_id=acq_id,
+                session_id=r["session_id"],
+                source_ecu=r["source_ecu"],
+                command_or_pid=r["command_or_pid"],
+                timestamp=ts,
+                raw_payload=raw_pl,
+                payload_length=len(raw_pl),
+                metadata=r.get("metadata", {}),
+            )
+            v_id = r.get("vehicle_id")
+            batch.append((acq_id, rec.to_dict(), raw_pl, v_id, r["source_ecu"]))
+
+        self._backend.save_records_batch(self.COLLECTION_RAW_ACQUISITIONS, batch)
+        return ids
+
+    def query_raw_acquisitions(
+        self,
+        session_id: Optional[str] = None,
+        ecu_id: Optional[str] = None,
+        since_timestamp: Optional[float] = None,
+        until_timestamp: Optional[float] = None,
+        limit: int = 1000,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """
+        Queries raw acquisition records with bounded filtering by ECU and timestamp range.
+        """
+        filters: Dict[str, Any] = {}
+        if ecu_id:
+            filters["ecu_id"] = ecu_id
+        if since_timestamp:
+            filters["since_timestamp"] = since_timestamp
+        if until_timestamp:
+            filters["until_timestamp"] = until_timestamp
+
+        raw_list = self._backend.list_records(
+            self.COLLECTION_RAW_ACQUISITIONS,
+            filters=filters,
+            limit=limit,
+            offset=offset,
+        )
+        if session_id:
+            raw_list = [r for r in raw_list if r.get("session_id") == session_id]
+        return raw_list
 
     # -----------------------------------------------------------------
     # G. Technician Observation & Repair Verification Helpers

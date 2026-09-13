@@ -561,6 +561,13 @@ class DiagnosticAdapter(ITransportAdapter, abc.ABC):
                 return [], STATUS_NO_CONNECTION
 
             # Safety Dual-Gate Check
+            clean_tokens = cmd.strip().upper().split()
+            first_tok = clean_tokens[0] if clean_tokens else ""
+            norm_sid = first_tok.zfill(2) if len(first_tok) == 1 else first_tok
+            if first_tok in PROHIBITED_SERVICES or norm_sid in PROHIBITED_SERVICES:
+                logger.error("Safety Violation: Prohibited service 0x%s blocked by adapter safety gate.", norm_sid)
+                return [], STATUS_NRC
+
             clean_cmd = cmd.strip().upper().replace(" ", "")
             sid_match = re.match(r"^([0-9A-F]{2})", clean_cmd)
             if sid_match:

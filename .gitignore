@@ -26,5 +26,14 @@ test_errors_full.log
 # Runtime NRC log generated during E-layer operation — do NOT commit
 dbCSV/nrc_log.csv
 
+# Runtime databases and storage
+*.db
+*.sqlite
+*.sqlite3
+
+# Runtime session and cache data
+vehicle_cache.json
+history.json
+
 # pytest cache
 .pytest_cache/
