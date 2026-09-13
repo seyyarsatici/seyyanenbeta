@@ -3,7 +3,7 @@ import os
 
 # Anahtarı çevre değişkeninden veya doğrudan ayarla
 # Prodüksiyonda: os.getenv("GEMINI_API_KEY") kullanılmalı
-api_key = os.getenv("GEMINI_API_KEY", "AIzaSyB3dVevhZ6HLiF0KH4DmpaukuWzxVNJWOI")
+api_key = os.getenv("GEMINI_API_KEY", "")
 
 try:
     genai.configure(api_key=api_key)

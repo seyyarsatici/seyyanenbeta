@@ -37,6 +37,12 @@ except ImportError as e:
     LIVE_UI_AVAILABLE = False
     print(f"UYARI: 'live_ui.py' bulunamadı veya içe aktarılamadı: {e}")
 
+try:
+    from platform_abstraction import PlatformManager
+    PLATFORM_MANAGER_AVAILABLE = True
+except ImportError:
+    PLATFORM_MANAGER_AVAILABLE = False
+
 
 
 class MainUI(QMainWindow):
@@ -69,7 +75,8 @@ class MainUI(QMainWindow):
         self.apply_light_theme()
 
         # GÖREV 6: Windows için Açık Tema Başlık Çubuğu (ctypes hatasını yakala)
-        if sys.platform == "win32":
+        is_win = PlatformManager.get_info().is_windows if PLATFORM_MANAGER_AVAILABLE else (sys.platform == "win32")
+        if is_win:
             try:
                 # Pencerenin kimliğini (HWND) al ve int'e dönüştür
                 hwnd = int(self.winId())
@@ -612,8 +619,10 @@ class MainUI(QMainWindow):
                 QMessageBox.warning(self, "Hata", f"PDF dosyası bulunamadı:\n{pdf_path}")
                 return
             
-            # İşletim sistemine göre aç
-            if sys.platform == "win32":
+            # İşletim sistemine göre aç (Phase J-2 PlatformManager)
+            if PLATFORM_MANAGER_AVAILABLE:
+                PlatformManager.open_document(pdf_path)
+            elif sys.platform == "win32":
                 os.startfile(pdf_path)
             elif sys.platform == "darwin":  # macOS
                 subprocess.Popen(["open", pdf_path])

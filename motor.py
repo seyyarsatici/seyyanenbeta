@@ -15,6 +15,13 @@ import queue
 import uuid
 from collections import deque
 
+try:
+    from platform_abstraction import PlatformManager
+    PLATFORM_MANAGER_AVAILABLE = True
+except ImportError:
+    PLATFORM_MANAGER_AVAILABLE = False
+
+
 # --- Proje Dizin Yolları ---
 _MOTOR_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CSV_DIR  = os.path.join(_MOTOR_SCRIPT_DIR, "csv")
@@ -438,18 +445,30 @@ def port_secici():
         print("🔌 Simülasyon Aktif: MockSerial Kullanılıyor")
         return "COM_MOCK"
 
-    ports = list_ports.comports()
-    if not ports:
-        print("❌ Hiç COM portu bulunamadı!")
-        return None
-    
-    keywords = ['vlinker', 'ch340', 'ftdi', 'elm327', 'obd']
-    for port in ports:
-        desc = (port.description + " " + (port.manufacturer or "")).lower()
-        for k in keywords:
-            if k in desc:
-                print(f"✅ Otomatik: {port.device}")
-                return port.device
+    if PLATFORM_MANAGER_AVAILABLE:
+        devices = PlatformManager.discover_diagnostic_devices()
+        likely = [d["device"] for d in devices if d.get("is_likely_vci")]
+        if likely:
+            print(f"✅ Otomatik: {likely[0]}")
+            return likely[0]
+        if not devices:
+            print("❌ Hiç seri port / teşhis cihazı bulunamadı!")
+            return None
+        # Convert dictionary to objects with device/description attributes for manual picker below
+        ports = [type("PortInfo", (), {"device": d["device"], "description": d.get("description", "")})() for d in devices]
+    else:
+        ports = list_ports.comports()
+        if not ports:
+            print("❌ Hiç COM portu bulunamadı!")
+            return None
+        
+        keywords = ['vlinker', 'ch340', 'ftdi', 'elm327', 'obd']
+        for port in ports:
+            desc = (port.description + " " + (port.manufacturer or "")).lower()
+            for k in keywords:
+                if k in desc:
+                    print(f"✅ Otomatik: {port.device}")
+                    return port.device
     
     # Manuel Seçim
     print("\n📡 Mevcut Portlar:")
