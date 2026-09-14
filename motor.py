@@ -588,6 +588,7 @@ class AutoExpertEngine:
         }
         # GÖREV 1: __init__ içine state değişkenlerini ekle
         self.ser = None
+        self._connect_lock = threading.Lock()
         self.is_can = False
         self.is_slow_protocol = False
         self.current_header = "7DF"
@@ -828,38 +829,48 @@ class AutoExpertEngine:
         """
         Evrensel ve Garantili Bağlantı Stratejisi
         """
-        if self.ser and self.ser.is_open:
-            self.ser.close()
+        if not hasattr(self, "_connect_lock"):
+            self._connect_lock = threading.Lock()
 
-        selected_port = port_secici()
-        if not selected_port: return False
-
-        print(f"🚀 Bağlantı Başlatılıyor: {selected_port}")
+        if not self._connect_lock.acquire(blocking=False):
+            log_flush("[BAGLAN_WARN] Bağlantı işlemi zaten devam ediyor; mükerrer çağrı engellendi.")
+            return False
 
         try:
-            if MOCK_AVAILABLE:
-                self.ser = MockSerial(port=selected_port, baudrate=38400, timeout=2.0)
-            else:
-                self.ser = serial.Serial(selected_port, 38400, timeout=2.0)
-                self.ser.reset_input_buffer()
+            if self.ser and self.ser.is_open:
+                self.ser.close()
 
-            # V200: SerialIOThread başlat
-            if self.io_worker:
-                self.io_worker.stop()
-            self.io_worker = SerialIOThread(self.ser, timeout=2.0)
-            self.io_worker.start()
+            selected_port = port_secici()
+            if not selected_port: return False
 
-            self._init_elm327(profil)
+            print(f"🚀 Bağlantı Başlatılıyor: {selected_port}")
 
-            # V200: Keep-Alive timer başlat
-            self._start_keep_alive_timer()
-            self.test_start_time = time.time()
-            return True
+            try:
+                if MOCK_AVAILABLE:
+                    self.ser = MockSerial(port=selected_port, baudrate=38400, timeout=2.0)
+                else:
+                    self.ser = serial.Serial(selected_port, 38400, timeout=2.0)
+                    self.ser.reset_input_buffer()
 
-        except (serial.SerialException, ValueError, IndexError, TypeError) as e:
-            print(f"❌ Port Hatası: {e}")
-            log_flush(f"[SERIAL_IO] Port açma/başlatma hatası: {e}")
-            return False
+                # V200: SerialIOThread başlat
+                if self.io_worker:
+                    self.io_worker.stop()
+                self.io_worker = SerialIOThread(self.ser, timeout=2.0)
+                self.io_worker.start()
+
+                self._init_elm327(profil)
+
+                # V200: Keep-Alive timer başlat
+                self._start_keep_alive_timer()
+                self.test_start_time = time.time()
+                return True
+
+            except (serial.SerialException, ValueError, IndexError, TypeError) as e:
+                print(f"❌ Port Hatası: {e}")
+                log_flush(f"[SERIAL_IO] Port açma/başlatma hatası: {e}")
+                return False
+        finally:
+            self._connect_lock.release()
 
     def _init_elm327(self, profil=None):
         print("🔧 Cihaz Parametreleri Ayarlaniyor...")

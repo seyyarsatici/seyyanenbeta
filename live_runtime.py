@@ -8,8 +8,10 @@ Integrates with existing AutoExpertEngine and SerialIOThread priority queue.
 import time
 import threading
 import logging
+import uuid
+import queue
 from collections import deque
-from typing import Callable, Optional, Dict, List, Any
+from typing import Callable, Optional, Dict, List, Any, Tuple, Union
 
 from motor import (
     AutoExpertEngine,
@@ -21,7 +23,25 @@ from motor import (
     STATUS_WORKER_DOWN,
     STATUS_SERIAL_ERROR,
     STATUS_NRC,
+    STATUS_DID_MISMATCH,
+    QUALITY_GOOD,
+    QUALITY_STALE,
+    QUALITY_INVALID,
+    QUALITY_ERROR,
+    QUALITY_IMPLAUSIBLE,
+    QUALITY_SUSPECT,
+    derive_quality_from_status,
 )
+from diagnostic_adapter import (
+    DiagnosticAdapter,
+    AdapterConnectionState,
+    ELM327DiagnosticAdapter,
+    PROHIBITED_SERVICES,
+)
+try:
+    from diagnostic_persistence import DiagnosticRepository
+except ImportError:
+    DiagnosticRepository = None
 
 # =====================================================================
 # F-1.1: RUNTIME STATES
@@ -84,8 +104,31 @@ class LiveAcquisitionRuntime:
         intelligence_engine: Optional[Any] = None,
         dtc_lifecycle_engine: Optional[Any] = None,
         safety_manager: Optional[Any] = None,
+        adapter: Optional[DiagnosticAdapter] = None,
+        repository: Optional[Any] = None,
+        session_id: Optional[str] = None,
+        vehicle_id: Optional[str] = None,
+        vehicle_context: Optional[Any] = None,
+        target_ecu: str = "ECM",
+        persistence_queue_size: int = 1000,
     ):
         self.engine = engine if engine is not None else AutoExpertEngine()
+        if adapter is not None:
+            self.adapter = adapter
+        else:
+            try:
+                self.adapter = ELM327DiagnosticAdapter(engine=self.engine)
+            except Exception as e:
+                logging.warning(f"Could not initialize ELM327DiagnosticAdapter: {e}")
+                self.adapter = None
+
+        # J-3 Persistence Integration & Multi-ECU / Vehicle Context
+        self.repository = repository
+        self.session_id = session_id or f"live_sess_{uuid.uuid4().hex[:10]}"
+        self.vehicle_id = vehicle_id
+        self.vehicle_context = vehicle_context
+        self.target_ecu = str(target_ecu).upper().strip() if target_ecu else "ECM"
+        self.persistence_queue_size = max(50, int(persistence_queue_size))
         
         # Standardize PID format (ensure 4 chars e.g. "010C")
         raw_pids = pids if pids is not None else DEFAULT_LIVE_PIDS
@@ -161,6 +204,14 @@ class LiveAcquisitionRuntime:
         self._worker_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
 
+        # Decoupled Persistence Worker (Phase K-3)
+        self._persistence_queue: queue.Queue = queue.Queue(maxsize=self.persistence_queue_size)
+        self._persistence_thread: Optional[threading.Thread] = None
+        self._persistence_stop_event = threading.Event()
+        self._persistence_written_count = 0
+        self._persistence_dropped_count = 0
+        self._persistence_error_count = 0
+
         # Bounded Sample History & Value Caches
         self._sample_lock = threading.RLock()
         self._recent_samples: deque = deque(maxlen=self.history_maxlen)
@@ -224,6 +275,39 @@ class LiveAcquisitionRuntime:
             return True
 
     # =================================================================
+    # ADAPTER CONNECTION LIFECYCLE (PHASE K-1)
+    # =================================================================
+    @property
+    def connection_state(self) -> AdapterConnectionState:
+        """Exposes authoritative adapter connection state."""
+        if hasattr(self, "adapter") and self.adapter is not None:
+            return self.adapter.connection_state
+        is_open = bool(self.engine and hasattr(self.engine, "ser") and self.engine.ser and getattr(self.engine.ser, "is_open", False))
+        return AdapterConnectionState.CONNECTED if is_open else AdapterConnectionState.DISCONNECTED
+
+    def is_connected(self) -> bool:
+        """Check whether the underlying adapter/serial is connected."""
+        return self.connection_state == AdapterConnectionState.CONNECTED
+
+    def connect(self, timeout: float = 5.0) -> bool:
+        """Synchronous connect via authoritative adapter or engine."""
+        if hasattr(self, "adapter") and self.adapter is not None:
+            try:
+                return self.adapter.connect(timeout=timeout)
+            except Exception as e:
+                logging.warning(f"LiveRuntime adapter connect failed: {e}")
+                return False
+        if hasattr(self.engine, "baglan"):
+            return bool(self.engine.baglan())
+        return False
+
+    def connect_async(self, timeout: float = 5.0, on_finished: Optional[Callable[[bool, Optional[Exception]], None]] = None) -> bool:
+        """Non-blocking connect via authoritative adapter."""
+        if hasattr(self, "adapter") and self.adapter is not None:
+            return self.adapter.connect_async(timeout=timeout, on_finished=on_finished)
+        return False
+
+    # =================================================================
     # LIFECYCLE (START / STOP)
     # =================================================================
     def start(self) -> bool:
@@ -240,8 +324,8 @@ class LiveAcquisitionRuntime:
                 return False
 
             # Ensure engine serial connection exists or attempts to start
-            if not self.engine.ser or not self.engine.ser.is_open:
-                if not hasattr(self.engine, "baglan") or not self.engine.baglan():
+            if not self.is_connected():
+                if not self.connect():
                     self._transition_state(LIVE_ERROR, "Serial port connection failed during start")
                     return False
 
@@ -251,6 +335,16 @@ class LiveAcquisitionRuntime:
             with self._stats_lock:
                 self._start_monotonic = time.monotonic()
                 self._start_wall_time = time.time()
+
+            # Start decoupled persistence worker if repository is configured
+            if self.repository is not None and (self._persistence_thread is None or not self._persistence_thread.is_alive()):
+                self._persistence_stop_event.clear()
+                self._persistence_thread = threading.Thread(
+                    target=self._persistence_loop,
+                    name="LivePersistenceWorker",
+                    daemon=True,
+                )
+                self._persistence_thread.start()
 
             self._worker_thread = threading.Thread(
                 target=self._acquisition_loop,
@@ -276,14 +370,29 @@ class LiveAcquisitionRuntime:
             if current not in (LIVE_STOPPING, LIVE_ERROR):
                 self._transition_state(LIVE_STOPPING)
 
-        # Signal stop event
+        # Signal stop events
         self._stop_event.set()
+        self._persistence_stop_event.set()
+
+        # Phase K-1: Cancel any in-progress adapter connection attempt
+        if hasattr(self, "adapter") and self.adapter is not None:
+            if self.adapter.connection_state == AdapterConnectionState.CONNECTING:
+                try:
+                    self.adapter.disconnect()
+                except Exception as e:
+                    logging.debug(f"Adapter disconnect during runtime stop: {e}")
 
         # Join worker thread without holding state lock
         if self._worker_thread and self._worker_thread.is_alive():
             self._worker_thread.join(timeout=timeout)
             if self._worker_thread.is_alive():
                 logging.warning(f"LiveAcquisitionWorker did not terminate within {timeout}s")
+
+        # Join persistence thread without holding state lock
+        if self._persistence_thread and self._persistence_thread.is_alive():
+            self._persistence_thread.join(timeout=timeout)
+            if self._persistence_thread.is_alive():
+                logging.warning(f"LivePersistenceWorker did not terminate within {timeout}s")
 
         with self._state_lock:
             if self._state != LIVE_ERROR:
@@ -353,6 +462,10 @@ class LiveAcquisitionRuntime:
             start_m = self._start_monotonic
             now_m = time.monotonic()
             elapsed = (now_m - start_m) if start_m is not None else 0.0
+            p_written = self._persistence_written_count
+            p_dropped = self._persistence_dropped_count
+            p_errors = self._persistence_error_count
+            p_queue_size = self._persistence_queue.qsize()
 
         total_reads = succ + fail
         sample_rate = (total_reads / elapsed) if elapsed > 0.05 else 0.0
@@ -373,7 +486,50 @@ class LiveAcquisitionRuntime:
             "pids_count": len(self.pids),
             "history_size": history_size,
             "history_maxlen": self.history_maxlen,
+            "persistence_written": p_written,
+            "persistence_dropped": p_dropped,
+            "persistence_errors": p_errors,
+            "persistence_queue_size": p_queue_size,
+            "target_ecu": getattr(self, "target_ecu", "ECM"),
+            "vehicle_id": getattr(self, "vehicle_id", None),
         }
+
+    # =================================================================
+    # MULTI-ECU & VEHICLE IDENTITY ACCESSORS (PHASE K-3)
+    # =================================================================
+    def set_target_ecu(self, ecu_id: str) -> None:
+        """Sets target ECU context for subsequent acquisitions."""
+        with self._state_lock:
+            self.target_ecu = str(ecu_id).upper().strip()
+
+    def get_target_ecu(self) -> str:
+        """Returns the current target ECU context."""
+        with self._state_lock:
+            return self.target_ecu
+
+    def set_vehicle_context(self, vehicle_id: Optional[str], vehicle_context: Optional[Any] = None) -> None:
+        """
+        Updates active vehicle identity.
+        If vehicle identity changes, flushes stale latest/history caches to avoid cross-vehicle contamination.
+        """
+        with self._state_lock:
+            if self.vehicle_id != vehicle_id:
+                with self._sample_lock:
+                    self._recent_samples.clear()
+                    self._latest_by_pid.clear()
+                    self._latest_successful_by_pid.clear()
+            self.vehicle_id = vehicle_id
+            self.vehicle_context = vehicle_context
+
+    def invalidate_vehicle_context(self) -> None:
+        """Explicitly invalidates vehicle identity, clearing caches to prevent stale data pollution."""
+        with self._state_lock:
+            self.vehicle_id = None
+            self.vehicle_context = None
+            with self._sample_lock:
+                self._recent_samples.clear()
+                self._latest_by_pid.clear()
+                self._latest_successful_by_pid.clear()
 
     # =================================================================
     # PHASE F-2: REAL-TIME DATA QUALITY ACCESSORS
@@ -523,6 +679,58 @@ class LiveAcquisitionRuntime:
             return []
         return self.dtc_lifecycle_engine.get_resolved_dtcs()
 
+    # =================================================================
+    # PHASE L-2: DYNAMIC OPERATING CONTEXT & EXPECTED BEHAVIOR ACCESSORS
+    # =================================================================
+    def build_operating_context(self) -> Any:
+        """
+        Builds a structured Phase L-2 OperatingContext snapshot from current
+        live telemetry in the acquisition runtime.
+        """
+        from dynamic_operating_reference import OperatingContext, VariableQuality
+        
+        ctx = OperatingContext(
+            timestamp=time.time(),
+            vehicle_instance_id=self.vehicle_id,
+            primary_ecu=self.target_ecu,
+        )
+        
+        pid_name_map = {
+            "010C": ("RPM", "rpm"),
+            "010D": ("SPEED", "km/h"),
+            "0105": ("ECT", "°C"),
+            "010B": ("MAP", "kPa"),
+            "0111": ("TPS", "%"),
+            "0104": ("LOAD", "%"),
+            "010F": ("IAT", "°C"),
+            "0110": ("MAF", "g/s"),
+            "0106": ("STFT", "%"),
+            "0107": ("LTFT", "%"),
+            "0114": ("O2_B1S1_V", "V"),
+        }
+        
+        with self._sample_lock:
+            for pid, sample in self._latest_successful_by_pid.items():
+                clean_pid = pid.upper().strip()
+                if clean_pid in pid_name_map:
+                    var_name, unit = pid_name_map[clean_pid]
+                    val = sample.get("value")
+                    ts = sample.get("timestamp", ctx.timestamp)
+                    status = sample.get("status", "")
+                    
+                    qual = VariableQuality.KNOWN_VALID if status == STATUS_VALID else VariableQuality.UNKNOWN
+                    ctx.set_variable(
+                        name=var_name,
+                        value=val,
+                        unit=unit,
+                        timestamp=ts,
+                        quality=qual,
+                        source_ecu=sample.get("target_ecu", self.target_ecu),
+                    )
+                    
+        ctx.classify_operating_state()
+        return ctx
+
     def get_recent_dtc_events(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """Returns recent DTC lifecycle events from bounded history."""
         if not self.dtc_lifecycle_engine:
@@ -601,11 +809,21 @@ class LiveAcquisitionRuntime:
                     return False
 
                 try:
-                    if hasattr(self.engine, "baglan") and self.engine.baglan():
+                    conn_ok = False
+                    if hasattr(self, "adapter") and self.adapter is not None:
+                        conn_ok = self.adapter.connect(timeout=timeout)
+                    elif hasattr(self.engine, "baglan"):
+                        conn_ok = bool(self.engine.baglan())
+
+                    if conn_ok:
                         # Post-reconnect verification probe
                         probe_pid = self.pids[0] if self.pids else "010C"
-                        res = self.engine.komut_gonder(probe_pid, timeout=1.0)
-                        probe_status = getattr(self.engine, "last_response_status", STATUS_VALID)
+                        if hasattr(self, "adapter") and self.adapter is not None and self.adapter.is_connected():
+                            res, probe_status = self.adapter.send_command(probe_pid, timeout=1.0)
+                        else:
+                            res = self.engine.komut_gonder(probe_pid, timeout=1.0)
+                            probe_status = getattr(self.engine, "last_response_status", STATUS_VALID)
+
                         if probe_status == STATUS_VALID or res:
                             logging.info(f"LiveRuntime: Reconnected successfully on attempt {attempt}.")
                             if hasattr(self, "safety_manager") and self.safety_manager:
@@ -674,17 +892,31 @@ class LiveAcquisitionRuntime:
         logging.debug("LiveAcquisitionWorker exited loop.")
 
     def _check_serial_health(self) -> bool:
-        """Verifies serial port and worker thread are still alive."""
-        if not self.engine.ser or not self.engine.ser.is_open:
-            logging.error("LiveRuntime: Serial port disconnected during execution.")
+        """Verifies serial port / adapter and worker thread are still alive."""
+        if hasattr(self, "adapter") and self.adapter is not None:
+            if not self.adapter.is_connected():
+                logging.error("LiveRuntime: Adapter disconnected during execution.")
+                if hasattr(self, "safety_manager") and self.safety_manager is not None:
+                    self.safety_manager.record_failure(
+                        category="CONNECTION_LOST",
+                        component="ADAPTER",
+                        severity="CRITICAL",
+                        reason="Adapter disconnected during execution",
+                    )
+                self._transition_state(LIVE_ERROR, "Adapter disconnected")
+                return False
+            return True
+
+        if not self.is_connected():
+            logging.error("LiveRuntime: Serial port / adapter disconnected during execution.")
             if hasattr(self, "safety_manager") and self.safety_manager is not None:
                 self.safety_manager.record_failure(
                     category="CONNECTION_LOST",
                     component="SERIAL_PORT",
                     severity="CRITICAL",
-                    reason="Serial port disconnected during execution",
+                    reason="Serial port / adapter disconnected during execution",
                 )
-            self._transition_state(LIVE_ERROR, "Serial port disconnected")
+            self._transition_state(LIVE_ERROR, "Serial port / adapter disconnected")
             return False
 
         if hasattr(self.engine, "io_worker") and self.engine.io_worker is not None:
@@ -763,12 +995,42 @@ class LiveAcquisitionRuntime:
         start_t = time.time()
         timeout_val = 0.5 if getattr(self.engine, "is_can", True) else 2.5
 
-        # Query vehicle through AutoExpertEngine
-        res = self.engine.komut_gonder(clean_pid, timeout=timeout_val)
-        elapsed_ms = (time.time() - start_t) * 1000.0
+        # Check safety policy against prohibited services (e.g. 04, 14, 2E, 27, 2F, 34-37, 3D)
+        clean_tok = clean_pid.split()[0] if clean_pid else ""
+        if clean_tok in PROHIBITED_SERVICES or clean_tok[:2] in PROHIBITED_SERVICES:
+            logging.error(f"LiveRuntime: Blocked prohibited service execution for {clean_pid}")
+            elapsed_ms = (time.time() - start_t) * 1000.0
+            sample = {
+                "timestamp": time.time(),
+                "pid": clean_pid,
+                "name": sensor_name,
+                "value": None,
+                "unit": unit,
+                "raw_value": None,
+                "raw_bytes": b"",
+                "status": STATUS_NRC,
+                "acquisition_time_ms": round(elapsed_ms, 2),
+                "sequence": seq,
+                "error": "Safety violation: Prohibited service blocked",
+                "ecu_id": getattr(self, "target_ecu", "ECM"),
+                "vehicle_id": getattr(self, "vehicle_id", None),
+            }
+            return sample, False
 
-        raw_status = getattr(self.engine, "last_response_status", STATUS_VALID)
+        # Query vehicle through authoritative DiagnosticAdapter (J-1) or AutoExpertEngine fallback
+        res = None
+        raw_status = STATUS_VALID
+        if hasattr(self, "adapter") and self.adapter is not None and self.adapter.is_connected():
+            res, raw_status = self.adapter.send_command(clean_pid, timeout=timeout_val)
+        elif hasattr(self.engine, "komut_gonder"):
+            res = self.engine.komut_gonder(clean_pid, timeout=timeout_val)
+            raw_status = getattr(self.engine, "last_response_status", STATUS_VALID)
+        else:
+            raw_status = STATUS_NO_CONNECTION
+
+        elapsed_ms = (time.time() - start_t) * 1000.0
         raw_str = " ".join(res) if res else None
+        raw_bytes = raw_str.encode("utf-8") if raw_str else b""
 
         # Critical communication failure check
         if raw_status in (STATUS_NO_CONNECTION, STATUS_WORKER_DOWN, STATUS_SERIAL_ERROR):
@@ -781,10 +1043,13 @@ class LiveAcquisitionRuntime:
                 "value": None,
                 "unit": unit,
                 "raw_value": raw_str,
+                "raw_bytes": raw_bytes,
                 "status": raw_status,
                 "acquisition_time_ms": round(elapsed_ms, 2),
                 "sequence": seq,
                 "error": f"Fatal communication error ({raw_status})",
+                "ecu_id": getattr(self, "target_ecu", "ECM"),
+                "vehicle_id": getattr(self, "vehicle_id", None),
             }
             return sample, True
 
@@ -807,25 +1072,14 @@ class LiveAcquisitionRuntime:
             "value": decoded_val,
             "unit": unit,
             "raw_value": raw_str,
+            "raw_bytes": raw_bytes,
             "status": raw_status,
             "acquisition_time_ms": round(elapsed_ms, 2),
             "sequence": seq,
             "error": error_msg,
+            "ecu_id": getattr(self, "target_ecu", "ECM"),
+            "vehicle_id": getattr(self, "vehicle_id", None),
         }
-
-        # Update engine sensor cache on valid read to keep C/E cache in sync
-        if raw_status == STATUS_VALID and decoded_val is not None:
-            try:
-                if hasattr(self.engine, "_update_sensor_cache"):
-                    self.engine._update_sensor_cache(
-                        sensor_name,
-                        decoded_val,
-                        status=STATUS_VALID,
-                        timestamp=sample["timestamp"],
-                        source="LIVE_RUNTIME",
-                    )
-            except Exception as e:
-                logging.debug(f"Cache update exception: {e}")
 
         return sample, False
 
@@ -853,11 +1107,14 @@ class LiveAcquisitionRuntime:
             idx = hex_str.find(clean_target)
             if idx != -1:
                 payload_hex = hex_str[idx + len(clean_target):]
-                payload_bytes = [
-                    int(payload_hex[i:i+2], 16)
-                    for i in range(0, len(payload_hex), 2)
-                    if len(payload_hex[i:i+2]) == 2
-                ]
+                try:
+                    payload_bytes = [
+                        int(payload_hex[i:i+2], 16)
+                        for i in range(0, len(payload_hex), 2)
+                        if len(payload_hex[i:i+2]) == 2
+                    ]
+                except ValueError:
+                    continue
                 if payload_bytes and decode_func is not None:
                     try:
                         res = decode_func(payload_bytes)
@@ -894,6 +1151,24 @@ class LiveAcquisitionRuntime:
             except Exception as e:
                 logging.warning(f"LiveRuntime quality assessment error on PID {pid}: {e}")
 
+        # Update engine sensor cache on valid read to keep C/E cache in sync
+        # Only valid + quality-evaluated readings update value and history
+        if is_success:
+            sensor_name = sample.get("name", pid)
+            try:
+                if hasattr(self.engine, "_update_sensor_cache"):
+                    evaluated_q = quality_res.get("quality") if quality_res else QUALITY_GOOD
+                    self.engine._update_sensor_cache(
+                        sensor_name,
+                        sample["value"],
+                        status=STATUS_VALID,
+                        quality=evaluated_q,
+                        timestamp=sample["timestamp"],
+                        source="LIVE_RUNTIME",
+                    )
+            except Exception as e:
+                logging.debug(f"Cache update exception: {e}")
+
         # Phase F-3: Real-Time Diagnostic Intelligence
         if hasattr(self, "intelligence_engine") and self.intelligence_engine is not None:
             try:
@@ -913,6 +1188,83 @@ class LiveAcquisitionRuntime:
                 )
             except Exception as e:
                 logging.debug(f"Safety manager record error on PID {pid}: {e}")
+
+        # Decoupled Asynchronous Persistence (Phase K-3)
+        if hasattr(self, "repository") and self.repository is not None:
+            self._enqueue_persistence(sample)
+
+    # =================================================================
+    # ASYNCHRONOUS PERSISTENCE PIPELINE (PHASE K-3)
+    # =================================================================
+    def _enqueue_persistence(self, sample: Dict[str, Any]) -> bool:
+        """Enqueues sample for decoupled asynchronous persistence."""
+        if self.repository is None:
+            return False
+        try:
+            self._persistence_queue.put_nowait(sample)
+            return True
+        except queue.Full:
+            with self._stats_lock:
+                self._persistence_dropped_count += 1
+            logging.warning("LiveRuntime persistence queue full; telemetry sample dropped to prevent acquisition stalls.")
+            return False
+
+    def _persistence_loop(self) -> None:
+        """Drains persistence queue and writes records in batches without blocking acquisition."""
+        batch: List[Dict[str, Any]] = []
+        last_flush = time.monotonic()
+
+        while not self._persistence_stop_event.is_set() or not self._persistence_queue.empty():
+            try:
+                sample = self._persistence_queue.get(timeout=0.1)
+                batch.append(sample)
+                self._persistence_queue.task_done()
+            except queue.Empty:
+                pass
+
+            now = time.monotonic()
+            if batch and (len(batch) >= 10 or (now - last_flush) >= 0.2 or self._persistence_stop_event.is_set()):
+                self._flush_persistence_batch(batch)
+                batch.clear()
+                last_flush = now
+
+        if batch:
+            self._flush_persistence_batch(batch)
+            batch.clear()
+
+    def _flush_persistence_batch(self, batch: List[Dict[str, Any]]) -> None:
+        """Writes batch to repository cleanly with error isolation."""
+        if not self.repository:
+            return
+        for s in batch:
+            try:
+                raw_bytes = s.get("raw_bytes")
+                if raw_bytes is None:
+                    raw_val = s.get("raw_value") or ""
+                    raw_bytes = raw_val.encode("utf-8") if isinstance(raw_val, str) else b""
+
+                if hasattr(self.repository, "save_raw_acquisition"):
+                    self.repository.save_raw_acquisition(
+                        session_id=self.session_id,
+                        source_ecu=s.get("ecu_id") or self.target_ecu,
+                        command_or_pid=s.get("pid", ""),
+                        raw_payload=raw_bytes,
+                        metadata={
+                            "name": s.get("name"),
+                            "value": s.get("value"),
+                            "unit": s.get("unit"),
+                            "status": s.get("status"),
+                            "sequence": s.get("sequence"),
+                            "acquisition_time_ms": s.get("acquisition_time_ms"),
+                            "vehicle_id": s.get("vehicle_id") or self.vehicle_id,
+                        },
+                    )
+                with self._stats_lock:
+                    self._persistence_written_count += 1
+            except Exception as e:
+                with self._stats_lock:
+                    self._persistence_error_count += 1
+                logging.warning(f"LiveRuntime persistence save error: {e}")
 
     def _fire_callback(self, sample: Dict[str, Any]) -> None:
         """Fires user-supplied callback safely without blocking or throwing."""

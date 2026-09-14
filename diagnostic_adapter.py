@@ -76,6 +76,18 @@ class AdapterConnectionState(str, enum.Enum):
     CONNECTED = "CONNECTED"
     DISCONNECTING = "DISCONNECTING"
     ERROR = "ERROR"
+    FAILED = "FAILED"
+
+    def __eq__(self, other: Any) -> bool:
+        if self.value in ("ERROR", "FAILED"):
+            if other in ("ERROR", "FAILED"):
+                return True
+            if hasattr(other, "value") and other.value in ("ERROR", "FAILED"):
+                return True
+        return super().__eq__(other)
+
+    def __hash__(self) -> int:
+        return hash(self.value)
 
 
 class AdapterType(str, enum.Enum):
@@ -152,6 +164,10 @@ class AdapterCapabilities:
     supports_obd2_standard: bool = True
     supports_uds_diagnostics: bool = True
 
+    # Hardware & Transport Interface (Phase K-2)
+    supports_serial_transport: bool = True
+    supports_elm327_commands: bool = True
+
     # Safety & Authority
     is_read_only_enforced: bool = True
     supports_privileged_services: bool = False
@@ -179,6 +195,8 @@ class AdapterCapabilities:
             "supports_filter_mask_configuration": self.supports_filter_mask_configuration,
             "supports_obd2_standard": self.supports_obd2_standard,
             "supports_uds_diagnostics": self.supports_uds_diagnostics,
+            "supports_serial_transport": self.supports_serial_transport,
+            "supports_elm327_commands": self.supports_elm327_commands,
             "is_read_only_enforced": self.is_read_only_enforced,
             "supports_privileged_services": self.supports_privileged_services,
         }
@@ -203,6 +221,8 @@ class AdapterCapabilities:
             supports_filter_mask_configuration=bool(data.get("supports_filter_mask_configuration", False)),
             supports_obd2_standard=bool(data.get("supports_obd2_standard", True)),
             supports_uds_diagnostics=bool(data.get("supports_uds_diagnostics", True)),
+            supports_serial_transport=bool(data.get("supports_serial_transport", True)),
+            supports_elm327_commands=bool(data.get("supports_elm327_commands", True)),
             is_read_only_enforced=bool(data.get("is_read_only_enforced", True)),
             supports_privileged_services=bool(data.get("supports_privileged_services", False)),
         )
@@ -358,6 +378,8 @@ class DiagnosticAdapter(ITransportAdapter, abc.ABC):
         self._current_header: str = "7DF"
         self._lock = threading.RLock()
         self._history: List[str] = []
+        self._connect_thread: Optional[threading.Thread] = None
+        self._connect_cancel_event = threading.Event()
 
     # -----------------------------------------------------------------
     # Metadata & Capability Introspection
@@ -411,13 +433,14 @@ class DiagnosticAdapter(ITransportAdapter, abc.ABC):
         """
         Transitions adapter from DISCONNECTED to CONNECTED.
         Thread-safe, state-validated, and time-bounded.
+        Synchronous entry point for non-UI callers and tests.
         """
         with self._lock:
             if self._state == AdapterConnectionState.CONNECTED:
                 logger.debug("Adapter %s already connected.", self.adapter_id)
                 return True
 
-            if self._state not in (AdapterConnectionState.DISCONNECTED, AdapterConnectionState.ERROR):
+            if self._state not in (AdapterConnectionState.DISCONNECTED, AdapterConnectionState.ERROR, AdapterConnectionState.FAILED):
                 raise AdapterStateError(
                     f"Cannot connect: invalid current state '{self._state.value}'.",
                     adapter_id=self.adapter_id,
@@ -425,6 +448,7 @@ class DiagnosticAdapter(ITransportAdapter, abc.ABC):
                 )
 
             self._state = AdapterConnectionState.CONNECTING
+            self._connect_cancel_event.clear()
             logger.info("Connecting diagnostic adapter '%s'...", self.adapter_id)
 
         start_time = time.time()
@@ -455,14 +479,130 @@ class DiagnosticAdapter(ITransportAdapter, abc.ABC):
                 state=AdapterConnectionState.ERROR,
             ) from e
 
+    def connect_async(
+        self,
+        timeout: float = 5.0,
+        on_finished: Optional[Callable[[bool, Optional[Exception]], None]] = None,
+    ) -> bool:
+        """
+        Non-blocking adapter connection.
+        Transitions state to CONNECTING, launches background worker thread,
+        and returns immediately without blocking caller.
+        Rejects concurrent duplicate connect attempts while CONNECTING.
+        """
+        with self._lock:
+            if self._state == AdapterConnectionState.CONNECTED:
+                logger.debug("Adapter %s already connected.", self.adapter_id)
+                if on_finished:
+                    on_finished(True, None)
+                return True
+
+            if self._state == AdapterConnectionState.CONNECTING:
+                logger.warning("Adapter %s already connecting. Duplicate connect request ignored.", self.adapter_id)
+                return False
+
+            if self._state not in (AdapterConnectionState.DISCONNECTED, AdapterConnectionState.ERROR, AdapterConnectionState.FAILED):
+                raise AdapterStateError(
+                    f"Cannot connect: invalid current state '{self._state.value}'.",
+                    adapter_id=self.adapter_id,
+                    state=self._state,
+                )
+
+            self._state = AdapterConnectionState.CONNECTING
+            self._connect_cancel_event.clear()
+            logger.info("Asynchronously connecting diagnostic adapter '%s'...", self.adapter_id)
+
+        def _bg_connect():
+            success = False
+            err: Optional[Exception] = None
+            try:
+                if self._connect_cancel_event.is_set():
+                    with self._lock:
+                        if self._state == AdapterConnectionState.CONNECTING:
+                            self._state = AdapterConnectionState.DISCONNECTED
+                    if on_finished:
+                        on_finished(False, None)
+                    return
+
+                start_time = time.time()
+                success = self._do_connect(timeout=timeout)
+                elapsed = time.time() - start_time
+
+                if self._connect_cancel_event.is_set():
+                    self._do_disconnect()
+                    with self._lock:
+                        self._state = AdapterConnectionState.DISCONNECTED
+                    if on_finished:
+                        on_finished(False, None)
+                    return
+
+                if not success or elapsed > timeout:
+                    success = False
+                    with self._lock:
+                        self._state = AdapterConnectionState.FAILED
+                    if elapsed > timeout:
+                        err = AdapterTimeoutError(
+                            f"Connection timed out after {elapsed:.2f}s for adapter '{self.adapter_id}'.",
+                            adapter_id=self.adapter_id,
+                            state=AdapterConnectionState.FAILED,
+                        )
+                    else:
+                        err = AdapterConnectionError(
+                            f"Connection failed for adapter '{self.adapter_id}'.",
+                            adapter_id=self.adapter_id,
+                            state=AdapterConnectionState.FAILED,
+                        )
+                else:
+                    with self._lock:
+                        self._state = AdapterConnectionState.CONNECTED
+                    logger.info("Adapter '%s' successfully CONNECTED (async).", self.adapter_id)
+
+            except Exception as e:
+                with self._lock:
+                    self._state = AdapterConnectionState.FAILED
+                if isinstance(e, AdapterError):
+                    err = e
+                else:
+                    err = AdapterConnectionError(
+                        f"Unexpected exception during connect on '{self.adapter_id}': {e}",
+                        adapter_id=self.adapter_id,
+                        state=AdapterConnectionState.FAILED,
+                    )
+                logger.error("Async connect error on '%s': %s", self.adapter_id, err)
+
+            finally:
+                with self._lock:
+                    self._connect_thread = None
+                if on_finished:
+                    try:
+                        on_finished(success, err)
+                    except Exception as cb_ex:
+                        logger.warning("Error in connect_async callback: %s", cb_ex)
+
+        self._connect_thread = threading.Thread(
+            target=_bg_connect,
+            name=f"AdapterConnectWorker-{self.adapter_id}",
+            daemon=True,
+        )
+        self._connect_thread.start()
+        return True
+
     def disconnect(self) -> bool:
-        """Transitions adapter from CONNECTED to DISCONNECTED cleanly."""
+        """Transitions adapter from CONNECTED or CONNECTING to DISCONNECTED cleanly."""
         with self._lock:
             if self._state == AdapterConnectionState.DISCONNECTED:
                 return True
 
+            if self._state == AdapterConnectionState.CONNECTING:
+                self._connect_cancel_event.set()
+
             self._state = AdapterConnectionState.DISCONNECTING
             logger.info("Disconnecting diagnostic adapter '%s'...", self.adapter_id)
+
+        # Cooperative join of active worker to prevent leaks
+        worker = getattr(self, "_connect_thread", None)
+        if worker and worker.is_alive() and worker != threading.current_thread():
+            worker.join(timeout=0.5)
 
         try:
             self._do_disconnect()
@@ -675,6 +815,7 @@ class MockDiagnosticAdapter(DiagnosticAdapter):
         self.force_malformed: bool = False
         self.force_transport_error: bool = False
         self.force_connect_failure: bool = False
+        self.force_connect_delay: float = 0.0
         self.reset_count: int = 0
 
     def register_response(self, command: str, response_lines: List[str]) -> None:
@@ -683,6 +824,8 @@ class MockDiagnosticAdapter(DiagnosticAdapter):
         self.responses[clean] = list(response_lines)
 
     def _do_connect(self, timeout: float) -> bool:
+        if self.force_connect_delay > 0:
+            time.sleep(self.force_connect_delay)
         if self.force_connect_failure:
             return False
         return True
@@ -742,22 +885,207 @@ class MockDiagnosticAdapter(DiagnosticAdapter):
 
 
 # =====================================================================
-# 7. PRODUCTION ELM327 ADAPTER BOUNDARY
+# 7. PRODUCTION ELM327 USB/SERIAL ADAPTER & TRANSPORT (PHASE K-2)
 # =====================================================================
+
+class ELM327TransportStage(str, enum.Enum):
+    """
+    Granular hardware and bus transport stages for ELM327 diagnostic adapters (Phase K-2).
+    Distinguishes serial port open, adapter responsiveness, and vehicle protocol readiness.
+    """
+    DISCONNECTED = "DISCONNECTED"
+    PORT_OPENED = "PORT_OPENED"                   # COM port opened
+    ELM327_RESPONSIVE = "ELM327_RESPONSIVE"       # AT commands handshake succeeded
+    VEHICLE_PROTOCOL_READY = "VEHICLE_PROTOCOL_READY" # Vehicle bus protocol verified & ECU responsive
+
+
+class MockSerialForELM:
+    """
+    Deterministic serial port test double for ELM327 USB/Serial validation (Phase K-2).
+    Simulates real UART byte streams, framing, echoes, prompts, timeouts, and bus conditions.
+    """
+    def __init__(
+        self,
+        port: str = "COM_MOCK",
+        baudrate: int = 38400,
+        timeout: float = 1.0,
+        write_timeout: float = 1.0,
+        fail_open: bool = False,
+        fail_init_timeout: bool = False,
+        fail_init_error: bool = False,
+        inject_unexpected_reset: bool = False,
+        inject_bus_error: bool = False,
+        inject_no_data: bool = False,
+        inject_nrc: bool = False,
+        simulate_disconnect: bool = False,
+        custom_responses: Optional[Dict[str, bytes]] = None,
+    ):
+        self.port = port
+        self.baudrate = baudrate
+        self.timeout = timeout
+        self.write_timeout = write_timeout
+        self.fail_open = fail_open
+        self.fail_init_timeout = fail_init_timeout
+        self.fail_init_error = fail_init_error
+        self.inject_unexpected_reset = inject_unexpected_reset
+        self.inject_bus_error = inject_bus_error
+        self.inject_no_data = inject_no_data
+        self.inject_nrc = inject_nrc
+        self.simulate_disconnect = simulate_disconnect
+        self.custom_responses = dict(custom_responses or {})
+
+        if self.fail_open:
+            import serial
+            raise serial.SerialException(f"Failed to open mock port '{port}': Access is denied.")
+
+        self.is_open = True
+        self.echo_enabled = True
+        self._write_buffer = bytearray()
+        self._read_buffer = bytearray()
+        self._tx_history: List[str] = []
+
+    @property
+    def in_waiting(self) -> int:
+        return len(self._read_buffer) if self.is_open else 0
+
+    def write(self, data: bytes) -> int:
+        if not self.is_open:
+            import serial
+            raise serial.SerialException("Attempted write to closed serial port.")
+        if self.simulate_disconnect:
+            self.is_open = False
+            import serial
+            raise serial.SerialException("USB device removed / COM port disconnected.")
+
+        self._write_buffer.extend(data)
+        if b"\r" in self._write_buffer or b"\n" in self._write_buffer:
+            raw_line = bytes(self._write_buffer)
+            self._write_buffer.clear()
+            cmd = raw_line.decode("ascii", errors="replace").strip().upper()
+            self._tx_history.append(cmd)
+            self._handle_command(cmd)
+        return len(data)
+
+    def read(self, size: int = 1) -> bytes:
+        if not self.is_open:
+            import serial
+            raise serial.SerialException("Attempted read from closed serial port.")
+        if self.simulate_disconnect:
+            self.is_open = False
+            import serial
+            raise serial.SerialException("USB device removed / COM port disconnected.")
+
+        if not self._read_buffer:
+            return b""
+        chunk = self._read_buffer[:size]
+        self._read_buffer = self._read_buffer[size:]
+        return bytes(chunk)
+
+    def reset_input_buffer(self) -> None:
+        self._read_buffer.clear()
+
+    def reset_output_buffer(self) -> None:
+        self._write_buffer.clear()
+
+    def flush(self) -> None:
+        pass
+
+    def close(self) -> None:
+        self.is_open = False
+        self._read_buffer.clear()
+        self._write_buffer.clear()
+
+    def open(self) -> None:
+        self.is_open = True
+
+    def _handle_command(self, cmd: str) -> None:
+        if cmd in self.custom_responses:
+            resp = self.custom_responses[cmd]
+            if self.echo_enabled:
+                resp = f"{cmd}\r".encode("ascii") + resp
+            self._read_buffer.extend(resp)
+            return
+
+        if self.fail_init_timeout and cmd in ("ATZ", "AT Z", "ATWS", "AT WS"):
+            return
+
+        if self.fail_init_error and cmd in ("ATZ", "AT Z", "ATWS", "AT WS"):
+            self._read_buffer.extend(b"?\r\r>")
+            return
+
+        if self.inject_unexpected_reset and not cmd.startswith("AT"):
+            self._read_buffer.extend(b"ELM327 v1.5\r\r>")
+            return
+
+        if self.inject_bus_error and not cmd.startswith("AT"):
+            self._read_buffer.extend(b"CAN ERROR\r\r>")
+            return
+
+        if self.inject_no_data and not cmd.startswith("AT"):
+            self._read_buffer.extend(b"NO DATA\r\r>")
+            return
+
+        if self.inject_nrc and not cmd.startswith("AT"):
+            self._read_buffer.extend(b"7E8 03 7F 22 31\r\r>")
+            return
+
+        cmd_clean = cmd.replace(" ", "")
+        payload = b""
+
+        if cmd_clean in ("ATZ", "ATWS"):
+            payload = b"ELM327 v1.5\r\r>"
+        elif cmd_clean == "ATE0":
+            self.echo_enabled = False
+            payload = b"OK\r\r>"
+        elif cmd_clean == "ATE1":
+            self.echo_enabled = True
+            payload = b"OK\r\r>"
+        elif cmd_clean in ("ATL0", "ATL1", "ATS0", "ATS1", "ATH0", "ATH1", "ATAT1", "ATSTFF"):
+            payload = b"OK\r\r>"
+        elif cmd_clean.startswith("ATSP") or cmd_clean.startswith("ATSH"):
+            payload = b"OK\r\r>"
+        elif cmd_clean in ("ATDPN", "AT DPN"):
+            payload = b"6\r\r>"
+        elif cmd_clean in ("ATDP", "AT DP"):
+            payload = b"ISO 15765-4 (CAN 11/500)\r\r>"
+        elif cmd_clean in ("ATRV", "AT RV"):
+            payload = b"12.6V\r\r>"
+        elif cmd_clean in ("ATI", "AT I"):
+            payload = b"ELM327 v1.5\r\r>"
+        elif cmd_clean == "0100":
+            payload = b"7E8 06 41 00 BE 3E B8 11\r\r>"
+        elif cmd_clean == "010C":
+            payload = b"7E8 04 41 0C 0F A0\r\r>"
+        elif cmd_clean == "010D":
+            payload = b"7E8 03 41 0D 00\r\r>"
+        elif cmd_clean.startswith("22"):
+            payload = b"7E8 05 62 01 00 12 34\r\r>"
+        else:
+            payload = b"OK\r\r>"
+
+        if self.echo_enabled:
+            payload = f"{cmd}\r".encode("ascii") + payload
+
+        self._read_buffer.extend(payload)
+
 
 class ELM327DiagnosticAdapter(DiagnosticAdapter):
     """
-    Production-oriented ELM327 & STN Adapter Integration.
-    Wraps AutoExpertEngine or Serial communication without exposing ELM internals
-    to higher diagnostic reasoning layers.
+    Production-grade ELM327 USB/Serial Diagnostic Adapter (Phase K-2).
+    Communicates via Windows COM ports using PySerial or delegates to AutoExpertEngine.
+    Enforces deterministic initialization, robust response normalization,
+    command serialization, and truthful capability reporting.
     """
     def __init__(
         self,
         engine: Any = None,
         adapter_id: str = "ELM327_SERIAL_01",
-        port: str = "COM_MOCK",
+        port: Optional[str] = None,
         baudrate: int = 38400,
+        read_timeout: float = 2.0,
+        write_timeout: float = 2.0,
         capabilities: Optional[AdapterCapabilities] = None,
+        serial_factory: Optional[Callable[..., Any]] = None,
     ):
         caps = capabilities or AdapterCapabilities(
             supports_iso15765_can=True,
@@ -772,6 +1100,8 @@ class ELM327DiagnosticAdapter(DiagnosticAdapter):
             supports_voltage_reading=True,    # ATRV command
             supports_hardware_reset=True,     # ATZ command
             supports_uds_diagnostics=True,
+            supports_serial_transport=True,
+            supports_elm327_commands=True,
         )
         meta = AdapterMetadata(
             adapter_id=adapter_id,
@@ -781,40 +1111,215 @@ class ELM327DiagnosticAdapter(DiagnosticAdapter):
             model="ELM327",
             firmware_version="v1.5 / v2.1",
             capabilities=caps,
-            properties={"port": port, "baudrate": baudrate},
+            properties={"port": port or "AUTO", "baudrate": baudrate},
         )
         super().__init__(metadata=meta)
         self.engine = engine
-        self.port = port
-        self.baudrate = baudrate
+        self._port = port
+        self._baudrate = baudrate
+        self.read_timeout = read_timeout
+        self.write_timeout = write_timeout
+        self.serial_factory = serial_factory
+        self.ser: Optional[Any] = None
+        self._transport_stage: ELM327TransportStage = ELM327TransportStage.DISCONNECTED
+        self.last_raw_response: Optional[bytes] = None
+        self.last_normalized_response: List[str] = []
+        self.detected_protocol: Optional[str] = None
+        self.elm_version: Optional[str] = None
+
+    @property
+    def port(self) -> Optional[str]:
+        return self._port
+
+    @property
+    def baudrate(self) -> int:
+        return self._baudrate
+
+    @property
+    def transport_stage(self) -> ELM327TransportStage:
+        return self._transport_stage
+
+    @property
+    def is_adapter_responsive(self) -> bool:
+        return self._transport_stage in (
+            ELM327TransportStage.ELM327_RESPONSIVE,
+            ELM327TransportStage.VEHICLE_PROTOCOL_READY,
+        )
+
+    @property
+    def is_vehicle_ready(self) -> bool:
+        return self._transport_stage == ELM327TransportStage.VEHICLE_PROTOCOL_READY
+
+    def _discover_port(self) -> Optional[str]:
+        """Auto-discovers candidate diagnostic COM port on Windows / Host."""
+        try:
+            from platform_abstraction import HostPlatformProvider
+            prov = HostPlatformProvider()
+            ports = prov.enumerate_serial_ports()
+            if not ports:
+                return None
+            keywords = ["vlinker", "elm327", "obd", "ch340", "ftdi", "cp210", "prolific"]
+            for p in ports:
+                desc = (str(p.get("description", "")) + " " + str(p.get("manufacturer", ""))).lower()
+                for kw in keywords:
+                    if kw in desc:
+                        return p["device"]
+            return ports[0]["device"]
+        except Exception as e:
+            logger.debug("Port discovery failed: %s", e)
+            return None
 
     def _do_connect(self, timeout: float) -> bool:
-        if self.engine and hasattr(self.engine, "ser"):
-            ser = self.engine.ser
-            return bool(ser and getattr(ser, "is_open", False))
+        """
+        Establishes physical serial connection and executes deterministic ELM327 initialization.
+        """
+        # Engine delegation mode (backward compatibility)
+        if self.engine is not None and not self.ser:
+            if hasattr(self.engine, "ser") and self.engine.ser and getattr(self.engine.ser, "is_open", False):
+                self.ser = self.engine.ser
+                self._transport_stage = ELM327TransportStage.ELM327_RESPONSIVE
+                return True
+            if hasattr(self.engine, "baglan"):
+                ok = bool(self.engine.baglan())
+                if ok:
+                    if hasattr(self.engine, "ser"):
+                        self.ser = self.engine.ser
+                    self._transport_stage = ELM327TransportStage.ELM327_RESPONSIVE
+                return ok
+
+        # Standalone Direct Serial Transport Mode:
+        target_port = self._port
+        if not target_port or str(target_port).upper() == "AUTO":
+            target_port = self._discover_port()
+        if not target_port:
+            self._transport_stage = ELM327TransportStage.DISCONNECTED
+            raise AdapterUnavailableError(
+                "No serial port specified or detected for ELM327 adapter.",
+                adapter_id=self.adapter_id,
+            )
+
+        self._port = target_port
+
+        # Open physical / mock serial port
+        try:
+            if self.serial_factory:
+                self.ser = self.serial_factory(
+                    target_port,
+                    baudrate=self._baudrate,
+                    timeout=self.read_timeout,
+                    write_timeout=self.write_timeout,
+                )
+            else:
+                import serial
+                self.ser = serial.Serial(
+                    target_port,
+                    baudrate=self._baudrate,
+                    timeout=self.read_timeout,
+                    write_timeout=self.write_timeout,
+                )
+            self._transport_stage = ELM327TransportStage.PORT_OPENED
+            logger.info("Serial port '%s' opened successfully.", target_port)
+        except Exception as e:
+            self._transport_stage = ELM327TransportStage.DISCONNECTED
+            raise AdapterConnectionError(
+                f"Failed to open serial port '{target_port}': {e}",
+                adapter_id=self.adapter_id,
+            ) from e
+
+        # Execute deterministic initialization sequence
+        init_ok = self._execute_initialization(timeout=timeout)
+        if not init_ok:
+            self._do_disconnect()
+            raise AdapterConnectionError(
+                f"ELM327 initialization failed on port '{target_port}'.",
+                adapter_id=self.adapter_id,
+            )
+
+        return True
+
+    def _execute_initialization(self, timeout: float = 5.0) -> bool:
+        """
+        Deterministic, safe ELM327 initialization sequence.
+        """
+        # Step 1: AT Z / AT WS (Hardware/warm reset)
+        lines, status = self._send_raw_command("AT Z", timeout=min(2.0, timeout))
+        joined = "".join(lines).upper()
+        if "ELM327" not in joined and "OK" not in joined:
+            lines, status = self._send_raw_command("AT WS", timeout=min(2.0, timeout))
+            joined = "".join(lines).upper()
+            if "ELM327" not in joined and "OK" not in joined:
+                logger.error("ELM327 adapter failed to respond to AT Z / AT WS.")
+                return False
+
+        self.elm_version = lines[0] if lines else "ELM327"
+        self._transport_stage = ELM327TransportStage.ELM327_RESPONSIVE
+        logger.info("ELM327 adapter responsive: %s", self.elm_version)
+
+        # Step 2: ATE0 (Echo off)
+        self._send_raw_command("ATE0", timeout=1.0)
+        # Step 3: ATL0 (Linefeeds off)
+        self._send_raw_command("ATL0", timeout=1.0)
+        # Step 4: ATS0 (Spaces off)
+        self._send_raw_command("ATS0", timeout=1.0)
+        # Step 5: AT H1 (Headers on)
+        self._send_raw_command("AT H1", timeout=1.0)
+        # Step 6: AT SP 0 (Protocol Auto search)
+        self._send_raw_command("AT SP 0", timeout=1.5)
+
+        # Step 7: AT DPN / AT DP (Query protocol)
+        p_lines, _ = self._send_raw_command("AT DPN", timeout=1.0)
+        if p_lines:
+            self.detected_protocol = p_lines[0]
+        else:
+            p_lines2, _ = self._send_raw_command("AT DP", timeout=1.0)
+            if p_lines2:
+                self.detected_protocol = p_lines2[0]
+
+        # Step 8: Probe vehicle protocol readiness (0100)
+        probe_lines, probe_status = self._send_raw_command("0100", timeout=min(3.0, timeout))
+        joined_probe = "".join(probe_lines).upper().replace(" ", "")
+        if probe_status == STATUS_VALID and ("4100" in joined_probe or "41 00" in "".join(probe_lines).upper()):
+            self._transport_stage = ELM327TransportStage.VEHICLE_PROTOCOL_READY
+            logger.info("Vehicle protocol readiness verified on bus.")
+        else:
+            logger.info("ELM327 responsive, but vehicle protocol probe returned %s: %s", probe_status, probe_lines)
+
         return True
 
     def _do_disconnect(self) -> None:
-        if self.engine and hasattr(self.engine, "ser"):
-            ser = self.engine.ser
-            if ser and getattr(ser, "is_open", False):
-                try:
+        """Tears down serial link and invalidates transport state."""
+        if self.ser is not None:
+            try:
+                if hasattr(self.ser, "close"):
+                    self.ser.close()
+            except Exception as e:
+                logger.debug("Error closing serial port: %s", e)
+            finally:
+                self.ser = None
+
+        if self.engine is not None and hasattr(self.engine, "ser"):
+            try:
+                ser = self.engine.ser
+                if ser and getattr(ser, "is_open", False):
                     ser.close()
-                except Exception:
-                    pass
+            except Exception:
+                pass
+
+        self._transport_stage = ELM327TransportStage.DISCONNECTED
+        self.last_raw_response = None
+        self.last_normalized_response = []
 
     def _do_reset(self, hard: bool) -> bool:
-        if not self.engine:
-            return True
         cmd = "AT Z" if hard else "AT WS"
         lines, status = self.send_command(cmd, timeout=2.0)
-        return status == STATUS_VALID
+        ok = status == STATUS_VALID or any("ELM327" in l.upper() or "OK" in l.upper() for l in lines)
+        if ok:
+            self._transport_stage = ELM327TransportStage.ELM327_RESPONSIVE
+        return ok
 
     def _do_set_header(self, header: str, timeout: float) -> bool:
-        if not self.engine:
-            return True
         lines, status = self.send_command(f"AT SH {header}", timeout=timeout)
-        return status == STATUS_VALID or "OK" in "".join(lines)
+        return status == STATUS_VALID or "OK" in "".join(lines).upper()
 
     def _do_set_protocol(self, protocol: DiagnosticProtocol, timeout: float) -> bool:
         proto_map = {
@@ -830,11 +1335,14 @@ class ELM327DiagnosticAdapter(DiagnosticAdapter):
         if not at_num:
             return False
         lines, status = self.send_command(f"AT SP {at_num}", timeout=timeout)
-        return status == STATUS_VALID or "OK" in "".join(lines)
+        ok = status == STATUS_VALID or "OK" in "".join(lines).upper()
+        if ok:
+            self.detected_protocol = protocol.value
+        return ok
 
     def _do_read_battery_voltage(self) -> Optional[float]:
         lines, status = self.send_command("AT RV", timeout=1.0)
-        if status == STATUS_VALID and lines:
+        if (status == STATUS_VALID or lines) and lines:
             m = re.search(r"([0-9]+\.[0-9]+)\s*V?", lines[0])
             if m:
                 try:
@@ -844,15 +1352,209 @@ class ELM327DiagnosticAdapter(DiagnosticAdapter):
         return None
 
     def _do_send_command(self, cmd: str, timeout: float) -> Tuple[List[str], str]:
-        if not self.engine:
+        if not self.is_connected():
             return [], STATUS_NO_CONNECTION
-        if hasattr(self.engine, "send_command"):
-            return self.engine.send_command(cmd, timeout=timeout)
-        elif hasattr(self.engine, "komut_gonder"):
-            raw_lines = self.engine.komut_gonder(cmd, timeout=timeout)
-            status = getattr(self.engine, "last_response_status", STATUS_VALID)
-            return raw_lines or [], status
-        return [], STATUS_NO_CONNECTION
+        return self._send_raw_command(cmd, timeout=timeout)
+
+    def _send_raw_command(self, cmd: str, timeout: float = 2.0) -> Tuple[List[str], str]:
+        """
+        Sends command over physical/mock serial port and parses ELM327 response.
+        Enforces:
+          - Buffer flushing
+          - Reading bytes until '>' prompt
+          - Bounded monotonic timeout
+          - Echo stripping
+          - Normalizing lines
+          - Transport error detection (CAN ERROR, BUS ERROR, NO DATA, etc.)
+          - Unexpected reset detection
+        """
+        if self.ser is None:
+            if self.engine is not None and hasattr(self.engine, "komut_gonder"):
+                raw_lines = self.engine.komut_gonder(cmd, timeout=timeout)
+                st = getattr(self.engine, "last_response_status", STATUS_VALID)
+                return raw_lines or [], st
+            return [], STATUS_NO_CONNECTION
+
+        if hasattr(self.ser, "is_open") and not self.ser.is_open:
+            return [], STATUS_NO_CONNECTION
+
+        if self.engine is not None and not hasattr(self.ser, "write"):
+            if hasattr(self.engine, "komut_gonder"):
+                raw_lines = self.engine.komut_gonder(cmd, timeout=timeout)
+                st = getattr(self.engine, "last_response_status", STATUS_VALID)
+                return raw_lines or [], st
+
+        # Reset input buffer before transmission
+        if hasattr(self.ser, "reset_input_buffer"):
+            try:
+                self.ser.reset_input_buffer()
+            except Exception:
+                pass
+
+        wire_bytes = (cmd.strip() + "\r").encode("ascii", errors="replace")
+        try:
+            self.ser.write(wire_bytes)
+            if hasattr(self.ser, "flush"):
+                self.ser.flush()
+        except Exception as e:
+            logger.error("Serial write failed on '%s': %s", self._port, e)
+            self._do_disconnect()
+            raise TransportFailureError(
+                f"Serial write failed: {e}",
+                adapter_id=self.adapter_id,
+            ) from e
+
+        # Read bytes until '>' or timeout
+        raw_buffer = bytearray()
+        t_start = time.monotonic()
+        prompt_found = False
+
+        while (time.monotonic() - t_start) < timeout:
+            try:
+                in_waiting = getattr(self.ser, "in_waiting", 0)
+                n_to_read = in_waiting if in_waiting > 0 else 1
+                chunk = self.ser.read(n_to_read)
+            except Exception as e:
+                logger.error("Serial read exception on '%s': %s", self._port, e)
+                self._do_disconnect()
+                raise TransportFailureError(
+                    f"Serial read exception: {e}",
+                    adapter_id=self.adapter_id,
+                ) from e
+
+            if chunk:
+                raw_buffer.extend(chunk)
+                if b">" in raw_buffer:
+                    prompt_found = True
+                    break
+            else:
+                time.sleep(0.005)
+
+        self.last_raw_response = bytes(raw_buffer)
+
+        if not prompt_found and not raw_buffer:
+            return [], STATUS_TIMEOUT
+
+        text = raw_buffer.decode("ascii", errors="ignore")
+        raw_lines = [line.strip() for line in re.split(r"[\r\n]+", text)]
+        clean_lines: List[str] = []
+        cmd_clean = cmd.strip().upper().replace(" ", "")
+
+        for line in raw_lines:
+            line_s = line.strip()
+            if not line_s or line_s == ">":
+                continue
+            if line_s.endswith(">"):
+                line_s = line_s[:-1].strip()
+            if not line_s:
+                continue
+
+            # Strip command echo
+            line_comp = line_s.upper().replace(" ", "")
+            if line_comp == cmd_clean:
+                continue
+
+            clean_lines.append(line_s)
+
+        self.last_normalized_response = clean_lines
+        status = self._classify_elm_response(clean_lines, expected_cmd=cmd)
+        return clean_lines, status
+
+    def _classify_elm_response(self, lines: List[str], expected_cmd: str) -> str:
+        """
+        Classifies ELM327 response lines according to the canonical status model:
+        STATUS_VALID, STATUS_NO_DATA, STATUS_TIMEOUT, STATUS_SERIAL_ERROR, STATUS_NRC.
+        """
+        if not lines:
+            return STATUS_EMPTY_RESPONSE
+
+        joined = " ".join(lines).upper()
+
+        # 1. Unexpected Adapter Reset
+        if "ELM327 V" in joined and not expected_cmd.strip().upper().startswith("AT"):
+            logger.critical("Unexpected ELM327 adapter reset detected during '%s'!", expected_cmd)
+            self._transport_stage = ELM327TransportStage.ELM327_RESPONSIVE
+            raise AdapterResetError(
+                f"ELM327 adapter reset unexpectedly during command '{expected_cmd}'.",
+                adapter_id=self.adapter_id,
+            )
+
+        # 2. NO DATA
+        if any(line.upper() == "NO DATA" or "NO DATA" in line.upper() for line in lines):
+            return STATUS_NO_DATA
+
+        # 3. STOPPED
+        if "STOPPED" in joined:
+            return STATUS_TIMEOUT
+
+        # 4. Bus / Transport Errors
+        serial_err_patterns = [
+            "CAN ERROR",
+            "BUS ERROR",
+            "FB ERROR",
+            "DATA ERROR",
+            "BUFFER FULL",
+            "RX ERROR",
+            "UNABLE TO CONNECT",
+            "BUS BUSY",
+        ]
+        for pat in serial_err_patterns:
+            if any(pat == line.upper() or line.upper().startswith(pat) for line in lines):
+                return STATUS_SERIAL_ERROR
+
+        # 5. Unrecognized command '?'
+        if any(line == "?" for line in lines):
+            return STATUS_NRC
+
+        # 6. ECU Negative Response Code (NRC): e.g. "7F 22 31" or "7E8 03 7F 22 31"
+        for line in lines:
+            line_no_space = line.replace(" ", "").upper()
+            if "7F" in line_no_space:
+                idx = line_no_space.find("7F")
+                if len(line_no_space) >= idx + 6:
+                    return STATUS_NRC
+
+        return STATUS_VALID
+
+    def execute_smoke_test(self, timeout: float = 3.0) -> Dict[str, Any]:
+        """
+        Safe, read-only diagnostic smoke path (Phase K-2).
+        Demonstrates:
+          1. Serial port open verification
+          2. ELM327 initialization and responsiveness
+          3. Basic voltage reading
+          4. Single safe read query (0100)
+        Does NOT perform PID sweeps, Mode 22 discovery, or destructive actions.
+        """
+        with self._lock:
+            if not self.is_connected():
+                return {
+                    "status": "FAIL",
+                    "reason": "Adapter is not connected",
+                    "transport_stage": self._transport_stage.value,
+                }
+
+            volts = self.read_battery_voltage()
+            lines, status = self.send_command("0100", timeout=timeout)
+
+            passed = (
+                self.is_adapter_responsive
+                and status in (STATUS_VALID, STATUS_NO_DATA)
+            )
+
+            return {
+                "status": "PASS" if passed else "FAIL",
+                "port": self._port,
+                "baudrate": self._baudrate,
+                "elm_version": self.elm_version or "UNKNOWN",
+                "battery_voltage": volts,
+                "detected_protocol": self.detected_protocol or "UNKNOWN",
+                "transport_stage": self._transport_stage.value,
+                "safe_read_command": "0100",
+                "safe_read_status": status,
+                "safe_read_response": lines,
+                "raw_response_captured": bool(self.last_raw_response),
+            }
 
 
 # =====================================================================

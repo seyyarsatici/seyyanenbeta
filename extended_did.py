@@ -323,6 +323,31 @@ class DiagnosticDataDefinition:
             },
         )
 
+    def to_identifier_knowledge(self) -> Any:
+        """Converts this DiagnosticDataDefinition to Phase L-1 DiagnosticIdentifierKnowledge."""
+        from vehicle_ecu_knowledge import DiagnosticIdentifierKnowledge
+        primary_field = self.fields[0] if self.fields else None
+        return DiagnosticIdentifierKnowledge(
+            identifier=self.identifier,
+            service_id=self.service_id,
+            name=self.name or (primary_field.name if primary_field else ""),
+            description=self.description,
+            data_type=primary_field.data_type if primary_field else DataType.UINT16,
+            unit=primary_field.unit if primary_field else "",
+            scaling=primary_field.scale if primary_field else 1.0,
+            offset=primary_field.offset if primary_field else 0.0,
+            byte_order=primary_field.byte_order if primary_field else ByteOrder.BIG_ENDIAN,
+            bit_length=primary_field.bit_length if primary_field else None,
+            bit_mask=primary_field.bit_mask if primary_field else None,
+            min_value=primary_field.min_expected_value if primary_field else None,
+            max_value=primary_field.max_expected_value if primary_field else None,
+            target_ecu=self.ecu_target if self.ecu_target != "PRIMARY_ECU" else "ECM",
+            applicability=self.applicability,
+            trust_level=self.trust_level,
+            schema_version=int(self.definition_version.split(".")[0]) if (self.definition_version and self.definition_version[0].isdigit()) else 1,
+            metadata=dict(self.metadata),
+        )
+
 
 # =====================================================================
 # 4. DECODED EVIDENCE & PROVENANCE MODELS

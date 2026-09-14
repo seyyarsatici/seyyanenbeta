@@ -482,11 +482,10 @@ class MainUI(QMainWindow):
             if not hasattr(self, "engine") or self.engine is None:
                 self.engine = AutoExpertEngine()
             
-            # Start connection if not yet connected
-            if hasattr(self.engine, "ser") and self.engine.ser is not None:
-                if not getattr(self.engine.ser, "is_open", False):
-                    self.engine.baglan()
-            
+            # Phase K-1: Non-blocking diagnostic connection runtime hardening.
+            # Do NOT block the GUI thread with synchronous baglan() here.
+            # LiveDiagnosticWidget and LiveAcquisitionRuntime handle connection
+            # asynchronously via dedicated background workers.
             self.live_runtime = LiveAcquisitionRuntime(engine=self.engine)
             self.live_diagnostic_panel = LiveDiagnosticWidget(runtime=self.live_runtime, parent=self)
             self.analysis_stack.addWidget(self.live_diagnostic_panel)

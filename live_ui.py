@@ -185,8 +185,13 @@ class LivePresentationModel:
         return mapping.get(state, {"text": state, "bg": "#BDC3C7", "fg": "#2C3E50"})
 
     @staticmethod
-    def get_connection_info(runtime_state: str, is_serial_open: bool, failure_count: int = 0) -> Dict[str, str]:
+    def get_connection_info(runtime_state: str, is_serial_open: bool, failure_count: int = 0, connection_state: Optional[str] = None) -> Dict[str, str]:
         """Computes top-level connection badge and status description."""
+        conn_str = str(connection_state).upper() if connection_state else ""
+        if "CONNECTING" in conn_str:
+            return {"status": "BAĞLANIYOR...", "bg": "#F1C40F", "fg": "#2C3E50", "detail": "Adaptör başlatılıyor ve ECU aranıyor..."}
+        if "FAILED" in conn_str or "ERROR" in conn_str:
+            return {"status": "BAĞLANTI HATASI", "bg": "#E74C3C", "fg": "#FFFFFF", "detail": "Adaptör veya seri port bağlantısı kurulamadı"}
         if not is_serial_open:
             return {"status": "BAĞLANTI YOK", "bg": "#E74C3C", "fg": "#FFFFFF", "detail": "Seri port kapalı veya kablo takılı değil"}
         if runtime_state == LIVE_ERROR:
@@ -267,6 +272,27 @@ class LiveTrendWidget(QWidget):
 # 2.5 ASYNCHRONOUS GUI BACKGROUND WORKERS (NON-BLOCKING SERIAL I/O)
 # =====================================================================
 
+class LiveConnectWorker(QThread):
+    """
+    Dedicated background worker for non-blocking serial/adapter initial connection.
+    Executes adapter initialization, baudrate detection, and handshake off the GUI thread.
+    """
+    connect_finished = pyqtSignal(bool, str)
+
+    def __init__(self, runtime: LiveAcquisitionRuntime, timeout: float = 5.0):
+        super().__init__()
+        self.runtime = runtime
+        self.timeout = timeout
+
+    def run(self):
+        try:
+            ok = self.runtime.connect(timeout=self.timeout)
+            msg = "Adaptör ve ECU bağlantısı başarıyla kuruldu." if ok else "Adaptör veya seri porta bağlanılamadı. Port ve kablo bağlantılarını kontrol edin."
+            self.connect_finished.emit(ok, msg)
+        except Exception as e:
+            self.connect_finished.emit(False, f"Bağlantı hatası: {e}")
+
+
 class LiveReconnectWorker(QThread):
     """
     Dedicated background worker for non-blocking serial reconnection.
@@ -329,6 +355,7 @@ class LiveDiagnosticWidget(QWidget):
         super().__init__(parent)
         self.runtime = runtime
         self._owns_runtime = False
+        self._connect_worker: Optional[LiveConnectWorker] = None
         self._reconnect_worker: Optional[LiveReconnectWorker] = None
         self._dtc_worker: Optional[LiveDTCPollWorker] = None
         
@@ -663,14 +690,22 @@ class LiveDiagnosticWidget(QWidget):
             # 1. Update Connection & Runtime State
             state = self.runtime.get_state()
             is_serial_alive = False
-            if hasattr(self.runtime.engine, "ser") and self.runtime.engine.ser is not None:
+            if hasattr(self.runtime, "is_connected"):
+                is_serial_alive = self.runtime.is_connected()
+            elif hasattr(self.runtime.engine, "ser") and self.runtime.engine.ser is not None:
                 is_serial_alive = getattr(self.runtime.engine.ser, "is_open", False)
+
+            conn_state = None
+            if hasattr(self.runtime, "connection_state"):
+                conn_state = self.runtime.connection_state
+            if self._connect_worker and self._connect_worker.isRunning():
+                conn_state = "CONNECTING"
 
             # Failure count from safety manager
             health = self.runtime.get_runtime_health()
             fail_count = health.get("failure_counts", {}).get("total", 0)
 
-            conn_info = LivePresentationModel.get_connection_info(state, is_serial_alive, fail_count)
+            conn_info = LivePresentationModel.get_connection_info(state, is_serial_alive, fail_count, connection_state=conn_state)
             self.badge_connection.setText(conn_info["status"])
             self.badge_connection.setStyleSheet(f"background-color: {conn_info['bg']}; color: {conn_info['fg']}; border-radius: 4px; padding: 4px;")
             self.badge_connection.setToolTip(conn_info["detail"])
@@ -691,8 +726,9 @@ class LiveDiagnosticWidget(QWidget):
                 self.badge_state.setStyleSheet("background-color: #95A5A6; color: #FFFFFF; border-radius: 4px;")
 
             # Button States strictly derived from backend state
+            is_connecting = bool(self._connect_worker and self._connect_worker.isRunning())
             is_reconnecting = bool(self._reconnect_worker and self._reconnect_worker.isRunning())
-            if is_reconnecting:
+            if is_connecting or is_reconnecting:
                 self.btn_start.setEnabled(False)
                 self.btn_stop.setEnabled(False)
                 self.btn_reconnect.setEnabled(False)
@@ -897,12 +933,44 @@ class LiveDiagnosticWidget(QWidget):
     # -----------------------------------------------------------------
 
     def on_start_clicked(self):
-        """Starts live acquisition via runtime."""
-        if self.runtime:
-            ok = self.runtime.start()
-            if not ok:
-                QMessageBox.warning(self, "Uyarı", "Canlı veri başlatılamadı. Seri bağlantıyı ve araç durumunu kontrol edin.")
-            self.update_ui_state()
+        """Starts live acquisition via runtime asynchronously without blocking GUI event loop."""
+        if not self.runtime:
+            return
+
+        # Prevent duplicate concurrent workers
+        if self._connect_worker and self._connect_worker.isRunning():
+            return
+        if self._reconnect_worker and self._reconnect_worker.isRunning():
+            return
+
+        # If not connected yet, initiate non-blocking background connection
+        if not self.runtime.is_connected():
+            self.badge_connection.setText("BAĞLANIYOR...")
+            self.badge_connection.setStyleSheet("background-color: #F1C40F; color: #2C3E50; border-radius: 4px; padding: 4px;")
+            self.btn_start.setEnabled(False)
+            self.btn_stop.setEnabled(False)
+            self.btn_reconnect.setEnabled(False)
+
+            self._connect_worker = LiveConnectWorker(self.runtime, timeout=5.0)
+            self._connect_worker.connect_finished.connect(self._on_connect_completed)
+            self._connect_worker.start()
+            return
+
+        # Already connected, start acquisition immediately
+        ok = self.runtime.start()
+        if not ok:
+            QMessageBox.warning(self, "Uyarı", "Canlı veri başlatılamadı. Seri bağlantıyı ve araç durumunu kontrol edin.")
+        self.update_ui_state()
+
+    def _on_connect_completed(self, ok: bool, msg: str):
+        """Slot invoked safely on Qt GUI thread when initial connection finishes."""
+        if ok:
+            start_ok = self.runtime.start()
+            if not start_ok:
+                QMessageBox.warning(self, "Uyarı", "Bağlantı kuruldu fakat canlı veri akışı başlatılamadı.")
+        else:
+            QMessageBox.critical(self, "Bağlantı Hatası", msg)
+        self.update_ui_state()
 
     def on_stop_clicked(self):
         """Stops live acquisition cleanly."""
@@ -913,6 +981,8 @@ class LiveDiagnosticWidget(QWidget):
     def on_reconnect_clicked(self):
         """Triggers safe bounded reconnect asynchronously without blocking GUI event loop."""
         if not self.runtime:
+            return
+        if self._connect_worker and self._connect_worker.isRunning():
             return
         if self._reconnect_worker and self._reconnect_worker.isRunning():
             return  # Prevent duplicate reconnect workers / reconnect storms
@@ -1003,6 +1073,13 @@ class LiveDiagnosticWidget(QWidget):
     def closeEvent(self, event):
         """Clean shutdown of timer and background workers without orphan threads."""
         self.update_timer.stop()
+        if self._connect_worker and self._connect_worker.isRunning():
+            if self.runtime and hasattr(self.runtime, "adapter") and self.runtime.adapter:
+                try:
+                    self.runtime.adapter.disconnect()
+                except Exception:
+                    pass
+            self._connect_worker.wait(1000)
         if self._reconnect_worker and self._reconnect_worker.isRunning():
             self._reconnect_worker.wait(1000)
         if self._dtc_worker and self._dtc_worker.isRunning():

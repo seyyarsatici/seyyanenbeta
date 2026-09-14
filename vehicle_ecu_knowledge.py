@@ -45,6 +45,7 @@ import hashlib
 import json
 import logging
 import math
+import struct
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -70,6 +71,8 @@ from extended_did import (
     ApplicabilityResult,
     DefinitionTrustLevel,
     IdentifierNamespace,
+    DataType,
+    ByteOrder,
 )
 from advanced_fault_analysis import (
     DataSourceType,
@@ -183,6 +186,24 @@ class DrivetrainType(str, enum.Enum):
     AWD = "AWD"
     FOUR_WD = "4WD"
     UNKNOWN = "UNKNOWN"
+
+
+class VehicleVerificationState(str, enum.Enum):
+    """Progressive vehicle identification verification state."""
+    UNKNOWN = "UNKNOWN"                          # No identifying information established
+    PARTIAL = "PARTIAL"                          # Passive CAN headers or partial fragments observed
+    IDENTIFIED = "IDENTIFIED"                    # Model selected by technician or VIN positively decoded
+    VERIFIED = "VERIFIED"                        # Hardware/calibration positively verified against physical ECU
+
+
+class ResolutionStatus(str, enum.Enum):
+    """Outcome of diagnostic identifier knowledge resolution."""
+    RESOLVED_EXACT_INSTANCE = "RESOLVED_EXACT_INSTANCE"  # Tier 1: Verified instance-specific definition
+    RESOLVED_VEHICLE_ECU = "RESOLVED_VEHICLE_ECU"        # Tier 2: Exact vehicle-model + ECU calibration definition
+    RESOLVED_VEHICLE_FAMILY = "RESOLVED_VEHICLE_FAMILY"  # Tier 3: Vehicle make/model + ECU family definition
+    RESOLVED_GENERIC_STANDARD = "RESOLVED_GENERIC_STANDARD" # Tier 4: Generic protocol standard (SAE J1979)
+    KNOWLEDGE_CONFLICT = "KNOWLEDGE_CONFLICT"            # Conflicting definitions at equal specificity
+    UNKNOWN_IDENTIFIER = "UNKNOWN_IDENTIFIER"            # Tier 5: No matching definition found
 
 
 # =====================================================================
@@ -498,6 +519,441 @@ class ProgressiveVehicleIdentity:
 
 
 # =====================================================================
+# 3b. VEHICLE MODEL & INSTANCE CONTEXT FOUNDATION (PHASE L-1)
+# =====================================================================
+
+@dataclass
+class VehicleModelDefinition:
+    """
+    Catalog definition of a vehicle model / platform.
+    Represents make, model, generation, platform, and standard factory equipment.
+    Does NOT represent an individual physical car (VehicleInstanceContext).
+    """
+    model_id: str                                # e.g. "VW_GOLF_V_16_FSI", "GM_AVEO_T250_14"
+    make: str                                    # e.g. "Volkswagen", "Chevrolet"
+    model: str                                   # e.g. "Golf", "Aveo"
+    generation: Optional[str] = None             # e.g. "V", "T250"
+    platform: Optional[str] = None               # e.g. "PQ35", "T200"
+    model_years: List[int] = field(default_factory=list)
+    market_region: Optional[str] = None          # e.g. "EUROPE", "GLOBAL"
+    engine_code: Optional[str] = None            # e.g. "BAG", "F14D3"
+    engine: Optional[EngineKnowledgeProfile] = None
+    transmission: Optional[TransmissionKnowledgeProfile] = None
+    expected_ecus: Dict[str, ECUKnowledgeProfile] = field(default_factory=dict)
+    provenance: KnowledgeProvenance = field(default_factory=lambda: KnowledgeProvenance(
+        source_type=KnowledgeProvenanceType.OEM_MANUAL,
+        source_reference="OEM Vehicle Catalog Specification",
+    ))
+    schema_version: int = 1
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "model_id": self.model_id,
+            "make": self.make,
+            "model": self.model,
+            "generation": self.generation,
+            "platform": self.platform,
+            "model_years": list(self.model_years),
+            "market_region": self.market_region,
+            "engine_code": self.engine_code,
+            "engine": self.engine.to_dict() if self.engine else None,
+            "transmission": self.transmission.to_dict() if self.transmission else None,
+            "expected_ecus": {k: v.to_dict() for k, v in self.expected_ecus.items()},
+            "provenance": self.provenance.to_dict() if hasattr(self.provenance, "to_dict") else {},
+            "schema_version": self.schema_version,
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "VehicleModelDefinition":
+        eng_data = data.get("engine")
+        trans_data = data.get("transmission")
+        ecus_dict = {}
+        for k, v in data.get("expected_ecus", {}).items():
+            ecus_dict[k] = ECUKnowledgeProfile.from_dict(v)
+        prov_data = data.get("provenance", {})
+        raw_ver = data.get("schema_version", 1)
+        schema_ver = int(raw_ver) if str(raw_ver).isdigit() else 1
+
+        return cls(
+            model_id=data["model_id"],
+            make=data.get("make", ""),
+            model=data.get("model", ""),
+            generation=data.get("generation"),
+            platform=data.get("platform"),
+            model_years=list(data.get("model_years", [])),
+            market_region=data.get("market_region"),
+            engine_code=data.get("engine_code"),
+            engine=EngineKnowledgeProfile.from_dict(eng_data) if eng_data else None,
+            transmission=TransmissionKnowledgeProfile.from_dict(trans_data) if trans_data else None,
+            expected_ecus=ecus_dict,
+            provenance=KnowledgeProvenance.from_dict(prov_data) if prov_data else KnowledgeProvenance(source_type=KnowledgeProvenanceType.OEM_MANUAL),
+            schema_version=schema_ver,
+            metadata=dict(data.get("metadata", {})),
+        )
+
+
+@dataclass
+class VehicleInstanceContext:
+    """
+    Authoritative representation of a specific, physical vehicle connected to Seyyanen.
+    Carries VIN, observed physical ECUs, calibration readings, and session history.
+    Strictly isolated from generic vehicle catalog models (VehicleModelDefinition).
+    """
+    instance_id: str                             # Unique instance UUID/identifier
+    vin: Optional[str] = None                    # 17-character VIN where available
+    model_definition_id: Optional[str] = None    # Reference to catalog VehicleModelDefinition if matched
+    verification_state: VehicleVerificationState = VehicleVerificationState.UNKNOWN
+    observed_ecus: Dict[str, ECUKnowledgeProfile] = field(default_factory=dict)
+    technician_confirmations: Dict[str, Any] = field(default_factory=dict)
+    associated_sessions: List[str] = field(default_factory=list)
+    identity_sources: Dict[str, IdentitySource] = field(default_factory=dict)
+    confidence_levels: Dict[str, IdentityConfidenceLevel] = field(default_factory=dict)
+    created_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
+    schema_version: int = 1
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def update_evidence(
+        self,
+        evidence_type: str,
+        value: Any,
+        source: IdentitySource,
+        confidence: IdentityConfidenceLevel,
+    ) -> VehicleVerificationState:
+        """
+        Incorporates identification evidence and deterministically advances verification state.
+        Never fabricates complete identity from partial or unverified observations.
+        """
+        self.metadata[evidence_type] = value
+        self.identity_sources[evidence_type] = source
+        self.confidence_levels[evidence_type] = confidence
+        self.updated_at = time.time()
+
+        if evidence_type == "vin" and value:
+            self.vin = str(value).strip().upper()
+
+        if evidence_type == "model_definition_id" and value:
+            self.model_definition_id = str(value).strip()
+
+        # Deterministic state progression
+        has_vin = bool(self.vin and len(self.vin) >= 11)
+        has_model = bool(self.model_definition_id)
+        is_tech_confirmed = any(
+            c == IdentityConfidenceLevel.CONFIRMED or s == IdentitySource.MANUAL_USER_INPUT
+            for c, s in zip(self.confidence_levels.values(), self.identity_sources.values())
+        )
+        has_ecu_verified = any(
+            c == IdentityConfidenceLevel.CONFIRMED for c in self.confidence_levels.values()
+        )
+
+        if (has_vin and has_ecu_verified) or is_tech_confirmed:
+            self.verification_state = VehicleVerificationState.VERIFIED
+        elif has_vin or has_model:
+            self.verification_state = VehicleVerificationState.IDENTIFIED
+        elif self.metadata:
+            self.verification_state = VehicleVerificationState.PARTIAL
+        else:
+            self.verification_state = VehicleVerificationState.UNKNOWN
+
+        return self.verification_state
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "instance_id": self.instance_id,
+            "vin": self.vin,
+            "model_definition_id": self.model_definition_id,
+            "verification_state": self.verification_state.value,
+            "observed_ecus": {k: v.to_dict() for k, v in self.observed_ecus.items()},
+            "technician_confirmations": dict(self.technician_confirmations),
+            "associated_sessions": list(self.associated_sessions),
+            "identity_sources": {k: v.value for k, v in self.identity_sources.items()},
+            "confidence_levels": {k: v.value for k, v in self.confidence_levels.items()},
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "schema_version": self.schema_version,
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "VehicleInstanceContext":
+        ecus_dict = {}
+        for k, v in data.get("observed_ecus", {}).items():
+            ecus_dict[k] = ECUKnowledgeProfile.from_dict(v)
+        raw_ver = data.get("schema_version", 1)
+        schema_ver = int(raw_ver) if str(raw_ver).isdigit() else 1
+
+        return cls(
+            instance_id=data["instance_id"],
+            vin=data.get("vin"),
+            model_definition_id=data.get("model_definition_id"),
+            verification_state=VehicleVerificationState(data.get("verification_state", "UNKNOWN")),
+            observed_ecus=ecus_dict,
+            technician_confirmations=dict(data.get("technician_confirmations", {})),
+            associated_sessions=list(data.get("associated_sessions", [])),
+            identity_sources={k: IdentitySource(v) for k, v in data.get("identity_sources", {}).items()},
+            confidence_levels={k: IdentityConfidenceLevel(v) for k, v in data.get("confidence_levels", {}).items()},
+            created_at=data.get("created_at", time.time()),
+            updated_at=data.get("updated_at", time.time()),
+            schema_version=schema_ver,
+            metadata=dict(data.get("metadata", {})),
+        )
+
+
+@dataclass
+class DiagnosticIdentifierKnowledge:
+    """
+    Authoritative knowledge definition for a diagnostic parameter, DID, PID, or signal.
+    Captures exact physical scaling, unit, data type, bit layout, and context applicability.
+    Guarantees single-pass deterministic decoding without double-scaling.
+    """
+    identifier: str                              # e.g. "010C", "010D", "221155"
+    service_id: str = "01"                       # e.g. "01", "22", "21"
+    name: str = ""                               # e.g. "Engine Speed", "Engine Coolant Temperature"
+    description: str = ""
+    data_type: DataType = DataType.UINT16
+    unit: str = ""
+    scaling: float = 1.0
+    offset: float = 0.0
+    byte_order: ByteOrder = ByteOrder.BIG_ENDIAN
+    bit_length: Optional[int] = None
+    bit_mask: Optional[int] = None
+    min_value: Optional[float] = None
+    max_value: Optional[float] = None
+    target_ecu: str = "GENERIC"                  # Scope: "GENERIC", "ECM", "TCM", "ABS", etc.
+    applicability: VehicleApplicability = field(default_factory=VehicleApplicability)
+    provenance: KnowledgeProvenance = field(default_factory=lambda: KnowledgeProvenance(
+        source_type=KnowledgeProvenanceType.VALIDATED_PROCEDURE,
+        source_reference="SAE J1979",
+    ))
+    trust_level: DefinitionTrustLevel = DefinitionTrustLevel.STANDARD
+    schema_version: int = 1
+    instance_id: Optional[str] = None            # Set only if definition is bound to a specific vehicle instance!
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def canonical_key(self) -> str:
+        """Returns ECU-aware canonical key e.g. 'ECM:010C'."""
+        return f"{self.target_ecu.upper()}:{self.identifier.upper()}"
+
+    def decode_physical_value(self, raw_bytes: Union[bytes, bytearray, List[int]]) -> Optional[float]:
+        """
+        Deterministically decodes raw payload bytes into physical engineering value
+        applying byte order, sign, scaling, and offset in a single pass.
+        Never applies scaling twice. Returns None if bytes are invalid or insufficient.
+        """
+        if raw_bytes is None:
+            return None
+        if isinstance(raw_bytes, (list, bytearray)):
+            raw_bytes = bytes(raw_bytes)
+        if not isinstance(raw_bytes, bytes) or len(raw_bytes) == 0:
+            return None
+
+        fmt_prefix = ">" if self.byte_order == ByteOrder.BIG_ENDIAN else "<"
+        unscaled = 0.0
+
+        try:
+            if self.data_type == DataType.UINT8:
+                if len(raw_bytes) < 1:
+                    return None
+                unscaled = float(raw_bytes[0])
+            elif self.data_type == DataType.INT8:
+                if len(raw_bytes) < 1:
+                    return None
+                unscaled = float(struct.unpack(">b", raw_bytes[:1])[0])
+            elif self.data_type == DataType.UINT16:
+                if len(raw_bytes) < 2:
+                    return None
+                unscaled = float(struct.unpack(f"{fmt_prefix}H", raw_bytes[:2])[0])
+            elif self.data_type == DataType.INT16:
+                if len(raw_bytes) < 2:
+                    return None
+                unscaled = float(struct.unpack(f"{fmt_prefix}h", raw_bytes[:2])[0])
+            elif self.data_type == DataType.UINT24:
+                if len(raw_bytes) < 3:
+                    return None
+                if self.byte_order == ByteOrder.BIG_ENDIAN:
+                    raw_int = (raw_bytes[0] << 16) | (raw_bytes[1] << 8) | raw_bytes[2]
+                else:
+                    raw_int = raw_bytes[0] | (raw_bytes[1] << 8) | (raw_bytes[2] << 16)
+                unscaled = float(raw_int)
+            elif self.data_type == DataType.UINT32:
+                if len(raw_bytes) < 4:
+                    return None
+                unscaled = float(struct.unpack(f"{fmt_prefix}I", raw_bytes[:4])[0])
+            elif self.data_type == DataType.INT32:
+                if len(raw_bytes) < 4:
+                    return None
+                unscaled = float(struct.unpack(f"{fmt_prefix}i", raw_bytes[:4])[0])
+            elif self.data_type == DataType.FLOAT32:
+                if len(raw_bytes) < 4:
+                    return None
+                unscaled = float(struct.unpack(f"{fmt_prefix}f", raw_bytes[:4])[0])
+            elif self.data_type == DataType.BOOLEAN:
+                if len(raw_bytes) < 1:
+                    return None
+                unscaled = 1.0 if raw_bytes[0] != 0 else 0.0
+            elif self.data_type in (DataType.BITFIELD, DataType.ENUMERATION):
+                if len(raw_bytes) < 1:
+                    return None
+                unscaled = float(raw_bytes[0])
+            else:
+                unscaled = float(raw_bytes[0])
+
+            # Apply bitmask if defined
+            if self.bit_mask is not None:
+                unscaled = float(int(unscaled) & int(self.bit_mask))
+
+            # Single-pass deterministic scaling
+            physical_value = unscaled * self.scaling + self.offset
+            return physical_value
+        except Exception as e:
+            logger.debug(f"Exception during physical value decoding for {self.identifier}: {e}")
+            return None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "identifier": self.identifier,
+            "service_id": self.service_id,
+            "name": self.name,
+            "description": self.description,
+            "data_type": self.data_type.value,
+            "unit": self.unit,
+            "scaling": self.scaling,
+            "offset": self.offset,
+            "byte_order": self.byte_order.value,
+            "bit_length": self.bit_length,
+            "bit_mask": self.bit_mask,
+            "min_value": self.min_value,
+            "max_value": self.max_value,
+            "target_ecu": self.target_ecu,
+            "applicability": {
+                "manufacturers": self.applicability.manufacturers,
+                "models": self.applicability.models,
+                "model_years": self.applicability.model_years,
+                "engine_codes": self.applicability.engine_codes,
+                "transmission_types": self.applicability.transmission_types,
+                "ecu_families": self.applicability.ecu_families,
+                "software_versions": self.applicability.software_versions,
+            },
+            "provenance": self.provenance.to_dict() if hasattr(self.provenance, "to_dict") else {},
+            "trust_level": self.trust_level.value,
+            "schema_version": self.schema_version,
+            "instance_id": self.instance_id,
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "DiagnosticIdentifierKnowledge":
+        app_data = data.get("applicability", {})
+        prov_data = data.get("provenance", {})
+        return cls(
+            identifier=data["identifier"],
+            service_id=data.get("service_id", "01"),
+            name=data.get("name", ""),
+            description=data.get("description", ""),
+            data_type=DataType(data.get("data_type", "UINT16")),
+            unit=data.get("unit", ""),
+            scaling=float(data.get("scaling", 1.0)),
+            offset=float(data.get("offset", 0.0)),
+            byte_order=ByteOrder(data.get("byte_order", "BIG_ENDIAN")),
+            bit_length=data.get("bit_length"),
+            bit_mask=data.get("bit_mask"),
+            min_value=data.get("min_value"),
+            max_value=data.get("max_value"),
+            target_ecu=data.get("target_ecu", "GENERIC"),
+            applicability=VehicleApplicability(
+                manufacturers=app_data.get("manufacturers"),
+                models=app_data.get("models"),
+                model_years=app_data.get("model_years"),
+                engine_codes=app_data.get("engine_codes"),
+                transmission_types=app_data.get("transmission_types"),
+                ecu_families=app_data.get("ecu_families"),
+                software_versions=app_data.get("software_versions"),
+            ),
+            provenance=KnowledgeProvenance.from_dict(prov_data) if prov_data else KnowledgeProvenance(source_type=KnowledgeProvenanceType.VALIDATED_PROCEDURE),
+            trust_level=DefinitionTrustLevel(data.get("trust_level", "STANDARD")),
+            schema_version=int(data.get("schema_version", 1)) if str(data.get("schema_version", "1")).isdigit() else 1,
+            instance_id=data.get("instance_id"),
+            metadata=dict(data.get("metadata", {})),
+        )
+
+
+# Backward-compatible alias
+DiagnosticIdentifierDefinition = DiagnosticIdentifierKnowledge
+
+
+@dataclass
+class KnowledgeConflictRecord:
+    """
+    Explicit record of contradictory knowledge definitions from multiple sources.
+    Retains all conflicting definitions with full provenance without arbitrarily picking a winner.
+    """
+    conflict_id: str
+    identifier: str
+    target_ecu: str
+    definitions: List[DiagnosticIdentifierKnowledge]
+    conflicting_fields: List[str]
+    detected_at: float = field(default_factory=time.time)
+    status: str = "KNOWLEDGE_CONFLICT"
+    resolution_notes: str = "Conflict explicitly preserved; no arbitrary winner chosen."
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "conflict_id": self.conflict_id,
+            "identifier": self.identifier,
+            "target_ecu": self.target_ecu,
+            "definitions": [d.to_dict() for d in self.definitions],
+            "conflicting_fields": list(self.conflicting_fields),
+            "detected_at": self.detected_at,
+            "status": self.status,
+            "resolution_notes": self.resolution_notes,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "KnowledgeConflictRecord":
+        return cls(
+            conflict_id=data["conflict_id"],
+            identifier=data["identifier"],
+            target_ecu=data.get("target_ecu", "GENERIC"),
+            definitions=[DiagnosticIdentifierKnowledge.from_dict(d) for d in data.get("definitions", [])],
+            conflicting_fields=data.get("conflicting_fields", []),
+            detected_at=data.get("detected_at", time.time()),
+            status=data.get("status", "KNOWLEDGE_CONFLICT"),
+            resolution_notes=data.get("resolution_notes", ""),
+        )
+
+
+@dataclass
+class ResolutionResult:
+    """Deterministic result of diagnostic identifier knowledge resolution."""
+    definition: Optional[DiagnosticIdentifierKnowledge] = None
+    status: ResolutionStatus = ResolutionStatus.UNKNOWN_IDENTIFIER
+    conflict_record: Optional[KnowledgeConflictRecord] = None
+    specificity_score: float = 0.0
+    explanation: str = ""
+
+    @property
+    def is_resolved(self) -> bool:
+        return self.definition is not None and self.status in (
+            ResolutionStatus.RESOLVED_EXACT_INSTANCE,
+            ResolutionStatus.RESOLVED_VEHICLE_ECU,
+            ResolutionStatus.RESOLVED_VEHICLE_FAMILY,
+            ResolutionStatus.RESOLVED_GENERIC_STANDARD,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "status": self.status.value,
+            "definition": self.definition.to_dict() if self.definition else None,
+            "conflict_record": self.conflict_record.to_dict() if self.conflict_record else None,
+            "specificity_score": round(self.specificity_score, 2),
+            "explanation": self.explanation,
+        }
+
+
+# =====================================================================
 # 4. CONTEXTUAL DIAGNOSTIC SPECIFICATIONS
 # =====================================================================
 
@@ -674,6 +1130,13 @@ class VehicleECUKnowledgeStore:
         # Multi-key indexes
         self._dtc_index: Dict[str, List[ContextualDTCInterpretation]] = collections.defaultdict(list)
         self._signal_index: Dict[str, List[ContextualSignalInterpretation]] = collections.defaultdict(list)
+        # Vehicle Models & Instances (Phase L-1)
+        self._vehicle_models: Dict[str, VehicleModelDefinition] = {}
+        self._vehicle_instances: Dict[str, VehicleInstanceContext] = {}
+        # Diagnostic Identifier Knowledge (Phase L-1)
+        self._identifier_definitions: List[DiagnosticIdentifierKnowledge] = []
+        self._identifier_index: Dict[str, List[DiagnosticIdentifierKnowledge]] = collections.defaultdict(list)
+        self._conflicts: List[KnowledgeConflictRecord] = []
 
     # -----------------------------------------------------------------
     # A. Profile Registration
@@ -705,6 +1168,258 @@ class VehicleECUKnowledgeStore:
 
     def register_override(self, override: ContextualOverride) -> None:
         self._overrides.append(override)
+
+    # -----------------------------------------------------------------
+    # A2. Vehicle Model, Instance & Identifier Knowledge Registration (Phase L-1)
+    # -----------------------------------------------------------------
+
+    def register_vehicle_model(self, model: VehicleModelDefinition) -> None:
+        """Registers a catalog vehicle model definition."""
+        self._vehicle_models[model.model_id.strip().upper()] = model
+
+    def get_vehicle_model(self, model_id: str) -> Optional[VehicleModelDefinition]:
+        """Retrieves a catalog vehicle model definition by model_id."""
+        return self._vehicle_models.get(model_id.strip().upper())
+
+    def list_vehicle_models(self) -> List[VehicleModelDefinition]:
+        """Returns all registered vehicle model definitions."""
+        return list(self._vehicle_models.values())
+
+    def register_vehicle_instance(self, instance: VehicleInstanceContext) -> None:
+        """Registers a physical vehicle instance context."""
+        self._vehicle_instances[instance.instance_id.strip()] = instance
+
+    def get_vehicle_instance(self, instance_id: str) -> Optional[VehicleInstanceContext]:
+        """Retrieves a physical vehicle instance by instance_id."""
+        return self._vehicle_instances.get(instance_id.strip())
+
+    def list_vehicle_instances(self) -> List[VehicleInstanceContext]:
+        """Returns all registered vehicle instances."""
+        return list(self._vehicle_instances.values())
+
+    def register_identifier_definition(self, definition: DiagnosticIdentifierKnowledge) -> None:
+        """Registers a diagnostic identifier knowledge definition."""
+        self._identifier_definitions.append(definition)
+        self._identifier_index[definition.identifier.strip().upper()].append(definition)
+
+    def get_identifier_definitions(
+        self,
+        identifier: str,
+        target_ecu: Optional[str] = None,
+    ) -> List[DiagnosticIdentifierKnowledge]:
+        """Returns all definitions matching identifier, optionally filtered by target_ecu."""
+        ident = identifier.strip().upper()
+        candidates = self._identifier_index.get(ident, [])
+        if target_ecu:
+            ecu = target_ecu.strip().upper()
+            return [c for c in candidates if c.target_ecu.upper() in ("GENERIC", ecu)]
+        return list(candidates)
+
+    def get_conflicts(self) -> List[KnowledgeConflictRecord]:
+        """Returns all recorded knowledge conflict records."""
+        return list(self._conflicts)
+
+    def get_operating_reference_engine(self) -> Any:
+        """Returns or lazily creates the Phase L-2 DynamicOperatingReferenceEngine."""
+        if not hasattr(self, "_operating_reference_engine") or self._operating_reference_engine is None:
+            from dynamic_operating_reference import DynamicOperatingReferenceEngine
+            self._operating_reference_engine = DynamicOperatingReferenceEngine(knowledge_store=self)
+        return self._operating_reference_engine
+
+    def resolve_identifier(
+        self,
+        identifier: str,
+        target_ecu: str = "GENERIC",
+        vehicle_instance: Optional[VehicleInstanceContext] = None,
+        vehicle_context: Optional[VehicleContext] = None,
+        service_id: Optional[str] = None,
+    ) -> ResolutionResult:
+        """
+        Deterministically resolves the most specific applicable DiagnosticIdentifierKnowledge
+        following the authoritative 5-tier precedence hierarchy:
+          Tier 1: Exact vehicle-instance definition (bound to vehicle_instance.instance_id)
+          Tier 2: Exact vehicle-model + specific ECU calibration/software
+          Tier 3: Vehicle make/model + ECU-family definition
+          Tier 4: Generic protocol/standard definition (SAE J1979 / universal)
+          Tier 5: Unknown definition
+        
+        If multiple definitions conflict at the highest applicable tier, explicitly returns
+        ResolutionStatus.KNOWLEDGE_CONFLICT with a KnowledgeConflictRecord, preserving all
+        conflicting definitions and provenance without arbitrarily fabricating a winner.
+        """
+        clean_ident = identifier.strip().upper()
+        clean_ecu = target_ecu.strip().upper() if target_ecu else "GENERIC"
+        clean_srv = service_id.strip() if service_id else None
+
+        # Build effective vehicle context if instance is provided but context is not
+        effective_ctx = vehicle_context
+        if effective_ctx is None and vehicle_instance is not None and vehicle_instance.model_definition_id:
+            model_def = self.get_vehicle_model(vehicle_instance.model_definition_id)
+            if model_def:
+                effective_ctx = VehicleContext(
+                    manufacturer=model_def.make,
+                    model=model_def.model,
+                    model_year=model_def.model_years[0] if model_def.model_years else None,
+                    engine_code=model_def.engine_code,
+                    vin=vehicle_instance.vin,
+                )
+
+        all_candidates = self._identifier_index.get(clean_ident, [])
+        if clean_srv:
+            all_candidates = [c for c in all_candidates if c.service_id == clean_srv]
+
+        tier_1: List[DiagnosticIdentifierKnowledge] = []
+        tier_2: List[DiagnosticIdentifierKnowledge] = []
+        tier_3: List[DiagnosticIdentifierKnowledge] = []
+        tier_4: List[DiagnosticIdentifierKnowledge] = []
+
+        for cand in all_candidates:
+            # ECU scope check: candidate must match target_ecu or be GENERIC
+            cand_ecu = cand.target_ecu.strip().upper()
+            if cand_ecu != "GENERIC" and cand_ecu != clean_ecu:
+                continue
+
+            # Tier 1: Instance-specific definition
+            if cand.instance_id is not None:
+                if (
+                    vehicle_instance is not None
+                    and cand.instance_id == vehicle_instance.instance_id
+                ):
+                    tier_1.append(cand)
+                # Instance-bound definition never leaks to other instances or generic tiers
+                continue
+
+            # Evaluate applicability against vehicle context
+            app_res = cand.applicability.evaluate(effective_ctx)
+            if app_res == ApplicabilityResult.NOT_APPLICABLE:
+                continue
+
+            # Check Tier 2 vs Tier 3 vs Tier 4:
+            # Tier 2 requires ECU software/calibration match or specific engine code match
+            is_tier_2 = False
+            if effective_ctx:
+                if cand.applicability.software_versions and effective_ctx.software_id:
+                    if effective_ctx.software_id.upper() in [s.upper() for s in cand.applicability.software_versions]:
+                        is_tier_2 = True
+                if cand.applicability.engine_codes and effective_ctx.engine_code:
+                    if effective_ctx.engine_code.upper() in [e.upper() for e in cand.applicability.engine_codes]:
+                        is_tier_2 = True
+                if cand.applicability.ecu_families and effective_ctx.ecu_family:
+                    if effective_ctx.ecu_family.upper() in [f.upper() for f in cand.applicability.ecu_families]:
+                        is_tier_2 = True
+
+            if is_tier_2:
+                tier_2.append(cand)
+            elif (
+                cand.applicability.software_versions
+                or cand.applicability.engine_codes
+                or cand.applicability.ecu_families
+            ):
+                # Candidate requires specific software/engine/ECU attributes not matched by context;
+                # cannot match as general make/model definition
+                pass
+            elif not cand.applicability._is_universal():
+                # Specific vehicle/model/manufacturer applicability (Tier 3)
+                if app_res in (ApplicabilityResult.CONFIRMED_APPLICABLE, ApplicabilityResult.LIKELY_APPLICABLE):
+                    tier_3.append(cand)
+            else:
+                # Universal / Generic (Tier 4)
+                tier_4.append(cand)
+
+        # In Tier 3, prefer CONFIRMED_APPLICABLE over LIKELY_APPLICABLE
+        if tier_3:
+            confirmed_3 = [
+                c for c in tier_3
+                if c.applicability.evaluate(effective_ctx) == ApplicabilityResult.CONFIRMED_APPLICABLE
+            ]
+            if confirmed_3:
+                tier_3 = confirmed_3
+
+        # In Tier 4, if there are exact target_ecu matches and GENERIC fallbacks, prefer exact target_ecu
+        if tier_4:
+            exact_ecu_cands = [c for c in tier_4 if c.target_ecu.strip().upper() == clean_ecu]
+            if exact_ecu_cands:
+                tier_4 = exact_ecu_cands
+
+        # Select highest applicable tier
+        tier_candidates: List[DiagnosticIdentifierKnowledge] = []
+        status: ResolutionStatus = ResolutionStatus.UNKNOWN_IDENTIFIER
+        base_score = 0.0
+
+        if tier_1:
+            tier_candidates = tier_1
+            status = ResolutionStatus.RESOLVED_EXACT_INSTANCE
+            base_score = 100.0
+        elif tier_2:
+            tier_candidates = tier_2
+            status = ResolutionStatus.RESOLVED_VEHICLE_ECU
+            base_score = 50.0
+        elif tier_3:
+            tier_candidates = tier_3
+            status = ResolutionStatus.RESOLVED_VEHICLE_FAMILY
+            base_score = 25.0
+        elif tier_4:
+            tier_candidates = tier_4
+            status = ResolutionStatus.RESOLVED_GENERIC_STANDARD
+            base_score = 10.0
+        else:
+            return ResolutionResult(
+                definition=None,
+                status=ResolutionStatus.UNKNOWN_IDENTIFIER,
+                specificity_score=0.0,
+                explanation=f"Identifier {clean_ident} on ECU {clean_ecu} is not defined in knowledge base",
+            )
+
+        # Check for conflicts within the winning tier
+        if len(tier_candidates) == 1:
+            winner = tier_candidates[0]
+            return ResolutionResult(
+                definition=winner,
+                status=status,
+                specificity_score=base_score,
+                explanation=f"Resolved via {status.value} (target_ecu={winner.target_ecu})",
+            )
+
+        # Multiple candidates in winning tier: verify semantic harmony
+        c0 = tier_candidates[0]
+        conflicts: List[str] = []
+        for ci in tier_candidates[1:]:
+            if abs(ci.scaling - c0.scaling) > 1e-6:
+                conflicts.append("scaling")
+            if abs(ci.offset - c0.offset) > 1e-6:
+                conflicts.append("offset")
+            if ci.unit.strip().upper() != c0.unit.strip().upper():
+                conflicts.append("unit")
+            if ci.data_type != c0.data_type:
+                conflicts.append("data_type")
+            if ci.name.strip().upper() != c0.name.strip().upper():
+                conflicts.append("name")
+
+        if conflicts:
+            conflict_rec = KnowledgeConflictRecord(
+                conflict_id=f"conf_{uuid.uuid4().hex[:8]}",
+                identifier=clean_ident,
+                target_ecu=clean_ecu,
+                definitions=tier_candidates,
+                conflicting_fields=sorted(list(set(conflicts))),
+                status="KNOWLEDGE_CONFLICT",
+            )
+            self._conflicts.append(conflict_rec)
+            return ResolutionResult(
+                definition=None,
+                status=ResolutionStatus.KNOWLEDGE_CONFLICT,
+                conflict_record=conflict_rec,
+                specificity_score=base_score,
+                explanation=f"Conflicting definitions in {status.value} tier on fields: {', '.join(sorted(list(set(conflicts))))}",
+            )
+
+        # Harmonious candidates in tier: return first deterministic candidate
+        return ResolutionResult(
+            definition=c0,
+            status=status,
+            specificity_score=base_score,
+            explanation=f"Multiple harmonious definitions resolved in {status.value}",
+        )
 
     # -----------------------------------------------------------------
     # B. Contextual Query & Specificity Resolution
@@ -859,6 +1574,10 @@ class VehicleECUKnowledgeStore:
             "dtc_interpretations": [di.to_dict() for di in self._dtc_interpretations],
             "signal_interpretations": [si.to_dict() for si in self._signal_interpretations],
             "overrides": [ov.to_dict() for ov in self._overrides],
+            "vehicle_models": {k: v.to_dict() for k, v in self._vehicle_models.items()},
+            "vehicle_instances": {k: v.to_dict() for k, v in self._vehicle_instances.items()},
+            "identifier_definitions": [d.to_dict() for d in self._identifier_definitions],
+            "conflicts": [c.to_dict() for c in self._conflicts],
             "base_store": self.base_store.to_dict(),
         }
 
@@ -885,6 +1604,18 @@ class VehicleECUKnowledgeStore:
 
         for ov_data in data.get("overrides", []):
             store.register_override(ContextualOverride.from_dict(ov_data))
+
+        for mod_data in data.get("vehicle_models", {}).values():
+            store.register_vehicle_model(VehicleModelDefinition.from_dict(mod_data))
+
+        for inst_data in data.get("vehicle_instances", {}).values():
+            store.register_vehicle_instance(VehicleInstanceContext.from_dict(inst_data))
+
+        for def_data in data.get("identifier_definitions", []):
+            store.register_identifier_definition(DiagnosticIdentifierKnowledge.from_dict(def_data))
+
+        for conf_data in data.get("conflicts", []):
+            store._conflicts.append(KnowledgeConflictRecord.from_dict(conf_data))
 
         return store
 

@@ -57,6 +57,11 @@ from vehicle_diagnostic_graph import DiagnosticGraph, GraphNode, GraphEdge, Grap
 from diagnostic_workflow_engine import DiagnosticWorkflow, WorkflowState, WorkflowStage
 from historical_case_analysis import HistoricalDiagnosticCase
 from advanced_reasoning_layer import DiagnosticReasoningSession
+from vehicle_ecu_knowledge import (
+    VehicleModelDefinition,
+    VehicleInstanceContext,
+    DiagnosticIdentifierKnowledge,
+)
 
 logger = logging.getLogger("seyyanen.persistence")
 
@@ -887,6 +892,9 @@ class DiagnosticRepository:
     COLLECTION_APPLICATION_SESSIONS = "application_sessions"
     COLLECTION_SESSION_AUDIT_EVENTS = "session_audit_events"
     COLLECTION_SECURITY_AUDIT_EVENTS = "security_audit_events"
+    COLLECTION_VEHICLE_INSTANCES = "vehicle_instances"
+    COLLECTION_VEHICLE_MODELS = "vehicle_models"
+    COLLECTION_IDENTIFIER_DEFINITIONS = "identifier_definitions"
 
     def __init__(self, backend: Optional[IPersistenceBackend] = None):
         self._backend = backend or SQLitePersistenceBackend()
@@ -1389,6 +1397,106 @@ class DiagnosticRepository:
         if event_type:
             records = [r for r in records if r.get("event_type") == event_type]
         return records[offset:offset + limit]
+
+    # -----------------------------------------------------------------
+    # L. Vehicle & ECU Knowledge Persistence (Phase L-1)
+    # -----------------------------------------------------------------
+
+    def save_vehicle_instance(self, instance: VehicleInstanceContext) -> str:
+        """Persists a physical VehicleInstanceContext."""
+        if not instance.instance_id:
+            raise PersistenceError("Vehicle instance must have a valid instance_id.")
+        data = instance.to_dict()
+        self._backend.save_record(
+            collection=self.COLLECTION_VEHICLE_INSTANCES,
+            record_id=instance.instance_id,
+            data=data,
+            vehicle_id=instance.vin or instance.instance_id,
+        )
+        return instance.instance_id
+
+    def get_vehicle_instance(self, instance_id: str) -> Optional[VehicleInstanceContext]:
+        """Loads and safely reconstructs a VehicleInstanceContext."""
+        data = self._backend.get_record(self.COLLECTION_VEHICLE_INSTANCES, instance_id)
+        if not data:
+            return None
+        return VehicleInstanceContext.from_dict(data)
+
+    def list_vehicle_instances(self, limit: int = 50, offset: int = 0) -> List[VehicleInstanceContext]:
+        """Queries physical vehicle instances."""
+        raw_list = self._backend.list_records(
+            self.COLLECTION_VEHICLE_INSTANCES,
+            limit=limit,
+            offset=offset,
+        )
+        return [VehicleInstanceContext.from_dict(d) for d in raw_list]
+
+    def save_vehicle_model(self, model: VehicleModelDefinition) -> str:
+        """Persists a catalog VehicleModelDefinition."""
+        if not model.model_id:
+            raise PersistenceError("Vehicle model must have a valid model_id.")
+        data = model.to_dict()
+        self._backend.save_record(
+            collection=self.COLLECTION_VEHICLE_MODELS,
+            record_id=model.model_id,
+            data=data,
+        )
+        return model.model_id
+
+    def get_vehicle_model(self, model_id: str) -> Optional[VehicleModelDefinition]:
+        """Loads and safely reconstructs a catalog VehicleModelDefinition."""
+        data = self._backend.get_record(self.COLLECTION_VEHICLE_MODELS, model_id)
+        if not data:
+            return None
+        return VehicleModelDefinition.from_dict(data)
+
+    def list_vehicle_models(self, limit: int = 50, offset: int = 0) -> List[VehicleModelDefinition]:
+        """Queries catalog vehicle model definitions."""
+        raw_list = self._backend.list_records(
+            self.COLLECTION_VEHICLE_MODELS,
+            limit=limit,
+            offset=offset,
+        )
+        return [VehicleModelDefinition.from_dict(d) for d in raw_list]
+
+    def save_identifier_definition(self, definition: DiagnosticIdentifierKnowledge) -> str:
+        """Persists a DiagnosticIdentifierKnowledge definition."""
+        record_id = f"{definition.target_ecu}:{definition.service_id}:{definition.identifier}"
+        data = definition.to_dict()
+        self._backend.save_record(
+            collection=self.COLLECTION_IDENTIFIER_DEFINITIONS,
+            record_id=record_id,
+            data=data,
+        )
+        return record_id
+
+    def get_identifier_definition(self, record_id: str) -> Optional[DiagnosticIdentifierKnowledge]:
+        """Loads and safely reconstructs a DiagnosticIdentifierKnowledge definition."""
+        data = self._backend.get_record(self.COLLECTION_IDENTIFIER_DEFINITIONS, record_id)
+        if not data:
+            return None
+        return DiagnosticIdentifierKnowledge.from_dict(data)
+
+    def list_identifier_definitions(
+        self,
+        target_ecu: Optional[str] = None,
+        service_id: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[DiagnosticIdentifierKnowledge]:
+        """Queries diagnostic identifier definitions."""
+        raw_list = self._backend.list_records(
+            self.COLLECTION_IDENTIFIER_DEFINITIONS,
+            limit=limit,
+            offset=offset,
+        )
+        defs = [DiagnosticIdentifierKnowledge.from_dict(d) for d in raw_list]
+        if target_ecu:
+            ecu = target_ecu.strip().upper()
+            defs = [d for d in defs if d.target_ecu.upper() in ("GENERIC", ecu)]
+        if service_id:
+            defs = [d for d in defs if d.service_id == service_id]
+        return defs
 
 
 # =====================================================================
