@@ -5,6 +5,7 @@ Continuous, drift-controlled, thread-safe, and cancellable live acquisition laye
 Integrates with existing AutoExpertEngine and SerialIOThread priority queue.
 """
 
+import math
 import time
 import threading
 import logging
@@ -314,20 +315,38 @@ class LiveAcquisitionRuntime:
         """
         Starts live acquisition in a background worker thread.
         Protected against duplicate start calls.
+
+        SAFETY NOTE: connect() is intentionally called OUTSIDE the state lock to
+        avoid blocking concurrent get_state()/is_running() callers for the full
+        serial port connection timeout (up to 5 s). The state is set to
+        LIVE_STARTING before releasing the lock, so duplicate start calls that
+        arrive during connection are correctly rejected.
         """
+        # --- Phase 1: Guard and claim LIVE_STARTING (lock held briefly) ---
         with self._state_lock:
             if self._state in (LIVE_RUNNING, LIVE_STARTING, LIVE_DEGRADED):
                 logging.warning("LiveRuntime is already running or starting. Duplicate start call ignored.")
                 return False
-
             if not self._transition_state(LIVE_STARTING):
                 return False
+            already_connected = self.is_connected()
 
-            # Ensure engine serial connection exists or attempts to start
-            if not self.is_connected():
-                if not self.connect():
+        # --- Phase 2: Connect outside the lock (may block up to timeout) ---
+        if not already_connected:
+            if not self.connect():
+                with self._state_lock:
                     self._transition_state(LIVE_ERROR, "Serial port connection failed during start")
-                    return False
+                return False
+
+        # --- Phase 3: Launch workers (lock held briefly) ---
+        with self._state_lock:
+            # Re-check: stop() may have fired while we were connecting
+            if self._state not in (LIVE_STARTING, LIVE_ERROR):
+                logging.warning("LiveRuntime state changed while connecting; start aborted.")
+                return False
+            if self._state == LIVE_ERROR:
+                logging.warning("LiveRuntime entered error state while connecting; start aborted.")
+                return False
 
             # Reset lifecycle control
             self._stop_event.clear()
@@ -1129,7 +1148,11 @@ class LiveAcquisitionRuntime:
     def _record_sample(self, sample: Dict[str, Any]) -> None:
         """Stores sample in bounded history, latest maps, and updates counters."""
         pid = sample["pid"]
-        is_success = (sample["status"] == STATUS_VALID and sample["value"] is not None)
+        is_success = (
+            sample["status"] == STATUS_VALID
+            and sample["value"] is not None
+            and not (isinstance(sample["value"], float) and math.isnan(sample["value"]))
+        )
 
         with self._sample_lock:
             self._recent_samples.append(sample)
