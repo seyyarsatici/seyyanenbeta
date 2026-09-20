@@ -1,0 +1,127 @@
+{
+  "session_id": "MINI-AVEO-F14D3-001",
+  "firmware_version": "1.0.0-m6",
+  "mini_protocol_version": "1.0",
+  "session_state": "COMPLETED",
+  "start_time_iso": "2026-09-20T14:32:00.124Z",
+  "end_time_iso": "2026-09-20T14:32:15.892Z",
+  "duration_seconds": 15.768,
+  "sample_count": 82,
+  "frame_count": 18,
+  "error_count": 1,
+  "adapter_identity": {
+    "brand": "VLINKER",
+    "adapter_name": "vLinker MC+",
+    "manufacturer": "MICROSYS",
+    "model": "MC+",
+    "firmware": "v2.2",
+    "raw_identity": "vLinker MC+ v2.2 MICROSYS",
+    "remote_mac": "00:1D:A5:68:98:8B",
+    "transport": "BLUETOOTH_SPP",
+    "verified": true
+  },
+  "protocol": "ISO 15765-4 (CAN 11/500)",
+  "vehicle_info": {
+    "make": "Chevrolet",
+    "model": "Aveo",
+    "engine": "1.4L 16V DOHC (F14D3)",
+    "ecu": "Delphi / Siemens MR-140 / MT58",
+    "vin_query_status": "NOT_REQUESTED"
+  },
+  "storage_info": {
+    "card_type": "SDHC",
+    "capacity_mb": 15193,
+    "free_mb": 15188,
+    "written_bytes": 8420
+  },
+  "supported_pids": [
+    {
+      "pid": "0100",
+      "name": "Supported PIDs [01-20]",
+      "unit": "bitmap",
+      "priority": 2,
+      "poll_interval_ms": 2000,
+      "supported": true
+    },
+    {
+      "pid": "0104",
+      "name": "Calculated Engine Load",
+      "unit": "%",
+      "priority": 1,
+      "poll_interval_ms": 500,
+      "supported": true
+    },
+    {
+      "pid": "0105",
+      "name": "Engine Coolant Temp",
+      "unit": "degC",
+      "priority": 2,
+      "poll_interval_ms": 2000,
+      "supported": true
+    },
+    {
+      "pid": "0106",
+      "name": "Short Term Fuel Trim B1",
+      "unit": "%",
+      "priority": 1,
+      "poll_interval_ms": 500,
+      "supported": true
+    },
+    {
+      "pid": "0107",
+      "name": "Long Term Fuel Trim B1",
+      "unit": "%",
+      "priority": 2,
+      "poll_interval_ms": 2000,
+      "supported": true
+    },
+    {
+      "pid": "010B",
+      "name": "Intake Manifold Pressure",
+      "unit": "kPa",
+      "priority": 0,
+      "poll_interval_ms": 150,
+      "supported": true
+    },
+    {
+      "pid": "010C",
+      "name": "Engine Speed",
+      "unit": "rpm",
+      "priority": 0,
+      "poll_interval_ms": 150,
+      "supported": true
+    },
+    {
+      "pid": "010D",
+      "name": "Vehicle Speed",
+      "unit": "km/h",
+      "priority": 1,
+      "poll_interval_ms": 500,
+      "supported": true
+    },
+    {
+      "pid": "010E",
+      "name": "Timing Advance",
+      "unit": "deg",
+      "priority": 1,
+      "poll_interval_ms": 500,
+      "supported": true
+    },
+    {
+      "pid": "010F",
+      "name": "Intake Air Temp",
+      "unit": "degC",
+      "priority": 2,
+      "poll_interval_ms": 2000,
+      "supported": true
+    },
+    {
+      "pid": "0111",
+      "name": "Throttle Position",
+      "unit": "%",
+      "priority": 0,
+      "poll_interval_ms": 150,
+      "supported": true
+    }
+  ]
+}

@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Seyyanen Mini | Embedded Acquisition</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header class="app-header">
+        <div class="logo-area">
+            <div class="brand-badge">MINI</div>
+            <div class="brand-title">
+                <h1>SEYYANEN MINI</h1>
+                <span class="sub-title">ESP32 Hardware Acquisition Companion</span>
+            </div>
+        </div>
+        <div class="header-status">
+            <div id="bt-badge" class="badge badge-disconnected">BT: DISCONNECTED</div>
+            <div id="sd-badge" class="badge badge-warning">SD: CHECKING</div>
+            <div id="rec-badge" class="badge badge-idle">IDLE</div>
+        </div>
+    </header>
+
+    <main class="container">
+        <!-- System & Adapter Overview -->
+        <section class="card overview-card">
+            <div class="card-header">
+                <h2>Adapter & Vehicle Provenance</h2>
+                <span id="session-label" class="session-tag">SESSION: --</span>
+            </div>
+            <div class="grid-4">
+                <div class="info-block">
+                    <span class="label">Adapter State</span>
+                    <span id="adapter-state" class="value text-warning">DISCONNECTED</span>
+                </div>
+                <div class="info-block">
+                    <span class="label">Hardware Identity</span>
+                    <span id="adapter-identity" class="value">UNKNOWN</span>
+                </div>
+                <div class="info-block">
+                    <span class="label">Active Protocol</span>
+                    <span id="vehicle-protocol" class="value">AUTO SEARCHING</span>
+                </div>
+                <div class="info-block">
+                    <span class="label">PID Scan Status</span>
+                    <span id="scan-status" class="value">NOT SCANNED</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Session & Recording Control -->
+        <section class="card control-card">
+            <div class="card-header">
+                <h2>Telemetry Recording Control</h2>
+                <span id="rec-file-label" class="file-tag">No active file</span>
+            </div>
+            <div class="control-row">
+                <div class="metrics-summary">
+                    <div class="metric-item">
+                        <span class="metric-num" id="sample-count">0</span>
+                        <span class="metric-desc">Samples Logged</span>
+                    </div>
+                    <div class="metric-item">
+                        <span class="metric-num" id="sample-rate">0.0</span>
+                        <span class="metric-desc">Sample Rate (Hz)</span>
+                    </div>
+                    <div class="metric-item">
+                        <span class="metric-num" id="avg-latency">0</span>
+                        <span class="metric-desc">Last Latency (ms)</span>
+                    </div>
+                </div>
+                <div class="actions">
+                    <button id="btn-start" class="btn btn-primary" onclick="startRecording()">
+                        <span class="btn-icon">⏺</span> Start Recording
+                    </button>
+                    <button id="btn-stop" class="btn btn-danger" onclick="stopRecording()" disabled>
+                        <span class="btn-icon">⏹</span> Stop Recording
+                    </button>
+                    <a id="btn-download" href="/api/download" class="btn btn-secondary">
+                        <span class="btn-icon">⬇</span> Download CSV Log
+                    </a>
+                </div>
+            </div>
+        </section>
+
+        <!-- Primary Live Telemetry Gauges -->
+        <section class="card live-card">
+            <div class="card-header">
+                <h2>Live Telemetry Stream</h2>
+                <span class="freshness-tag" id="last-freshness">Live Updates Active</span>
+            </div>
+            <div class="gauges-grid">
+                <!-- RPM -->
+                <div class="gauge-box">
+                    <span class="gauge-name">Engine Speed (010C)</span>
+                    <div class="gauge-value-row">
+                        <span class="gauge-val" id="val-rpm">--</span>
+                        <span class="gauge-unit">rpm</span>
+                    </div>
+                    <div class="gauge-footer">
+                        <span class="status-pill" id="qual-rpm">WAITING</span>
+                    </div>
+                </div>
+
+                <!-- Throttle -->
+                <div class="gauge-box">
+                    <span class="gauge-name">Throttle Position (0111)</span>
+                    <div class="gauge-value-row">
+                        <span class="gauge-val" id="val-tps">--</span>
+                        <span class="gauge-unit">%</span>
+                    </div>
+                    <div class="gauge-footer">
+                        <span class="status-pill" id="qual-tps">WAITING</span>
+                    </div>
+                </div>
+
+                <!-- Speed -->
+                <div class="gauge-box">
+                    <span class="gauge-name">Vehicle Speed (010D)</span>
+                    <div class="gauge-value-row">
+                        <span class="gauge-val" id="val-speed">--</span>
+                        <span class="gauge-unit">km/h</span>
+                    </div>
+                    <div class="gauge-footer">
+                        <span class="status-pill" id="qual-speed">WAITING</span>
+                    </div>
+                </div>
+
+                <!-- Coolant -->
+                <div class="gauge-box">
+                    <span class="gauge-name">Coolant Temp (0105)</span>
+                    <div class="gauge-value-row">
+                        <span class="gauge-val" id="val-ect">--</span>
+                        <span class="gauge-unit">°C</span>
+                    </div>
+                    <div class="gauge-footer">
+                        <span class="status-pill" id="qual-ect">WAITING</span>
+                    </div>
+                </div>
+
+                <!-- MAP -->
+                <div class="gauge-box">
+                    <span class="gauge-name">Intake MAP (010B)</span>
+                    <div class="gauge-value-row">
+                        <span class="gauge-val" id="val-map">--</span>
+                        <span class="gauge-unit">kPa</span>
+                    </div>
+                    <div class="gauge-footer">
+                        <span class="status-pill" id="qual-map">WAITING</span>
+                    </div>
+                </div>
+
+                <!-- MAF -->
+                <div class="gauge-box">
+                    <span class="gauge-name">Mass Air Flow (0110)</span>
+                    <div class="gauge-value-row">
+                        <span class="gauge-val" id="val-maf">--</span>
+                        <span class="gauge-unit">g/s</span>
+                    </div>
+                    <div class="gauge-footer">
+                        <span class="status-pill" id="qual-maf">WAITING</span>
+                    </div>
+                </div>
+
+                <!-- STFT -->
+                <div class="gauge-box">
+                    <span class="gauge-name">STFT Bank 1 (0106)</span>
+                    <div class="gauge-value-row">
+                        <span class="gauge-val" id="val-stft">--</span>
+                        <span class="gauge-unit">%</span>
+                    </div>
+                    <div class="gauge-footer">
+                        <span class="status-pill" id="qual-stft">WAITING</span>
+                    </div>
+                </div>
+
+                <!-- LTFT -->
+                <div class="gauge-box">
+                    <span class="gauge-name">LTFT Bank 1 (0107)</span>
+                    <div class="gauge-value-row">
+                        <span class="gauge-val" id="val-ltft">--</span>
+                        <span class="gauge-unit">%</span>
+                    </div>
+                    <div class="gauge-footer">
+                        <span class="status-pill" id="qual-ltft">WAITING</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Supported PID Grid -->
+        <section class="card pids-card">
+            <div class="card-header">
+                <h2>ECU Supported PIDs Matrix</h2>
+                <span id="supported-count" class="count-badge">0 Supported</span>
+            </div>
+            <div id="pids-table-wrap">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>PID</th>
+                            <th>Parameter</th>
+                            <th>Interval</th>
+                            <th>Status</th>
+                            <th>Live Value</th>
+                            <th>Quality</th>
+                        </tr>
+                    </thead>
+                    <tbody id="pids-table-body">
+                        <tr><td colspan="6" class="text-muted">Loading supported PIDs...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </main>
+
+    <footer class="app-footer">
+        <span>Seyyanen Mini &bull; Isolated ESP32 Data Acquisition &bull; Strictly Read-Only Mode</span>
+    </footer>
+
+    <script src="app.js"></script>
+</body>
+</html>

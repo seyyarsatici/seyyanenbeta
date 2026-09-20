@@ -115,12 +115,14 @@ class MainUI(QMainWindow):
         
         self.btn_scan_vehicle = self.create_button("🔍 Araç Tara", 250, 60)
         self.btn_import_record = self.create_button("📂 Kayıt Ekle (İmport)", 250, 60)
+        self.btn_import_mini = self.create_button("📱 Mini İmport", 250, 60)
         self.btn_obd_query = self.create_button("🔎 OBD Sorgu", 250, 60)
         self.btn_obd_connect = self.create_button("🔗 OBD Bağlan", 250, 60)
         self.btn_rename_file = self.create_button("✏️ İsim Düzenle", 250, 60)
         
         # Buton bağlantıları
         self.btn_import_record.clicked.connect(self.open_file_dialog)
+        self.btn_import_mini.clicked.connect(self.open_mini_import_dialog)
         self.btn_scan_vehicle.clicked.connect(lambda: print("[LOG] Araç Tara Başladı..."))
         self.btn_obd_query.clicked.connect(self.open_live_diagnostics)
         self.btn_obd_connect.clicked.connect(self.open_live_diagnostics)
@@ -128,6 +130,7 @@ class MainUI(QMainWindow):
         
         top_layout.addWidget(self.btn_scan_vehicle)
         top_layout.addWidget(self.btn_import_record)
+        top_layout.addWidget(self.btn_import_mini)
         top_layout.addWidget(self.btn_obd_query)
         top_layout.addWidget(self.btn_obd_connect)
         top_layout.addWidget(self.btn_rename_file)
@@ -306,6 +309,59 @@ class MainUI(QMainWindow):
         
         if file_path:
             self.add_file_to_table(file_path)
+
+    def open_mini_import_dialog(self):
+        """Seyyanen Mini oturum dosyasını veya klasörünü içe aktar"""
+        try:
+            from seyyanen_mini_import import preview_mini_session, import_mini_session
+        except ImportError as e:
+            QMessageBox.critical(self, "Hata", f"seyyanen_mini_import paketi yüklenemedi: {e}")
+            return
+
+        # Prompt for directory or file
+        target_path = QFileDialog.getExistingDirectory(self, "Seyyanen Mini Oturum Klasörünü Seçin")
+        if not target_path:
+            # Fallback to file selection (.zip or .csv)
+            target_path, _ = QFileDialog.getOpenFileName(
+                self, "veya Mini Arşiv / CSV Dosyası Seçin", "", "Mini Oturum (*.zip *.csv);;Tüm Dosyalar (*.*)"
+            )
+        if not target_path:
+            return
+
+        preview = preview_mini_session(target_path)
+        if not preview.is_valid:
+            err_msg = "\n".join(preview.errors)
+            QMessageBox.critical(self, "Mini Oturum Doğrulama Hatası", f"Seçilen oturum doğrulanamadı:\n\n{err_msg}")
+            return
+
+        # Preview dialog info
+        info_text = (
+            f"Oturum ID: {preview.session_id}\n"
+            f"Adaptör: {preview.adapter_name}\n"
+            f"Protokol: {preview.protocol}\n"
+            f"Süre: {preview.duration_seconds:.1f} saniye\n"
+            f"Örnek Sayısı: {preview.sample_count}\n"
+            f"Desteklenen PID: {preview.supported_pid_count}\n"
+            f"Araç Kimlik Durumu: {preview.vehicle_identity_status}\n\n"
+            f"Bu oturumu Seyyanen masaüstü sistemine aktarmak istiyor musunuz?"
+        )
+        reply = QMessageBox.question(self, "Seyyanen Mini Oturum Önizleme", info_text,
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # Perform import
+        result = import_mini_session(target_path)
+        if result.success:
+            from seyyanen_mini_import.session_reader import SessionReader
+            with SessionReader(target_path) as reader:
+                csv_file = reader.get_csv_path()
+                if csv_file:
+                    self.add_file_to_table(csv_file)
+            QMessageBox.information(self, "İçe Aktarım Başarılı", result.report.to_text())
+        else:
+            err_msg = "\n".join(result.report.errors)
+            QMessageBox.critical(self, "İçe Aktarım Başarısız", f"İçe aktarım sırasında hatalar oluştu:\n\n{err_msg}")
     
     def rename_selected_file(self):
         """GÖREV 1: Seçili dosyanın adını değiştir"""

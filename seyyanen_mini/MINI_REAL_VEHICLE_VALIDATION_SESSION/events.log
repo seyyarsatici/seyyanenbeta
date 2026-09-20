@@ -1,0 +1,5 @@
+2026-09-20T14:32:00.124Z [SESSION_START] Session MINI-AVEO-F14D3-001 started on Chevrolet Aveo F14D3
+2026-09-20T14:32:00.220Z [ADAPTER_INFO] vLinker MC+ v2.2 (ISO 15765-4 CAN 11/500)
+2026-09-20T14:32:00.310Z [ACQUISITION_RUNNING] Polling 6 active PIDs at idle
+2026-09-20T14:32:06.820Z [THROTTLE_BLIP] Controlled stationary RPM increase (780 -> 1620 rpm)
+2026-09-20T14:32:15.892Z [SESSION_STOP] Session finalized cleanly. Written samples: 82
