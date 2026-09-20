@@ -8,6 +8,8 @@ VLinkerBluetoothTransport::VLinkerBluetoothTransport()
       _hasMacTarget(false),
       _btStarted(false),
       _connectingInProgress(false),
+      _abortConnection(false),
+      _connectTaskHandle(NULL),
       _lastAttemptMs(0),
       _currentBackoffMs(SEYYANEN_BT_BACKOFF_BASE_MS) {
     memset(&_identity, 0, sizeof(_identity));
@@ -32,7 +34,17 @@ VLinkerBluetoothTransport::VLinkerBluetoothTransport()
 }
 
 VLinkerBluetoothTransport::~VLinkerBluetoothTransport() {
+    cancelConnectTask();
     end();
+}
+
+void VLinkerBluetoothTransport::cancelConnectTask() {
+    _abortConnection = true;
+    if (_connectTaskHandle != NULL) {
+        vTaskDelete(_connectTaskHandle);
+        _connectTaskHandle = NULL;
+    }
+    _connectingInProgress = false;
 }
 
 bool VLinkerBluetoothTransport::begin(const char* localName) {
@@ -81,6 +93,85 @@ bool VLinkerBluetoothTransport::parseMacAddress(const char* macStr, uint8_t* out
     return false;
 }
 
+void VLinkerBluetoothTransport::connectTaskWorker(void* param) {
+    VLinkerBluetoothTransport* self = static_cast<VLinkerBluetoothTransport*>(param);
+    if (!self) {
+        vTaskDelete(NULL);
+        return;
+    }
+
+    bool rawConnected = false;
+    if (self->_hasMacTarget) {
+        Serial.printf("[MINI-BT] Connecting SPP to target MAC: %s...\n", self->_targetMac);
+        rawConnected = self->_btSerial.connect(self->_macBytes);
+    } else {
+        Serial.printf("[MINI-BT] Searching for target: %s...\n", self->_targetName);
+        Serial.printf("[MINI-BT] Connecting SPP to target Name: '%s'...\n", self->_targetName);
+        rawConnected = self->_btSerial.connect(self->_targetName);
+    }
+
+    if (self->_abortConnection) {
+        self->_connectingInProgress = false;
+        self->_connectTaskHandle = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    if (!rawConnected) {
+        Serial.println("[MINI-BT] State: ERROR");
+        Serial.println("[MINI-BT] Reason: SPP_CONNECT_FAILED");
+        self->setState(ADAPTER_STATE_ERROR, TRANSPORT_ERR_SPP_CONNECT_FAILED);
+        self->_connectingInProgress = false;
+        self->_connectTaskHandle = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    Serial.println("[MINI-BT] SPP connected");
+
+    // Physical link stabilization delay with abort check
+    for (int i = 0; i < (SEYYANEN_BT_STABILIZE_DELAY_MS / 50); ++i) {
+        if (self->_abortConnection) {
+            self->disconnect();
+            self->_connectingInProgress = false;
+            self->_connectTaskHandle = NULL;
+            vTaskDelete(NULL);
+            return;
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    self->flushRx();
+
+    // Mandatory Step: Adapter Identity Handshake (ATI)
+    // Rule: Bluetooth link connected != diagnostic adapter verified!
+    // The state transitions to CONNECTED only after ATI handshake succeeds.
+    if (self->_abortConnection || !self->performIdentityHandshake()) {
+        Serial.println("[MINI-BT] State: ERROR");
+        Serial.println("[MINI-BT] Reason: INVALID_ADAPTER_RESPONSE");
+        if (self->_btSerial.connected()) {
+            self->_btSerial.disconnect();
+        }
+        self->_identity.verified = false;
+        self->setState(ADAPTER_STATE_ERROR, TRANSPORT_ERR_INVALID_ADAPTER_RESPONSE);
+        self->_connectingInProgress = false;
+        self->_connectTaskHandle = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    // Success: State transitions to CONNECTED only now!
+    self->setState(ADAPTER_STATE_CONNECTED, TRANSPORT_ERR_NONE);
+    self->_health.connected_since_ms = millis();
+    self->_health.retry_count = 0;
+    self->_currentBackoffMs = SEYYANEN_BT_BACKOFF_BASE_MS;
+    self->_health.current_backoff_ms = self->_currentBackoffMs;
+
+    Serial.println("[MINI-BT] State: CONNECTED");
+    self->_connectingInProgress = false;
+    self->_connectTaskHandle = NULL;
+    vTaskDelete(NULL);
+}
+
 bool VLinkerBluetoothTransport::connect(const char* targetName, const char* targetMac) {
     // Prevent duplicate or concurrent connection attempts
     if (_state == ADAPTER_STATE_CONNECTED && _btSerial.connected() && _identity.verified) {
@@ -88,12 +179,13 @@ bool VLinkerBluetoothTransport::connect(const char* targetName, const char* targ
         return true;
     }
 
-    if (_connectingInProgress) {
+    if (_connectingInProgress || _connectTaskHandle != NULL) {
         Serial.println("[MINI-BT] Connect attempt already in progress, ignoring duplicate call.");
         return false;
     }
 
     _connectingInProgress = true;
+    _abortConnection = false;
 
     // Configure Target
     if (targetMac && strlen(targetMac) >= 17 && parseMacAddress(targetMac, _macBytes)) {
@@ -121,55 +213,29 @@ bool VLinkerBluetoothTransport::connect(const char* targetName, const char* targ
     setState(ADAPTER_STATE_CONNECTING, TRANSPORT_ERR_NONE);
     _lastAttemptMs = millis();
 
-    bool rawConnected = false;
-    if (_hasMacTarget) {
-        Serial.printf("[MINI-BT] Connecting SPP to target MAC: %s...\n", _targetMac);
-        rawConnected = _btSerial.connect(_macBytes);
-    } else {
-        Serial.printf("[MINI-BT] Searching for target: %s...\n", _targetName);
-        Serial.printf("[MINI-BT] Connecting SPP to target Name: '%s'...\n", _targetName);
-        rawConnected = _btSerial.connect(_targetName);
-    }
+    // Dispatch non-blocking FreeRTOS connection worker
+    BaseType_t res = xTaskCreate(
+        connectTaskWorker,
+        "btConnectTask",
+        4096,
+        this,
+        1,
+        &_connectTaskHandle
+    );
 
-    if (!rawConnected) {
-        Serial.println("[MINI-BT] State: ERROR");
-        Serial.println("[MINI-BT] Reason: SPP_CONNECT_FAILED");
-        setState(ADAPTER_STATE_ERROR, TRANSPORT_ERR_SPP_CONNECT_FAILED);
+    if (res != pdPASS) {
+        Serial.println("[MINI-BT] Failed to spawn connection worker task!");
+        setState(ADAPTER_STATE_ERROR, TRANSPORT_ERR_BT_INIT_FAILED);
         _connectingInProgress = false;
+        _connectTaskHandle = NULL;
         return false;
     }
 
-    Serial.println("[MINI-BT] SPP connected");
-
-    // Wait for physical link stabilization
-    delay(SEYYANEN_BT_STABILIZE_DELAY_MS);
-    flushRx();
-
-    // Mandatory Step: Adapter Identity Handshake (ATI)
-    // Rule: Bluetooth link connected != diagnostic adapter verified!
-    // The state transitions to CONNECTED only after ATI handshake succeeds.
-    if (!performIdentityHandshake()) {
-        Serial.println("[MINI-BT] State: ERROR");
-        Serial.println("[MINI-BT] Reason: INVALID_ADAPTER_RESPONSE");
-        disconnect();
-        setState(ADAPTER_STATE_ERROR, TRANSPORT_ERR_INVALID_ADAPTER_RESPONSE);
-        _connectingInProgress = false;
-        return false;
-    }
-
-    // Success: State transitions to CONNECTED only now!
-    setState(ADAPTER_STATE_CONNECTED, TRANSPORT_ERR_NONE);
-    _health.connected_since_ms = millis();
-    _health.retry_count = 0;
-    _currentBackoffMs = SEYYANEN_BT_BACKOFF_BASE_MS;
-    _health.current_backoff_ms = _currentBackoffMs;
-
-    Serial.println("[MINI-BT] State: CONNECTED");
-    _connectingInProgress = false;
     return true;
 }
 
 bool VLinkerBluetoothTransport::disconnect() {
+    cancelConnectTask(); // Always terminates worker and resets _connectingInProgress = false
     if (_btSerial.connected()) {
         _btSerial.disconnect();
     }
@@ -201,7 +267,7 @@ void VLinkerBluetoothTransport::update() {
     if (SEYYANEN_BT_AUTO_RECONNECT && 
         (_state == ADAPTER_STATE_RECONNECTING || _state == ADAPTER_STATE_ERROR)) {
         
-        if (!_connectingInProgress && (millis() - _lastAttemptMs >= _currentBackoffMs)) {
+        if (!_connectingInProgress && _connectTaskHandle == NULL && (millis() - _lastAttemptMs >= _currentBackoffMs)) {
             _lastAttemptMs = millis();
             _health.retry_count++;
 

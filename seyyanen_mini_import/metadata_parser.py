@@ -49,6 +49,9 @@ class MiniSessionMetadata:
     session_state: str = "UNKNOWN"
     start_time_iso: Optional[str] = None
     end_time_iso: Optional[str] = None
+    session_start_monotonic_us: Optional[int] = None
+    session_start_wall_clock: Optional[str] = None
+    time_mapping_formula: Optional[str] = None
     duration_seconds: float = 0.0
     sample_count: int = 0
     frame_count: int = 0
@@ -91,6 +94,9 @@ class MetadataParser:
         meta.session_state = str(data.get("session_state", "UNKNOWN")).upper()
         meta.start_time_iso = data.get("start_time_iso")
         meta.end_time_iso = data.get("end_time_iso")
+        meta.session_start_monotonic_us = data.get("session_start_monotonic_us") or data.get("start_timestamp_us")
+        meta.session_start_wall_clock = data.get("session_start_wall_clock") or data.get("start_wall_time")
+        meta.time_mapping_formula = data.get("time_mapping_formula")
         meta.duration_seconds = float(data.get("duration_seconds", 0.0))
         meta.sample_count = int(data.get("sample_count", 0))
         meta.frame_count = int(data.get("frame_count", 0))

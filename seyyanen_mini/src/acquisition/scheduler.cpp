@@ -18,9 +18,11 @@ AcquisitionScheduler::AcquisitionScheduler(VLinkerBluetoothTransport& bt,
       _frameId(0),
       _sessionStartUs(0),
       _cycleStartUs(0),
-      _activePidCount(0) {
+      _activePidCount(0),
+      _unscheduledCount(0) {
     memset(_sessionId, 0, sizeof(_sessionId));
     memset(_activePids, 0, sizeof(_activePids));
+    memset(_unscheduledPids, 0, sizeof(_unscheduledPids));
     memset(&_snapshot, 0, sizeof(_snapshot));
     memset(&_metrics, 0, sizeof(_metrics));
 
@@ -186,52 +188,83 @@ uint32_t AcquisitionScheduler::getFrameId() const {
 
 void AcquisitionScheduler::setupActiveSchedule() {
     _activePidCount = 0;
+    _unscheduledCount = 0;
     size_t regCount = _scanner.getRegisteredCount();
 
     if (_snapshotMutex && xSemaphoreTake(_snapshotMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
         _snapshot.signal_count = 0;
 
-        for (size_t i = 0; i < regCount && _activePidCount < SEYYANEN_MAX_SCHEDULED_PIDS; ++i) {
+        for (size_t i = 0; i < regCount; ++i) {
             const PidMetadata* m = _scanner.getPidMetadata(i);
-            if (!m || !m->supported) continue;
+            if (!m) continue;
 
-            // Skip bitmap header PIDs from continuous live polling
-            if (m->pid == 0x0100 || m->pid == 0x0120) continue;
+            // Skip block bitmap header PIDs from live continuous polling
+            if ((m->pid & 0x001F) == 0x0000 && m->decode_fn == NULL) continue;
 
-            ScheduledPid& sp = _activePids[_activePidCount];
-            sp.pid = m->pid;
-            strncpy(sp.name, m->short_code, sizeof(sp.name) - 1);
-            strncpy(sp.unit, m->unit, sizeof(sp.unit) - 1);
-            sp.enabled = true;
-            sp.priority = m->priority;
-            sp.request_count = 0;
-            sp.error_count = 0;
-            sp.last_requested_us = 0;
-            sp.last_success_us = 0;
-
-            // Profile intervals in microseconds
-            if (sp.priority == 0) {
-                sp.interval_us = (uint64_t)SEYYANEN_INTERVAL_FAST_MS * 1000ULL;
-            } else if (sp.priority == 1) {
-                sp.interval_us = (uint64_t)SEYYANEN_INTERVAL_MEDIUM_MS * 1000ULL;
-            } else {
-                sp.interval_us = (uint64_t)SEYYANEN_INTERVAL_SLOW_MS * 1000ULL;
+            if (!m->supported) {
+                if (_unscheduledCount < SEYYANEN_MAX_UNSCHEDULED_PIDS) {
+                    UnscheduledPidInfo& u = _unscheduledPids[_unscheduledCount++];
+                    u.pid = m->pid;
+                    strncpy(u.name, m->short_code, sizeof(u.name) - 1);
+                    u.reason = UNSCHEDULED_REASON_UNSUPPORTED;
+                }
+                continue;
             }
 
-            // Setup Snapshot Signal
-            LiveSignal& ls = _snapshot.signals[_snapshot.signal_count++];
-            ls.pid = m->pid;
-            strncpy(ls.name, m->short_code, sizeof(ls.name) - 1);
-            strncpy(ls.unit, m->unit, sizeof(ls.unit) - 1);
-            ls.value = m->last_smoke_value;
-            ls.last_valid_value = m->last_smoke_value;
-            ls.quality = m->has_smoke_value ? QUALITY_GRADE_GOOD : QUALITY_GRADE_NO_DATA;
-            ls.freshness = FRESHNESS_NEVER_VALID;
-            ls.last_success_us = 0;
-            ls.age_ms = 0;
-            ls.latency_ms = 0;
+            if (_activePidCount < SEYYANEN_MAX_SCHEDULED_PIDS) {
+                ScheduledPid& sp = _activePids[_activePidCount];
+                sp.pid = m->pid;
+                strncpy(sp.name, m->short_code, sizeof(sp.name) - 1);
+                strncpy(sp.unit, m->unit, sizeof(sp.unit) - 1);
+                sp.enabled = true;
+                sp.priority = m->priority;
+                sp.request_count = 0;
+                sp.error_count = 0;
+                sp.last_requested_us = 0;
+                sp.last_success_us = 0;
+                sp.target_interval_us = 0;
+                sp.observed_interval_us = 0;
+                sp.scheduler_delay_us = 0;
+                sp.deadline_miss_count = 0;
+                sp.is_deadline_miss = false;
 
-            _activePidCount++;
+                // Profile intervals in microseconds
+                if (sp.priority == 0) {
+                    sp.interval_us = (uint64_t)SEYYANEN_INTERVAL_FAST_MS * 1000ULL;
+                } else if (sp.priority == 1) {
+                    sp.interval_us = (uint64_t)SEYYANEN_INTERVAL_MEDIUM_MS * 1000ULL;
+                } else {
+                    sp.interval_us = (uint64_t)SEYYANEN_INTERVAL_SLOW_MS * 1000ULL;
+                }
+                sp.target_interval_us = sp.interval_us;
+
+                // Setup Snapshot Signal
+                LiveSignal& ls = _snapshot.signals[_snapshot.signal_count++];
+                ls.pid = m->pid;
+                strncpy(ls.name, m->short_code, sizeof(ls.name) - 1);
+                strncpy(ls.unit, m->unit, sizeof(ls.unit) - 1);
+                ls.value = m->last_smoke_value;
+                ls.last_valid_value = m->last_smoke_value;
+                ls.quality = m->has_smoke_value ? QUALITY_GRADE_GOOD : QUALITY_GRADE_NO_DATA;
+                ls.freshness = FRESHNESS_NEVER_VALID;
+                ls.last_success_us = 0;
+                ls.age_ms = 0;
+                ls.latency_ms = 0;
+                ls.target_interval_ms = (uint32_t)(sp.target_interval_us / 1000ULL);
+                ls.observed_interval_ms = 0;
+                ls.scheduler_delay_ms = 0;
+                ls.deadline_misses = 0;
+
+                _activePidCount++;
+            } else {
+                // Exceeded scheduler capacity! Track explicitly
+                if (_unscheduledCount < SEYYANEN_MAX_UNSCHEDULED_PIDS) {
+                    UnscheduledPidInfo& u = _unscheduledPids[_unscheduledCount++];
+                    u.pid = m->pid;
+                    strncpy(u.name, m->short_code, sizeof(u.name) - 1);
+                    u.reason = UNSCHEDULED_REASON_EXCEEDED_CAPACITY;
+                }
+            }
         }
         xSemaphoreGive(_snapshotMutex);
     }
@@ -290,8 +323,25 @@ void AcquisitionScheduler::update() {
 }
 
 void AcquisitionScheduler::executeScheduledQuery(ScheduledPid& sp, uint64_t nowUs) {
+    // Timing Observability: Calculate observed interval and scheduler delay
+    sp.target_interval_us = sp.interval_us;
+    if (sp.last_requested_us > 0) {
+        sp.observed_interval_us = (nowUs >= sp.last_requested_us) ? (nowUs - sp.last_requested_us) : sp.interval_us;
+        uint64_t expectedDueUs = sp.last_requested_us + sp.interval_us;
+        sp.scheduler_delay_us = (nowUs > expectedDueUs) ? (nowUs - expectedDueUs) : 0;
+    } else {
+        sp.observed_interval_us = sp.interval_us;
+        sp.scheduler_delay_us = 0;
+    }
     sp.last_requested_us = nowUs;
     sp.request_count++;
+
+    // Deadline miss threshold: delay > 10% of target or > 25ms
+    uint64_t missThresholdUs = (sp.interval_us / 10ULL) > 25000ULL ? (sp.interval_us / 10ULL) : 25000ULL;
+    sp.is_deadline_miss = (sp.scheduler_delay_us > missThresholdUs);
+    if (sp.is_deadline_miss) {
+        sp.deadline_miss_count++;
+    }
 
     // Strict Rule: NEVER hold snapshot mutex across blocking OBD I/O!
     uint64_t reqStartUs = esp_timer_get_time();
@@ -307,7 +357,7 @@ void AcquisitionScheduler::executeScheduledQuery(ScheduledPid& sp, uint64_t nowU
         sp.error_count++;
     }
 
-    // Build MeasurementSample
+    // Build MeasurementSample preserving all timing metrics
     MeasurementSample sample;
     memset(&sample, 0, sizeof(sample));
     strncpy(sample.session_id, _sessionId, sizeof(sample.session_id) - 1);
@@ -324,6 +374,10 @@ void AcquisitionScheduler::executeScheduledQuery(ScheduledPid& sp, uint64_t nowU
     sample.request_start_us = reqStartUs;
     sample.response_timestamp_us = respEndUs;
     sample.latency_us = latencyUs;
+    sample.target_interval_us = (uint32_t)sp.target_interval_us;
+    sample.observed_interval_us = (uint32_t)sp.observed_interval_us;
+    sample.scheduler_delay_us = (uint32_t)sp.scheduler_delay_us;
+    sample.is_deadline_miss = sp.is_deadline_miss;
 
     // Quality & Freshness Assessment
     const PidMetadata* meta = _scanner.findPid(sp.pid);
@@ -333,17 +387,18 @@ void AcquisitionScheduler::executeScheduledQuery(ScheduledPid& sp, uint64_t nowU
     // Push into Bounded Ring Buffer
     _ringBuffer.push(sample);
 
-    // Forward to SD Logger (Phase M-5)
+    // Decoupled Storage Queue (Phase M-5 Hardened)
     if (_logger && _logger->isSessionActive()) {
-        _logger->writeSample(sample, sp.name);
+        _logger->enqueueSample(sample);
     }
 
     // Update Live Snapshot and Metrics under fast mutex
-    updateLiveSignal(sp.pid, res.decoded_value, isSuccess, sample.quality, sample.freshness, respEndUs, res.latency_ms);
+    updateLiveSignal(sp.pid, res.decoded_value, isSuccess, sample.quality, sample.freshness, respEndUs, res.latency_ms, sp);
 }
 
 void AcquisitionScheduler::updateLiveSignal(uint16_t pid, float val, bool valid, QualityGrade q,
-                                            FreshnessState f, uint64_t nowUs, uint32_t latencyMs) {
+                                            FreshnessState f, uint64_t nowUs, uint32_t latencyMs,
+                                            const ScheduledPid& sp) {
     if (_snapshotMutex && xSemaphoreTake(_snapshotMutex, pdMS_TO_TICKS(30)) == pdTRUE) {
         // Update Signal
         for (size_t i = 0; i < _snapshot.signal_count; ++i) {
@@ -359,6 +414,10 @@ void AcquisitionScheduler::updateLiveSignal(uint16_t pid, float val, bool valid,
                 _snapshot.signals[i].age_ms = (nowUs > _snapshot.signals[i].last_success_us) 
                                               ? (uint32_t)((nowUs - _snapshot.signals[i].last_success_us) / 1000ULL)
                                               : 0;
+                _snapshot.signals[i].target_interval_ms = (uint32_t)(sp.target_interval_us / 1000ULL);
+                _snapshot.signals[i].observed_interval_ms = (uint32_t)(sp.observed_interval_us / 1000ULL);
+                _snapshot.signals[i].scheduler_delay_ms = (uint32_t)(sp.scheduler_delay_us / 1000ULL);
+                _snapshot.signals[i].deadline_misses = sp.deadline_miss_count;
                 break;
             }
         }

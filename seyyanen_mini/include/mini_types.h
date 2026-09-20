@@ -121,6 +121,10 @@ typedef struct {
     uint64_t       response_timestamp_us;// Microsecond timestamp of receipt
     uint32_t       latency_us;           // Round-trip transport latency
     FreshnessState freshness;            // Freshness classification at capture
+    uint32_t       target_interval_us;   // Configured target polling interval
+    uint32_t       observed_interval_us; // Actual elapsed microseconds since prior sample of this PID
+    uint32_t       scheduler_delay_us;   // Microseconds overdue when query began
+    bool           is_deadline_miss;     // True if scheduler delay exceeded safety threshold
 } MeasurementSample;
 
 // 11. Acquisition Frame (Grouping of a scheduler cycle)
@@ -144,6 +148,10 @@ typedef struct {
     uint64_t       last_success_us;
     uint32_t       age_ms;
     uint32_t       latency_ms;
+    uint32_t       target_interval_ms; // Configured target interval
+    uint32_t       observed_interval_ms; // Realized interval between samples
+    uint32_t       scheduler_delay_ms; // Actual scheduler delay
+    uint32_t       deadline_misses;   // Accumulated missed deadlines
 } LiveSignal;
 
 // 13. Acquisition Runtime Performance Metrics
@@ -351,6 +359,14 @@ typedef enum {
     STORAGE_STATUS_FILESYSTEM_ERROR = 6
 } StorageStatus;
 
+// 20b. Storage Engine Queue & Backpressure Health
+typedef enum {
+    STORAGE_HEALTH_OK           = 0,
+    STORAGE_HEALTH_BACKPRESSURE = 1,
+    STORAGE_HEALTH_OVERFLOW     = 2,
+    STORAGE_HEALTH_WRITE_ERROR  = 3
+} StorageHealth;
+
 // 21. Persistent Session Recording State
 typedef enum {
     SESSION_STATE_NO_SESSION             = 0,
@@ -375,34 +391,43 @@ typedef struct {
 
 // 23. MicroSD Logging Performance Metrics
 typedef struct {
-    uint32_t samples_written;         // Rows committed to SD
-    uint32_t samples_pending;         // Rows currently in write buffer
-    uint32_t samples_dropped;         // Rows dropped due to buffer overrun / SD error
-    uint32_t write_errors;            // SD write failure events
-    uint32_t flush_count;             // Successful flush calls
+    uint32_t      samples_written;         // Rows committed to SD
+    uint32_t      samples_pending;         // Rows currently in write buffer
+    uint32_t      samples_dropped;         // Rows dropped due to buffer overrun / SD error
+    uint32_t      write_errors;            // SD write failure events
+    uint32_t      flush_count;             // Successful flush calls
+    // Hardening Observability Additions:
+    uint32_t      queue_depth;             // Current samples in decoupled storage queue
+    uint32_t      queue_high_water_mark;   // Maximum samples in queue observed
+    uint32_t      backpressure_events;     // Occurrences where queue reached backpressure threshold
+    uint32_t      last_write_latency_us;   // Microseconds taken by last physical write
+    uint32_t      last_flush_latency_us;   // Microseconds taken by last physical flush
+    StorageHealth health_state;            // STORAGE_OK, STORAGE_BACKPRESSURE, etc.
 } StorageMetrics;
 
 // 24. Session Context Metadata (For PC Seyyanen Import)
 typedef struct {
-    char         session_id[36];              // e.g. "MINI-20260920-223411-001"
-    uint64_t     start_timestamp_us;          // Monotonic start timestamp
-    uint64_t     end_timestamp_us;            // Monotonic end timestamp
-    char         start_wall_time[24];         // Optional ISO8601 wall time or fallback
-    char         end_wall_time[24];           // Optional ISO8601 wall time or fallback
-    char         firmware_version[16];        // e.g. "1.0.0"
-    char         mini_version[16];            // e.g. "M-5"
-    char         adapter_name[32];            // e.g. "vLinker MC+ 2.2"
-    char         adapter_model[32];           // e.g. "vLinker MC"
-    char         adapter_firmware[32];        // e.g. "v2.2"
-    char         adapter_raw_identity[64];    // Raw ATI string
-    char         transport_medium[16];        // e.g. "BLUETOOTH_SPP"
-    char         protocol[32];                // e.g. "ISO 15765-4 (CAN 11/500)"
-    char         vehicle_context_status[16];  // Strictly "UNKNOWN" if no VIN
-    size_t       supported_pid_count;         // Number of PIDs in session
-    uint32_t     sample_count;                // Total recorded samples
-    uint32_t     frame_count;                 // Total recorded frames
-    uint32_t     error_count;                 // Total failed queries
-    SessionState session_state;               // ACTIVE -> COMPLETED / RECOVERABLE_INCOMPLETE
+    char          session_id[36];              // e.g. "MINI-20260920-223411-001"
+    uint64_t      start_timestamp_us;          // Monotonic start timestamp
+    uint64_t      end_timestamp_us;            // Monotonic end timestamp
+    char          start_wall_time[32];         // Optional ISO8601 wall time or fallback
+    char          end_wall_time[32];           // Optional ISO8601 wall time or fallback
+    uint64_t      session_start_monotonic_us;  // Monotonic reference for wall-clock projection
+    char          session_start_wall_clock[32];// Wall-clock reference if synchronized
+    char          firmware_version[16];        // e.g. "1.0.0"
+    char          mini_version[16];            // e.g. "M-5"
+    char          adapter_name[32];            // e.g. "vLinker MC+ 2.2"
+    char          adapter_model[32];           // e.g. "vLinker MC"
+    char          adapter_firmware[32];        // e.g. "v2.2"
+    char          adapter_raw_identity[64];    // Raw ATI string
+    char          transport_medium[16];        // e.g. "BLUETOOTH_SPP"
+    char          protocol[32];                // e.g. "ISO 15765-4 (CAN 11/500)"
+    char          vehicle_context_status[16];  // Strictly "UNKNOWN" if no VIN
+    size_t        supported_pid_count;         // Number of PIDs in session
+    uint32_t      sample_count;                // Total recorded samples
+    uint32_t      frame_count;                 // Total recorded frames
+    uint32_t      error_count;                 // Total failed queries
+    SessionState  session_state;               // ACTIVE -> COMPLETED / RECOVERABLE_INCOMPLETE
 } SessionMetadata;
 
 // 25. Lightweight Session Summary for Directory Listing
@@ -416,6 +441,21 @@ typedef struct {
     SessionState state;
 } SessionSummary;
 
+// 26. Unscheduled PID Explanation
+typedef enum {
+    UNSCHEDULED_REASON_NONE              = 0,
+    UNSCHEDULED_REASON_EXCEEDED_CAPACITY = 1,
+    UNSCHEDULED_REASON_UNSUPPORTED       = 2,
+    UNSCHEDULED_REASON_PAUSED            = 3,
+    UNSCHEDULED_REASON_USER_DISABLED     = 4
+} UnscheduledReason;
+
+typedef struct {
+    uint16_t          pid;
+    char              name[32];
+    UnscheduledReason reason;
+} UnscheduledPidInfo;
+
 static inline const char* storageStatusToString(StorageStatus s) {
     switch (s) {
         case STORAGE_STATUS_IDLE:             return "IDLE";
@@ -426,6 +466,26 @@ static inline const char* storageStatusToString(StorageStatus s) {
         case STORAGE_STATUS_WRITE_ERROR:      return "WRITE_ERROR";
         case STORAGE_STATUS_FILESYSTEM_ERROR: return "FILESYSTEM_ERROR";
         default:                              return "UNKNOWN";
+    }
+}
+
+static inline const char* storageHealthToString(StorageHealth h) {
+    switch (h) {
+        case STORAGE_HEALTH_OK:           return "STORAGE_OK";
+        case STORAGE_HEALTH_BACKPRESSURE: return "STORAGE_BACKPRESSURE";
+        case STORAGE_HEALTH_OVERFLOW:     return "STORAGE_OVERFLOW";
+        case STORAGE_HEALTH_WRITE_ERROR:  return "STORAGE_WRITE_ERROR";
+        default:                          return "UNKNOWN";
+    }
+}
+
+static inline const char* unscheduledReasonToString(UnscheduledReason r) {
+    switch (r) {
+        case UNSCHEDULED_REASON_EXCEEDED_CAPACITY: return "EXCEEDED_SCHEDULER_CAPACITY";
+        case UNSCHEDULED_REASON_UNSUPPORTED:       return "UNSUPPORTED";
+        case UNSCHEDULED_REASON_PAUSED:            return "PAUSED";
+        case UNSCHEDULED_REASON_USER_DISABLED:     return "USER_DISABLED";
+        default:                                   return "NONE";
     }
 }
 

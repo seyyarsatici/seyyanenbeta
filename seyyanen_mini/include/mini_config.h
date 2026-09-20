@@ -42,11 +42,13 @@
 #define SEYYANEN_AGING_THRESHOLD_US     2500000ULL            // Aging: 0.6s .. 2.5s
 #define SEYYANEN_STALE_THRESHOLD_US     5000000ULL            // Stale: >= 2.5s
 
-// 6. Bounded In-Memory History
+// 6. Bounded In-Memory History & Scheduler Limits
 #define SEYYANEN_RING_BUFFER_SIZE       256                   // Maximum samples in RAM
 #define SEYYANEN_MAX_SCHEDULED_PIDS     16                    // Maximum active PIDs in scheduler
+#define SEYYANEN_MAX_REGISTERED_PIDS    64                    // Maximum registered PIDs in scanner
+#define SEYYANEN_MAX_UNSCHEDULED_PIDS   48                    // Maximum tracked unscheduled PIDs
 
-// 7. MicroSD SPI Persistence (Phase M-5)
+// 7. MicroSD SPI Persistence (Phase M-5 Hardened)
 #define SEYYANEN_SD_CS_PIN              5                     // VSPI Chip Select (GPIO 5)
 #define SEYYANEN_SD_MOSI_PIN            23                    // VSPI Master Out Slave In (GPIO 23)
 #define SEYYANEN_SD_MISO_PIN            19                    // VSPI Master In Slave Out (GPIO 19)
@@ -54,6 +56,8 @@
 #define SEYYANEN_SD_SPI_FREQ            20000000              // 20 MHz SPI Clock
 #define SEYYANEN_SD_WRITE_BUFFER_SIZE   1024                  // 1 KB bounded write buffer
 #define SEYYANEN_SD_FLUSH_INTERVAL_MS   2000                  // Flush to card every 2 seconds
+#define SEYYANEN_STORAGE_QUEUE_CAPACITY 64                    // Bounded producer/consumer storage queue
+#define SEYYANEN_STORAGE_BACKPRESSURE_THRESHOLD 48            // Queue depth triggering BACKPRESSURE state (75%)
 #define SEYYANEN_SD_BASE_DIR            "/SEYYANEN"
 #define SEYYANEN_SD_SESSIONS_DIR        "/SEYYANEN/SESSIONS"
 #define SEYYANEN_MAX_SESSIONS_LIST      32                    // Max sessions in directory listing

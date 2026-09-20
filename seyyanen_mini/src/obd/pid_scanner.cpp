@@ -3,7 +3,10 @@
 PidScanner::PidScanner(Obd2Client& obdClient)
     : _obdClient(obdClient),
       _state(SCANNER_STATE_IDLE),
-      _regCount(0) {
+      _regCount(0),
+      _registryOverflowCount(0) {
+    memset(_dynamicNames, 0, sizeof(_dynamicNames));
+    memset(_dynamicCodes, 0, sizeof(_dynamicCodes));
     initPidRegistry();
 }
 
@@ -11,6 +14,7 @@ PidScanner::~PidScanner() {}
 
 void PidScanner::initPidRegistry() {
     _regCount = 0;
+    _registryOverflowCount = 0;
     _state = SCANNER_STATE_IDLE;
 
     // Standard Mode 01 PIDs (0100..0111)
@@ -74,9 +78,27 @@ void PidScanner::initPidRegistry() {
                 "Absolute throttle blade opening percentage", "A*100/255", "DECODER_TPS",
                 SEYYANEN_INTERVAL_FAST, 0, Obd2::decodeTPS, 0.0f, 100.0f);
 
-    // Chained Next Range Marker PID
+    // Chained Range Marker PIDs up to 01E0
     registerPid(0x0120, "Supported PIDs [21-40]", "PID20", "bitmap",
                 "Supported PIDs block 21-40 bitmap", "32-bit bitmap", "DECODER_BITMAP",
+                0, 2, NULL, 0.0f, 0.0f);
+    registerPid(0x0140, "Supported PIDs [41-60]", "PID40", "bitmap",
+                "Supported PIDs block 41-60 bitmap", "32-bit bitmap", "DECODER_BITMAP",
+                0, 2, NULL, 0.0f, 0.0f);
+    registerPid(0x0160, "Supported PIDs [61-80]", "PID60", "bitmap",
+                "Supported PIDs block 61-80 bitmap", "32-bit bitmap", "DECODER_BITMAP",
+                0, 2, NULL, 0.0f, 0.0f);
+    registerPid(0x0180, "Supported PIDs [81-A0]", "PID80", "bitmap",
+                "Supported PIDs block 81-A0 bitmap", "32-bit bitmap", "DECODER_BITMAP",
+                0, 2, NULL, 0.0f, 0.0f);
+    registerPid(0x01A0, "Supported PIDs [A1-C0]", "PIDA0", "bitmap",
+                "Supported PIDs block A1-C0 bitmap", "32-bit bitmap", "DECODER_BITMAP",
+                0, 2, NULL, 0.0f, 0.0f);
+    registerPid(0x01C0, "Supported PIDs [C1-E0]", "PIDC0", "bitmap",
+                "Supported PIDs block C1-E0 bitmap", "32-bit bitmap", "DECODER_BITMAP",
+                0, 2, NULL, 0.0f, 0.0f);
+    registerPid(0x01E0, "Supported PIDs [E1-FF]", "PIDE0", "bitmap",
+                "Supported PIDs block E1-FF bitmap", "32-bit bitmap", "DECODER_BITMAP",
                 0, 2, NULL, 0.0f, 0.0f);
 }
 
@@ -84,7 +106,10 @@ void PidScanner::registerPid(uint16_t pid, const char* name, const char* shortCo
                              const char* description, const char* rawFormula, const char* decoderId,
                              uint32_t intervalMs, uint8_t priority, PidDecodeFunc fn,
                              float minValid, float maxValid) {
-    if (_regCount >= MAX_REGISTERED_PIDS) return;
+    if (_regCount >= MAX_REGISTERED_PIDS) {
+        _registryOverflowCount++;
+        return;
+    }
 
     PidMetadata& m = _registry[_regCount++];
     m.pid = pid;
@@ -126,7 +151,7 @@ bool PidScanner::scanBitmapRange(uint8_t basePid, uint32_t& bitmapOut) {
 }
 
 void PidScanner::applyBitmapToRegistry(uint8_t basePid, uint32_t bitmap) {
-    // Standard OBD-II: relative PID 1 is bit 31, relative PID 32 is bit 0
+    // 1. Check already registered PIDs
     for (size_t i = 0; i < _regCount; ++i) {
         uint8_t pidNumber = (uint8_t)(_registry[i].pid & 0xFF);
         if (_registry[i].mode != 0x01) continue;
@@ -144,6 +169,35 @@ void PidScanner::applyBitmapToRegistry(uint8_t basePid, uint32_t bitmap) {
             }
         }
     }
+
+    // 2. Dynamically register any newly discovered supported PIDs not yet in registry
+    for (uint8_t relativePid = 1; relativePid <= 32; ++relativePid) {
+        if (Obd2::isPidBitSet(bitmap, relativePid)) {
+            uint8_t pidNum = basePid + relativePid;
+            uint16_t fullPid = 0x0100 | pidNum;
+
+            if (!findPid(fullPid)) {
+                if (_regCount < MAX_REGISTERED_PIDS) {
+                    size_t idx = _regCount;
+                    snprintf(_dynamicNames[idx], sizeof(_dynamicNames[idx]), "Mode 01 PID %02X", pidNum);
+                    snprintf(_dynamicCodes[idx], sizeof(_dynamicCodes[idx]), "PID%02X", pidNum);
+
+                    registerPid(fullPid, _dynamicNames[idx], _dynamicCodes[idx], "",
+                                "Standard OBD-II Parameter", "Raw", "DECODER_RAW",
+                                SEYYANEN_INTERVAL_SLOW_MS, 2, NULL, 0.0f, 0.0f);
+                    // Mark as supported and record range/bit
+                    _registry[idx].supported = true;
+                    _registry[idx].source_range = basePid;
+                    _registry[idx].bit_index = relativePid;
+                    Serial.printf("[MINI-PID] Dynamically registered supported: 01%02X\n", pidNum);
+                } else {
+                    _registryOverflowCount++;
+                    Serial.printf("[MINI-PID] WARNING: Registry capacity full! Cannot register 01%02X (Overflow count: %u)\n",
+                                  pidNum, (unsigned int)_registryOverflowCount);
+                }
+            }
+        }
+    }
 }
 
 bool PidScanner::scanSupportedPids() {
@@ -154,29 +208,30 @@ bool PidScanner::scanSupportedPids() {
     }
 
     _state = SCANNER_STATE_SCANNING;
-    Serial.println("[MINI-PID] Scanning supported PIDs");
+    Serial.println("[MINI-PID] Scanning supported PIDs (Standard Mode 01 Chained Discovery)");
 
-    // 1. Scan primary block 0100 (PIDs 01..20)
-    uint32_t bitmap00 = 0;
-    if (!scanBitmapRange(0x00, bitmap00)) {
-        _state = SCANNER_STATE_ERROR;
-        return false;
-    }
-
-    // 2. Chained Scan: only query 0120 if bit 32 of 0100 is set
-    if (Obd2::isPidBitSet(bitmap00, 32)) {
-        Serial.println("[MINI-PID] Next range 0120 advertised as supported by ECU.");
-        uint32_t bitmap20 = 0;
-        if (scanBitmapRange(0x20, bitmap20)) {
-            // Check if 0140 advertised
-            if (Obd2::isPidBitSet(bitmap20, 32)) {
-                Serial.println("[MINI-PID] Next range 0140 advertised as supported by ECU.");
-                uint32_t bitmap40 = 0;
-                scanBitmapRange(0x40, bitmap40);
-            }
+    uint8_t currentBase = 0x00;
+    while (true) {
+        uint32_t bitmap = 0;
+        if (!scanBitmapRange(currentBase, bitmap)) {
+            Serial.printf("[MINI-PID] Bitmap query for 01%02X failed!\n", currentBase);
+            _state = SCANNER_STATE_ERROR;
+            return false;
         }
-    } else {
-        Serial.println("[MINI-PID] ECU does not advertise PIDs beyond 0120; stopping chained scan.");
+
+        // Bit 32 indicates presence of next range (currentBase + 0x20)
+        bool hasNext = Obd2::isPidBitSet(bitmap, 32);
+        if (!hasNext || currentBase >= 0xE0) {
+            if (!hasNext) {
+                Serial.printf("[MINI-PID] ECU does not advertise PIDs beyond 01%02X; stopping chained scan cleanly.\n", currentBase + 0x20);
+            } else {
+                Serial.println("[MINI-PID] Reached maximum standard Mode 01 range 01E0.");
+            }
+            break;
+        }
+
+        currentBase += 0x20;
+        Serial.printf("[MINI-PID] Next range 01%02X advertised as supported by ECU.\n", currentBase);
     }
 
     _state = SCANNER_STATE_COMPLETE;
@@ -260,6 +315,10 @@ size_t PidScanner::getSupportedCount() const {
         if (_registry[i].supported) count++;
     }
     return count;
+}
+
+size_t PidScanner::getRegistryOverflowCount() const {
+    return _registryOverflowCount;
 }
 
 PidMetadata* PidScanner::getPidMetadata(size_t index) {

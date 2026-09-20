@@ -701,9 +701,11 @@ void MiniWebServer::handleRoot() {
 void MiniWebServer::handleApiStatus() {
     const AdapterIdentityInfo& id = _bt.getAdapterIdentity();
     StorageInfo sInfo;
+    StorageMetrics sMetrics;
     _logger.getStorageInfo(sInfo);
+    _logger.getStorageMetrics(sMetrics);
 
-    char json[640];
+    char json[768];
     snprintf(json, sizeof(json),
         "{"
         "\"bt_state\":\"%s\","
@@ -715,6 +717,9 @@ void MiniWebServer::handleApiStatus() {
         "\"acq_state\":\"%s\","
         "\"session_id\":\"%s\","
         "\"sd_status\":\"%s\","
+        "\"sd_health\":\"%s\","
+        "\"sd_queue_depth\":%u,"
+        "\"sd_high_water_mark\":%u,"
         "\"free_heap\":%u,"
         "\"uptime_sec\":%u,"
         "\"supported_count\":%u"
@@ -728,6 +733,9 @@ void MiniWebServer::handleApiStatus() {
         _scheduler.getStateString(),
         _scheduler.getSessionId(),
         storageStatusToString(sInfo.status),
+        storageHealthToString(sMetrics.health_state),
+        (unsigned int)sMetrics.queue_depth,
+        (unsigned int)sMetrics.queue_high_water_mark,
         (unsigned int)ESP.getFreeHeap(),
         (unsigned int)(esp_timer_get_time() / 1000000ULL),
         (unsigned int)_scanner.getSupportedCount()
@@ -793,6 +801,14 @@ void MiniWebServer::handleApiLive() {
         json += s.age_ms;
         json += ",\"latency_ms\":";
         json += s.latency_ms;
+        json += ",\"target_interval_ms\":";
+        json += s.target_interval_ms;
+        json += ",\"observed_interval_ms\":";
+        json += s.observed_interval_ms;
+        json += ",\"scheduler_delay_ms\":";
+        json += s.scheduler_delay_ms;
+        json += ",\"deadline_misses\":";
+        json += s.deadline_misses;
         json += "}";
     }
 
@@ -806,7 +822,7 @@ void MiniWebServer::handleApiMetrics() {
     _scheduler.getMetrics(m);
     _logger.getStorageMetrics(sm);
 
-    char json[512];
+    char json[768];
     snprintf(json, sizeof(json),
         "{"
         "\"total_requests\":%u,"
@@ -821,7 +837,13 @@ void MiniWebServer::handleApiMetrics() {
         "\"active_pid_count\":%u,"
         "\"samples_written\":%u,"
         "\"samples_dropped\":%u,"
-        "\"write_errors\":%u"
+        "\"write_errors\":%u,"
+        "\"queue_depth\":%u,"
+        "\"queue_high_water_mark\":%u,"
+        "\"backpressure_events\":%u,"
+        "\"last_write_latency_us\":%u,"
+        "\"last_flush_latency_us\":%u,"
+        "\"storage_health\":\"%s\""
         "}",
         (unsigned int)m.total_requests,
         (unsigned int)m.successful_requests,
@@ -835,7 +857,13 @@ void MiniWebServer::handleApiMetrics() {
         (unsigned int)m.active_pid_count,
         (unsigned int)sm.samples_written,
         (unsigned int)sm.samples_dropped,
-        (unsigned int)sm.write_errors
+        (unsigned int)sm.write_errors,
+        (unsigned int)sm.queue_depth,
+        (unsigned int)sm.queue_high_water_mark,
+        (unsigned int)sm.backpressure_events,
+        (unsigned int)sm.last_write_latency_us,
+        (unsigned int)sm.last_flush_latency_us,
+        storageHealthToString(sm.health_state)
     );
 
     _server.send(200, "application/json", json);
@@ -847,6 +875,8 @@ void MiniWebServer::handleApiPids() {
     json += _scanner.getSupportedCount();
     json += ",\"registered_count\":";
     json += count;
+    json += ",\"registry_overflow\":";
+    json += _scanner.getRegistryOverflowCount();
     json += ",\"pids\":[";
 
     for (size_t i = 0; i < count; ++i) {
@@ -871,6 +901,24 @@ void MiniWebServer::handleApiPids() {
         json += m->poll_interval_ms;
         json += ",\"formula\":\"";
         json += m->raw_formula;
+        json += "\"}";
+    }
+
+    json += "],\"unscheduled_pids\":[";
+    size_t uCount = _scheduler.getUnscheduledPidCount();
+    for (size_t u = 0; u < uCount; ++u) {
+        if (u > 0) json += ",";
+        const UnscheduledPidInfo* un = _scheduler.getUnscheduledPid(u);
+        if (!un) continue;
+        char uHex[5];
+        snprintf(uHex, sizeof(uHex), "%02X", (uint8_t)(un->pid & 0xFF));
+
+        json += "{\"pid_hex\":\"";
+        json += uHex;
+        json += "\",\"name\":\"";
+        json += un->name;
+        json += "\",\"reason\":\"";
+        json += unscheduledReasonToString(un->reason);
         json += "\"}";
     }
 

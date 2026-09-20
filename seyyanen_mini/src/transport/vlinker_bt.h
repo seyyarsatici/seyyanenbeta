@@ -3,11 +3,13 @@
 
 #include <Arduino.h>
 #include <BluetoothSerial.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include "mini_config.h"
 #include "mini_types.h"
 
 // ==============================================================================
-// VLINKER BLUETOOTH CLASSIC SPP TRANSPORT (PHASE M-2)
+// VLINKER BLUETOOTH CLASSIC SPP TRANSPORT (PHASE M-2 HARDENED)
 // ==============================================================================
 
 class VLinkerBluetoothTransport {
@@ -33,6 +35,7 @@ public:
     const TransportHealth& getHealth() const;
     const char* getRemoteAddress() const;
     const char* getTargetName() const;
+    bool isConnectingInProgress() const { return _connectingInProgress; }
 
     // Transport I/O Operations
     bool sendRaw(const uint8_t* data, size_t len);
@@ -58,7 +61,9 @@ private:
     bool                _hasMacTarget;
 
     bool                _btStarted;
-    bool                _connectingInProgress;
+    volatile bool       _connectingInProgress;
+    volatile bool       _abortConnection;
+    TaskHandle_t        _connectTaskHandle;
     uint32_t            _lastAttemptMs;
     uint32_t            _currentBackoffMs;
 
@@ -66,6 +71,8 @@ private:
     bool parseMacAddress(const char* macStr, uint8_t* outBytes);
     bool performIdentityHandshake();
     void parseIdentityResponse(const char* rawResponse);
+    void cancelConnectTask();
+    static void connectTaskWorker(void* param);
 };
 
 #endif // VLINKER_BT_H

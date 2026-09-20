@@ -23,11 +23,17 @@ struct ScheduledPid {
     char     unit[12];
     bool     enabled;
     uint8_t  priority;         // 0: Fast, 1: Medium, 2: Slow
-    uint64_t interval_us;      // Microsecond interval
+    uint64_t interval_us;      // Target microsecond interval
     uint64_t last_requested_us;
     uint64_t last_success_us;
     uint32_t request_count;
     uint32_t error_count;
+    // Hardening Timing Observability:
+    uint64_t target_interval_us;
+    uint64_t observed_interval_us;
+    uint64_t scheduler_delay_us;
+    uint32_t deadline_miss_count;
+    bool     is_deadline_miss;
 };
 
 class SdLogger;
@@ -61,6 +67,13 @@ public:
     void getSnapshot(LiveSnapshot& outSnapshot);
     void getMetrics(AcquisitionMetrics& outMetrics);
 
+    // Unscheduled PIDs Observability
+    size_t getUnscheduledPidCount() const { return _unscheduledCount; }
+    const UnscheduledPidInfo* getUnscheduledPid(size_t index) const {
+        if (index >= _unscheduledCount) return NULL;
+        return &_unscheduledPids[index];
+    }
+
     // Non-blocking cooperative step called in loop()
     void update();
 
@@ -84,6 +97,9 @@ private:
     ScheduledPid               _activePids[SEYYANEN_MAX_SCHEDULED_PIDS];
     size_t                     _activePidCount;
 
+    UnscheduledPidInfo         _unscheduledPids[SEYYANEN_MAX_UNSCHEDULED_PIDS];
+    size_t                     _unscheduledCount;
+
     LiveSnapshot               _snapshot;
     AcquisitionMetrics         _metrics;
     SemaphoreHandle_t          _snapshotMutex;
@@ -94,7 +110,8 @@ private:
     int  selectNextDuePid(uint64_t nowUs);
     void executeScheduledQuery(ScheduledPid& sp, uint64_t nowUs);
     void updateLiveSignal(uint16_t pid, float val, bool valid, QualityGrade q,
-                          FreshnessState f, uint64_t nowUs, uint32_t latencyMs);
+                          FreshnessState f, uint64_t nowUs, uint32_t latencyMs,
+                          const ScheduledPid& sp);
 };
 
 #endif // SCHEDULER_H

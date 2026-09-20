@@ -45,12 +45,13 @@ public:
     void getCurrentSession(SessionMetadata& outMetadata) const;
     const char* getCurrentSessionId() const;
 
-    // 4. Sample & Event Serialization
-    bool writeSample(const MeasurementSample& sample, const char* pidName);
+    // 4. Sample & Event Serialization (Hardened Decoupled Storage Queue)
+    bool enqueueSample(const MeasurementSample& sample);
+    bool writeSample(const MeasurementSample& sample, const char* pidName = NULL);
     bool writeFrame(const AcquisitionFrame& frame);
     bool writeEvent(const char* eventType, const char* message);
     void flush();
-    void update(); // Periodic housekeeping / flush in loop()
+    void update(); // Periodic housekeeping, queue draining & flush in loop()
 
     // 5. Directory Inspection & Web Download Sandboxing
     size_t listSessions(SessionSummary* outSummaries, size_t maxCount);
@@ -75,6 +76,12 @@ private:
     char              _metaPath[80];
     char              _eventsPath[80];
 
+    // Bounded decoupled producer/consumer storage queue
+    MeasurementSample _storageQueue[SEYYANEN_STORAGE_QUEUE_CAPACITY];
+    size_t            _queueHead;
+    size_t            _queueTail;
+    size_t            _queueCount;
+
     // Bounded in-memory write buffer
     char              _writeBuffer[SEYYANEN_SD_WRITE_BUFFER_SIZE];
     size_t            _writeBufferLen;
@@ -85,6 +92,8 @@ private:
 
     void bufferAppend(const char* str, size_t len);
     void flushBufferToFile();
+    void processStorageQueue();
+    void formatSampleToCsvRow(const MeasurementSample& sample, const char* pidName, char* outRow, size_t maxLen);
     void persistMetadataJson(bool finalCompleted);
     void scanIncompleteSessions();
     static void escapeCsvField(const char* src, char* dst, size_t maxLen);

@@ -7,7 +7,7 @@
 #include "mini_types.h"
 #include "mini_config.h"
 
-#define MAX_REGISTERED_PIDS 24
+#define MAX_REGISTERED_PIDS SEYYANEN_MAX_REGISTERED_PIDS
 
 class PidScanner {
 public:
@@ -17,7 +17,7 @@ public:
     // Registry & Initialization
     void initPidRegistry();
 
-    // Discovery Sequence (Chained 0100 -> 0120 -> 0140...)
+    // Discovery Sequence (Chained 0100 -> 0120 -> 0140 -> 0160 -> 0180 -> 01A0 -> 01C0 -> 01E0)
     bool scanSupportedPids();
 
     // Harmless Single Smoke Probes (010C, 0105, 010D)
@@ -29,6 +29,7 @@ public:
     bool isScanned() const;
     size_t getRegisteredCount() const;
     size_t getSupportedCount() const;
+    size_t getRegistryOverflowCount() const;
 
     // M-4 Handoff Contract API
     PidMetadata* getPidMetadata(size_t index);
@@ -44,6 +45,9 @@ private:
     PidScannerState _state;
     PidMetadata     _registry[MAX_REGISTERED_PIDS];
     size_t          _regCount;
+    size_t          _registryOverflowCount;
+    char            _dynamicNames[MAX_REGISTERED_PIDS][32];
+    char            _dynamicCodes[MAX_REGISTERED_PIDS][12];
 
     void registerPid(uint16_t pid, const char* name, const char* shortCode, const char* unit,
                      const char* description, const char* rawFormula, const char* decoderId,

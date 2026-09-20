@@ -21,6 +21,12 @@ SdLogger::SdLogger()
     memset(_eventsPath, 0, sizeof(_eventsPath));
     memset(_writeBuffer, 0, sizeof(_writeBuffer));
     memset(&_metrics, 0, sizeof(_metrics));
+    memset(_storageQueue, 0, sizeof(_storageQueue));
+
+    _queueHead = 0;
+    _queueTail = 0;
+    _queueCount = 0;
+    _metrics.health_state = STORAGE_HEALTH_OK;
 
     _storageMutex = xSemaphoreCreateMutex();
     _currentSession.session_state = SESSION_STATE_NO_SESSION;
@@ -324,12 +330,7 @@ void SdLogger::escapeCsvField(const char* src, char* dst, size_t maxLen) {
     dst[di] = '\0';
 }
 
-bool SdLogger::writeSample(const MeasurementSample& sample, const char* pidName) {
-    if (!_sdAvailable || _currentSession.session_state != SESSION_STATE_ACTIVE || !_sessionFile) {
-        _metrics.samples_dropped++;
-        return false;
-    }
-
+void SdLogger::formatSampleToCsvRow(const MeasurementSample& sample, const char* pidName, char* outRow, size_t maxLen) {
     char escapedRaw[72];
     escapeCsvField(sample.raw_response, escapedRaw, sizeof(escapedRaw));
 
@@ -341,14 +342,13 @@ bool SdLogger::writeSample(const MeasurementSample& sample, const char* pidName)
         valBuf[0] = '\0';
     }
 
-    char row[256];
-    int len = snprintf(row, sizeof(row),
+    snprintf(outRow, maxLen,
         "%llu,%u,%u,01%02X,%s,01%02X,%s,%s,%s,%s,%s,%s,%u\n",
         (unsigned long long)sample.timestamp_us,
         (unsigned int)sample.sequence,
         (unsigned int)sample.sequence, // frame grouping
         (uint8_t)(sample.pid & 0xFF),
-        pidName ? pidName : sample.name,
+        (pidName && strlen(pidName) > 0) ? pidName : sample.name,
         (uint8_t)(sample.pid & 0xFF),
         escapedRaw,
         valBuf,
@@ -358,25 +358,85 @@ bool SdLogger::writeSample(const MeasurementSample& sample, const char* pidName)
         freshnessStateToString(sample.freshness),
         (unsigned int)sample.latency_us
     );
+}
 
-    if (len <= 0) {
+bool SdLogger::enqueueSample(const MeasurementSample& sample) {
+    if (!_sdAvailable || _currentSession.session_state != SESSION_STATE_ACTIVE || !_sessionFile) {
         _metrics.samples_dropped++;
+        _metrics.health_state = STORAGE_HEALTH_WRITE_ERROR;
         return false;
     }
 
-    if (_storageMutex && xSemaphoreTake(_storageMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
-        bufferAppend(row, (size_t)len);
-        _currentSession.sample_count++;
-        _metrics.samples_written++;
-        if (sample.status != SAMPLE_STATUS_VALID) {
-            _currentSession.error_count++;
+    if (_storageMutex && xSemaphoreTake(_storageMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+        if (_queueCount >= SEYYANEN_STORAGE_QUEUE_CAPACITY) {
+            // Queue full -> sample dropped, transition to OVERFLOW state
+            _metrics.samples_dropped++;
+            _metrics.health_state = STORAGE_HEALTH_OVERFLOW;
+            xSemaphoreGive(_storageMutex);
+            return false;
         }
+
+        // Enqueue sample into bounded ring buffer
+        _storageQueue[_queueHead] = sample;
+        _queueHead = (_queueHead + 1) % SEYYANEN_STORAGE_QUEUE_CAPACITY;
+        _queueCount++;
+
+        _metrics.queue_depth = _queueCount;
+        if (_queueCount > _metrics.queue_high_water_mark) {
+            _metrics.queue_high_water_mark = _queueCount;
+        }
+
+        // Assess queue backpressure threshold
+        if (_queueCount >= SEYYANEN_STORAGE_BACKPRESSURE_THRESHOLD) {
+            _metrics.backpressure_events++;
+            _metrics.health_state = STORAGE_HEALTH_BACKPRESSURE;
+        } else if (_metrics.health_state != STORAGE_HEALTH_WRITE_ERROR) {
+            _metrics.health_state = STORAGE_HEALTH_OK;
+        }
+
         xSemaphoreGive(_storageMutex);
         return true;
     }
 
     _metrics.samples_dropped++;
     return false;
+}
+
+bool SdLogger::writeSample(const MeasurementSample& sample, const char* pidName) {
+    (void)pidName;
+    return enqueueSample(sample);
+}
+
+void SdLogger::processStorageQueue() {
+    if (!_sdAvailable || !_sessionFile) return;
+
+    if (_storageMutex && xSemaphoreTake(_storageMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        while (_queueCount > 0) {
+            MeasurementSample s = _storageQueue[_queueTail];
+            _queueTail = (_queueTail + 1) % SEYYANEN_STORAGE_QUEUE_CAPACITY;
+            _queueCount--;
+            _metrics.queue_depth = _queueCount;
+
+            char row[256];
+            formatSampleToCsvRow(s, s.name, row, sizeof(row));
+            size_t rowLen = strlen(row);
+            if (rowLen > 0) {
+                bufferAppend(row, rowLen);
+                _currentSession.sample_count++;
+                _metrics.samples_written++;
+                if (s.status != SAMPLE_STATUS_VALID) {
+                    _currentSession.error_count++;
+                }
+            }
+        }
+
+        if (_queueCount < SEYYANEN_STORAGE_BACKPRESSURE_THRESHOLD &&
+            _metrics.health_state == STORAGE_HEALTH_BACKPRESSURE) {
+            _metrics.health_state = STORAGE_HEALTH_OK;
+        }
+
+        xSemaphoreGive(_storageMutex);
+    }
 }
 
 bool SdLogger::writeFrame(const AcquisitionFrame& frame) {
@@ -415,9 +475,13 @@ void SdLogger::bufferAppend(const char* str, size_t len) {
     if (len >= SEYYANEN_SD_WRITE_BUFFER_SIZE) {
         // Direct write for giant block
         if (_sessionFile) {
+            uint64_t tStart = esp_timer_get_time();
             size_t written = _sessionFile.write((const uint8_t*)str, len);
+            _metrics.last_write_latency_us = (uint32_t)(esp_timer_get_time() - tStart);
             if (written != len) {
                 _metrics.write_errors++;
+                _status = STORAGE_STATUS_WRITE_ERROR;
+                _metrics.health_state = STORAGE_HEALTH_WRITE_ERROR;
             }
         }
         return;
@@ -429,10 +493,14 @@ void SdLogger::bufferAppend(const char* str, size_t len) {
 
 void SdLogger::flushBufferToFile() {
     if (_writeBufferLen > 0 && _sessionFile) {
+        uint64_t tStart = esp_timer_get_time();
         size_t written = _sessionFile.write((const uint8_t*)_writeBuffer, _writeBufferLen);
+        _metrics.last_write_latency_us = (uint32_t)(esp_timer_get_time() - tStart);
+
         if (written != _writeBufferLen) {
             _metrics.write_errors++;
             _status = STORAGE_STATUS_WRITE_ERROR;
+            _metrics.health_state = STORAGE_HEALTH_WRITE_ERROR;
             strncpy(_lastError, "WRITE_FAILED", sizeof(_lastError) - 1);
         }
         _writeBufferLen = 0;
@@ -443,7 +511,9 @@ void SdLogger::flush() {
     if (_storageMutex && xSemaphoreTake(_storageMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
         flushBufferToFile();
         if (_sessionFile) {
+            uint64_t tStart = esp_timer_get_time();
             _sessionFile.flush();
+            _metrics.last_flush_latency_us = (uint32_t)(esp_timer_get_time() - tStart);
             _metrics.flush_count++;
             _lastFlushMs = millis();
         }
@@ -453,6 +523,9 @@ void SdLogger::flush() {
 
 void SdLogger::update() {
     if (_currentSession.session_state != SESSION_STATE_ACTIVE) return;
+
+    // First drain decoupled in-memory storage queue into buffer
+    processStorageQueue();
 
     if (millis() - _lastFlushMs >= SEYYANEN_SD_FLUSH_INTERVAL_MS) {
         flush();
@@ -467,6 +540,11 @@ void SdLogger::persistMetadataJson(bool finalCompleted) {
     json += "  \"session_id\": \"" + String(_currentSession.session_id) + "\",\n";
     json += "  \"start_timestamp_us\": " + String((unsigned long long)_currentSession.start_timestamp_us) + ",\n";
     json += "  \"end_timestamp_us\": " + String((unsigned long long)_currentSession.end_timestamp_us) + ",\n";
+    json += "  \"start_wall_time\": \"" + String(_currentSession.start_wall_time) + "\",\n";
+    json += "  \"end_wall_time\": \"" + String(_currentSession.end_wall_time) + "\",\n";
+    json += "  \"session_start_monotonic_us\": " + String((unsigned long long)_currentSession.start_timestamp_us) + ",\n";
+    json += "  \"session_start_wall_clock\": \"" + String(_currentSession.start_wall_time) + "\",\n";
+    json += "  \"time_mapping_formula\": \"sample_wall_clock = session_start_wall_clock + (sample.timestamp_us - session_start_monotonic_us)\",\n";
     json += "  \"firmware_version\": \"" + String(_currentSession.firmware_version) + "\",\n";
     json += "  \"mini_version\": \"" + String(_currentSession.mini_version) + "\",\n";
     json += "  \"adapter_name\": \"" + String(_currentSession.adapter_name) + "\",\n";
