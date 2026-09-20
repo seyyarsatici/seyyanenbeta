@@ -28,7 +28,9 @@ from __future__ import annotations
 import abc
 import enum
 import logging
+import os
 import re
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -1069,6 +1071,496 @@ class MockSerialForELM:
         self._read_buffer.extend(payload)
 
 
+@dataclass
+class PortProbeResult:
+    """Structured result of probing a serial port for an ELM327 adapter."""
+    port: str
+    transport: str = "serial"
+    connection_state: str = "FAILED"
+    adapter_detected: bool = False
+    adapter_identity: Optional[str] = None
+    baudrate: int = 38400
+    failure_reason: Optional[str] = None
+    description: str = ""
+
+
+def is_simulation_mode(explicit: Optional[bool] = None) -> bool:
+    """Checks if simulation mode (MockSerial / COM_MOCK) is explicitly enabled."""
+    if explicit is not None:
+        return bool(explicit)
+    for var in ("SEYYANEN_SIMULATION", "SIMULATION", "USE_MOCK_SERIAL", "MOCK_OBD"):
+        val = os.environ.get(var)
+        if val is not None:
+            return val.strip().lower() in ("1", "true", "yes", "on")
+    if any(arg.lower() in ("--simulation", "--mock") for arg in sys.argv):
+        return True
+    return False
+
+
+def log_real_connect(msg: str) -> None:
+    """Structured console output for real hardware connection diagnostics."""
+    print(f"[REAL-CONNECT] {msg}", flush=True)
+    logger.info("[REAL-CONNECT] %s", msg)
+
+
+def enumerate_candidate_ports(explicit_port: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    Discovers candidate serial COM ports on Windows / host and returns a deterministic,
+    prioritized candidate list.
+    Priority 0: Explicitly specified port
+    Priority 1: Known VCI / OBD chipsets (CH340, FTDI, CP210, Prolific, vLinker, ELM327, STN)
+    Priority 2: Bluetooth serial ports (Standard Serial over Bluetooth link)
+    Priority 3: Other serial COM ports
+    """
+    if explicit_port and explicit_port not in ("AUTO", "COM_MOCK"):
+        norm_port = str(explicit_port).strip().upper()
+        desc = "User-specified COM port"
+        mfg = ""
+        hwid = ""
+        try:
+            from serial.tools import list_ports
+            for p in list_ports.comports():
+                if getattr(p, "device", "").upper() == norm_port:
+                    desc = getattr(p, "description", "") or desc
+                    mfg = getattr(p, "manufacturer", "") or ""
+                    hwid = getattr(p, "hwid", "") or ""
+                    break
+        except Exception:
+            pass
+
+        return [{
+            "device": norm_port,
+            "description": desc,
+            "manufacturer": mfg,
+            "priority": 0,
+            "hwid": hwid,
+        }]
+
+    ports_found: List[Dict[str, Any]] = []
+    try:
+        from serial.tools import list_ports
+        raw_ports = list_ports.comports()
+        for p in raw_ports:
+            dev = getattr(p, "device", "")
+            if not dev:
+                continue
+            desc = getattr(p, "description", "") or ""
+            mfg = getattr(p, "manufacturer", "") or ""
+            hwid = getattr(p, "hwid", "") or ""
+            combined = (desc + " " + mfg + " " + hwid).lower()
+
+            # Priority 1: Known VCI keywords
+            vci_keywords = ["vlinker", "elm327", "obd", "ch340", "ftdi", "cp210", "prolific", "stn"]
+            # Priority 2: Bluetooth serial keywords
+            bth_keywords = ["bluetooth", "bth", "standart seri", "standard serial"]
+
+            if any(k in combined for k in vci_keywords):
+                priority = 1
+            elif any(k in combined for k in bth_keywords):
+                priority = 2
+            else:
+                priority = 3
+
+            ports_found.append({
+                "device": dev.upper(),
+                "description": desc,
+                "manufacturer": mfg,
+                "hwid": hwid,
+                "priority": priority,
+            })
+    except Exception as e:
+        logger.warning(f"Failed to enumerate serial ports: {e}")
+
+    def sort_key(item):
+        dev_name = item["device"]
+        digits = "".join(ch for ch in dev_name if ch.isdigit())
+        num = int(digits) if digits else 999
+        return (item["priority"], num, dev_name)
+
+    ports_found.sort(key=sort_key)
+    return ports_found
+
+
+def probe_elm327_port(
+    port: str,
+    baudrates: Optional[List[int]] = None,
+    timeout: float = 1.5,
+    serial_factory: Optional[Callable[..., Any]] = None,
+    on_status: Optional[Callable[[str], None]] = None,
+) -> PortProbeResult:
+    """
+    Safely probes a candidate serial port with read-only commands to determine
+    if a plausible ELM327/VLinker OBD adapter is present and responsive.
+    Strictly non-destructive: only sends harmless identity commands (ATZ, ATI).
+    """
+    test_bauds = baudrates or [38400, 115200, 9600]
+    last_reason = "NO_RESPONSE"
+    per_baud_timeout = min(0.8, max(0.4, timeout / len(test_bauds)))
+
+    for baud in test_bauds:
+        log_real_connect(f"Opening {port} @ {baud}")
+        if on_status:
+            on_status(f"Testing {port} at {baud} baud...")
+
+        ser = None
+        try:
+            if serial_factory:
+                ser = serial_factory(port=port, baudrate=baud, timeout=0.1, write_timeout=1.0)
+            else:
+                import serial
+                ser = serial.Serial(port, baudrate=baud, timeout=0.1, write_timeout=1.0)
+
+            if not getattr(ser, "is_open", True):
+                last_reason = "PORT_FAILED_TO_OPEN"
+                log_real_connect(f"{port} rejected: reason=PORT_FAILED_TO_OPEN")
+                continue
+
+            # Bluetooth RFCOMM / USB UART settle delay
+            time.sleep(0.05 if serial_factory else 0.25)
+            if hasattr(ser, "reset_input_buffer"):
+                try:
+                    ser.reset_input_buffer()
+                except Exception:
+                    pass
+
+            log_real_connect(f"Sending ELM327 probe")
+            # Send wake-up and canonical reset
+            ser.write(b"\r\rATZ\r")
+
+            raw_buf = bytearray()
+            start_t = time.monotonic()
+            # Fast-slice read loop: ser.timeout is 0.1 so each read returns fast
+            while (time.monotonic() - start_t) < per_baud_timeout:
+                in_waiting = getattr(ser, "in_waiting", 0)
+                if in_waiting > 0:
+                    raw_buf.extend(ser.read(in_waiting))
+                    if b">" in raw_buf:
+                        break
+                else:
+                    chunk = ser.read(1)
+                    if chunk:
+                        raw_buf.extend(chunk)
+                        if b">" in raw_buf:
+                            break
+                    else:
+                        time.sleep(0.01)
+
+            # If ATZ had characters but no prompt '>', try ATI
+            if raw_buf and b">" not in raw_buf:
+                ser.write(b"ATI\r")
+                start_ati = time.monotonic()
+                while (time.monotonic() - start_ati) < 0.4:
+                    in_waiting = getattr(ser, "in_waiting", 0)
+                    if in_waiting > 0:
+                        raw_buf.extend(ser.read(in_waiting))
+                        if b">" in raw_buf:
+                            break
+                    else:
+                        chunk = ser.read(1)
+                        if chunk:
+                            raw_buf.extend(chunk)
+                            if b">" in raw_buf:
+                                break
+                        else:
+                            time.sleep(0.01)
+
+            resp_str = raw_buf.decode("ascii", errors="ignore").upper()
+            sanitized_resp = repr(raw_buf.decode("ascii", errors="replace"))
+            log_real_connect(f"{port} response: {sanitized_resp}")
+
+            plausible_markers = ["ELM327", "OBDLINK", "VLINKER", "OK", "STN"]
+            is_plausible = any(m in resp_str for m in plausible_markers) or (len(resp_str) > 0 and ">" in resp_str)
+
+            if is_plausible:
+                identity = "ELM327"
+                for line in resp_str.replace("\r", "\n").split("\n"):
+                    line_clean = line.strip().replace(">", "")
+                    if any(m in line_clean for m in ["ELM327", "OBDLINK", "VLINKER", "STN"]):
+                        identity = line_clean
+                        break
+
+                ser.close()
+                time.sleep(0.05 if serial_factory else 0.2)
+                return PortProbeResult(
+                    port=port,
+                    transport="serial",
+                    connection_state="CONNECTED",
+                    adapter_detected=True,
+                    adapter_identity=identity,
+                    baudrate=baud,
+                    failure_reason=None,
+                )
+            else:
+                if not raw_buf:
+                    last_reason = "TIMEOUT"
+                    log_real_connect(f"{port} rejected: reason=TIMEOUT")
+                    # Port is completely silent; skip other baudrates on this port
+                    break
+                elif b">" not in raw_buf:
+                    last_reason = "INVALID_ELM327_RESPONSE"
+                    log_real_connect(f"{port} rejected: reason=INVALID_ELM327_RESPONSE")
+                else:
+                    last_reason = "NO_ELM327_RESPONSE"
+                    log_real_connect(f"{port} rejected: reason=NO_ELM327_RESPONSE")
+
+        except Exception as e:
+            err_str = str(e)
+            err_cls = type(e).__name__
+            if "denied" in err_str.lower() or "permission" in err_str.lower() or "busy" in err_str.lower() or "cannot find" in err_str.lower():
+                last_reason = "PORT_BUSY_OR_ACCESS_DENIED"
+                log_real_connect(f"{port} rejected: reason=PORT_BUSY_OR_ACCESS_DENIED ({err_cls}: {err_str})")
+            else:
+                last_reason = f"SERIAL_ERROR: {err_cls}: {err_str}"
+                log_real_connect(f"{port} rejected: reason={last_reason}")
+            # If port couldn't be opened, further baud rates will also fail
+            break
+        finally:
+            if ser is not None and getattr(ser, "is_open", False):
+                try:
+                    ser.close()
+                except Exception:
+                    pass
+            time.sleep(0.02 if serial_factory else 0.1)
+
+    return PortProbeResult(
+        port=port,
+        transport="serial",
+        connection_state="FAILED",
+        adapter_detected=False,
+        adapter_identity=None,
+        baudrate=test_bauds[0],
+        failure_reason=last_reason,
+    )
+
+
+def discover_and_probe_elm327(
+    explicit_port: Optional[str] = None,
+    timeout_per_port: float = 1.5,
+    serial_factory: Optional[Callable[..., Any]] = None,
+    on_status: Optional[Callable[[str], None]] = None,
+) -> Tuple[Optional[PortProbeResult], List[PortProbeResult]]:
+    """
+    Discovers candidate ports and safely probes them in priority order.
+    Returns (successful_result, all_probe_results).
+    """
+    log_real_connect("Starting physical adapter discovery")
+    log_real_connect("Enumerating Windows COM ports")
+    candidates = enumerate_candidate_ports(explicit_port)
+    if not candidates:
+        log_real_connect("No Windows COM ports discovered")
+        if on_status:
+            on_status("No serial COM ports found on system.")
+        return None, []
+
+    for c in candidates:
+        mfg_str = f" | mfg={c['manufacturer']}" if c.get('manufacturer') else ""
+        hw_str = f" | hwid={c['hwid']}" if c.get('hwid') else ""
+        log_real_connect(f"Candidate: {c['device']} | description={c['description']}{mfg_str}{hw_str}")
+
+    ports_str = ", ".join(c["device"] for c in candidates)
+    if on_status:
+        on_status(f"Searching for OBD adapters across: {ports_str}...")
+
+    all_results: List[PortProbeResult] = []
+    for cand in candidates:
+        p = cand["device"]
+        log_real_connect(f"Probing {p}")
+        if on_status:
+            on_status(f"Testing {p} ({cand.get('description', '')})...")
+
+        res = probe_elm327_port(
+            port=p,
+            timeout=timeout_per_port,
+            serial_factory=serial_factory,
+            on_status=on_status,
+        )
+        res.description = cand.get("description", "")
+        all_results.append(res)
+
+        if res.adapter_detected:
+            log_real_connect(f"ELM327 detected on {res.port}")
+            if on_status:
+                on_status(f"ELM327 detected on {res.port} ({res.adapter_identity}, {res.baudrate} baud)")
+            return res, all_results
+
+    log_real_connect("Physical adapter discovery failed: no compatible ELM327 adapter responded")
+    if on_status:
+        on_status("No compatible ELM327 adapter detected on available COM ports.")
+    return None, all_results
+
+
+def list_available_com_ports(verbose: bool = True) -> List[Dict[str, Any]]:
+    """
+    Physical validation support: enumerates detected serial ports without connecting.
+    Exposes OS descriptions for Bluetooth/USB troubleshooting.
+    """
+    candidates = enumerate_candidate_ports()
+    if verbose:
+        print("Detected serial ports:")
+        if not candidates:
+            print("  (none found)")
+        for c in candidates:
+            desc = c.get("description", "") or "No description"
+            mfg = c.get("manufacturer", "")
+            hwid = c.get("hwid", "")
+            extra = []
+            if mfg:
+                extra.append(f"Mfg: {mfg}")
+            if hwid:
+                extra.append(f"HWID: {hwid}")
+            extra_str = f" [{', '.join(extra)}]" if extra else ""
+            print(f"  - {c['device']} — {desc}{extra_str}")
+    return candidates
+
+
+def cli_probe_port(
+    port_name: str,
+    baudrate: int = 38400,
+    serial_factory: Optional[Callable[..., Any]] = None,
+) -> str:
+    """
+    Deterministic CLI diagnostic probe for testing physical Windows COM ports.
+    Usage: python diagnostic_adapter.py --probe-port COM4
+    1. Open specified physical COM port.
+    2. Print port metadata.
+    3. Open serial connection.
+    4. Wait for adapter startup.
+    5. Send safe ELM327 identification command (ATI, ATZ).
+    6. Read response robustly.
+    7. Print sanitized raw response.
+    8. State outcome: ELM327_DETECTED, NO_RESPONSE, TIMEOUT, PORT_BUSY, INVALID_RESPONSE, OPEN_FAILED.
+    9. Close serial handle in all cases.
+    """
+    port = port_name.strip().upper()
+    print(f"\n==================================================", flush=True)
+    print(f"  SEYYANEN OBD ADAPTER DIAGNOSTIC PROBE: {port}", flush=True)
+    print(f"==================================================", flush=True)
+
+    # 1 & 2: Metadata lookup
+    print(f"[PROBE-PORT] Target Port: {port}", flush=True)
+    meta = {"description": "Unknown", "manufacturer": "Unknown", "hwid": "Unknown"}
+    try:
+        from serial.tools import list_ports
+        for p in list_ports.comports():
+            if getattr(p, "device", "").upper() == port:
+                meta["description"] = getattr(p, "description", "") or "Unknown"
+                meta["manufacturer"] = getattr(p, "manufacturer", "") or "Unknown"
+                meta["hwid"] = getattr(p, "hwid", "") or "Unknown"
+                break
+    except Exception as e:
+        print(f"[PROBE-PORT] Metadata error: {e}", flush=True)
+
+    print(f"[PROBE-PORT] Description : {meta['description']}", flush=True)
+    print(f"[PROBE-PORT] Manufacturer: {meta['manufacturer']}", flush=True)
+    print(f"[PROBE-PORT] HWID        : {meta['hwid']}", flush=True)
+
+    ser = None
+    outcome = "OPEN_FAILED"
+    try:
+        print(f"[PROBE-PORT] Opening {port} @ {baudrate} baud (timeout=0.1s)...", flush=True)
+        if serial_factory:
+            ser = serial_factory(port=port, baudrate=baudrate, timeout=0.1, write_timeout=1.0)
+        else:
+            import serial
+            ser = serial.Serial(port, baudrate=baudrate, timeout=0.1, write_timeout=1.0)
+        print(f"[PROBE-PORT] Serial handle opened successfully.", flush=True)
+
+        # 4: Wait for adapter startup / Bluetooth RFCOMM link settle
+        print(f"[PROBE-PORT] Waiting 0.4s for Bluetooth/UART stabilization...", flush=True)
+        time.sleep(0.4)
+        if hasattr(ser, "reset_input_buffer"):
+            ser.reset_input_buffer()
+
+        # 5: Send safe identification command
+        print(f"[PROBE-PORT] Sending harmless identification sequence: \\r\\rATI\\r", flush=True)
+        ser.write(b"\r\rATI\r")
+
+        raw_buf = bytearray()
+        t_start = time.monotonic()
+        while (time.monotonic() - t_start) < 2.0:
+            in_waiting = getattr(ser, "in_waiting", 0)
+            if in_waiting > 0:
+                raw_buf.extend(ser.read(in_waiting))
+                if b">" in raw_buf:
+                    break
+            else:
+                chunk = ser.read(1)
+                if chunk:
+                    raw_buf.extend(chunk)
+                    if b">" in raw_buf:
+                        break
+                else:
+                    time.sleep(0.01)
+
+        # If ATI had no prompt, try ATZ (warm/hard reset)
+        if b">" not in raw_buf:
+            print(f"[PROBE-PORT] No prompt on ATI, attempting ATZ\\r...", flush=True)
+            ser.write(b"ATZ\r")
+            t_atz = time.monotonic()
+            while (time.monotonic() - t_atz) < 1.5:
+                in_waiting = getattr(ser, "in_waiting", 0)
+                if in_waiting > 0:
+                    raw_buf.extend(ser.read(in_waiting))
+                    if b">" in raw_buf:
+                        break
+                else:
+                    chunk = ser.read(1)
+                    if chunk:
+                        raw_buf.extend(chunk)
+                        if b">" in raw_buf:
+                            break
+                    else:
+                        time.sleep(0.01)
+
+        # 7: Print sanitized raw response
+        sanitized = repr(raw_buf.decode("ascii", errors="replace"))
+        print(f"[PROBE-PORT] Raw Response: {sanitized}", flush=True)
+
+        resp_upper = raw_buf.decode("ascii", errors="ignore").upper()
+        plausible_markers = ["ELM327", "OBDLINK", "VLINKER", "OK", "STN"]
+
+        # 8: State outcome
+        if any(m in resp_upper for m in plausible_markers) or (len(raw_buf) > 0 and b">" in raw_buf):
+            identity = "ELM327"
+            for l in resp_upper.replace("\r", "\n").split("\n"):
+                lc = l.strip().replace(">", "")
+                if any(m in lc for m in ["ELM327", "OBDLINK", "VLINKER", "STN"]):
+                    identity = lc
+                    break
+            outcome = "ELM327_DETECTED"
+            print(f"[PROBE-PORT] Outcome: ELM327_DETECTED (Identity: {identity})", flush=True)
+        elif not raw_buf:
+            outcome = "TIMEOUT"
+            print(f"[PROBE-PORT] Outcome: TIMEOUT (No bytes received from adapter)", flush=True)
+        elif b">" not in raw_buf:
+            outcome = "INVALID_RESPONSE"
+            print(f"[PROBE-PORT] Outcome: INVALID_RESPONSE (Bytes received but no '>' prompt)", flush=True)
+        else:
+            outcome = "NO_RESPONSE"
+            print(f"[PROBE-PORT] Outcome: NO_RESPONSE", flush=True)
+
+    except Exception as e:
+        err_str = str(e)
+        err_cls = type(e).__name__
+        if "denied" in err_str.lower() or "busy" in err_str.lower() or "permission" in err_str.lower():
+            outcome = "PORT_BUSY"
+            print(f"[PROBE-PORT] Outcome: PORT_BUSY ({err_cls}: {err_str})", flush=True)
+        else:
+            outcome = "OPEN_FAILED"
+            print(f"[PROBE-PORT] Outcome: OPEN_FAILED ({err_cls}: {err_str})", flush=True)
+    finally:
+        # 9: Close serial handle in all cases
+        if ser is not None:
+            try:
+                ser.close()
+                print(f"[PROBE-PORT] Serial handle cleanly closed.", flush=True)
+            except Exception as ce:
+                print(f"[PROBE-PORT] Error closing handle: {ce}", flush=True)
+
+    print(f"==================================================\n", flush=True)
+    return outcome
+
+
 class ELM327DiagnosticAdapter(DiagnosticAdapter):
     """
     Production-grade ELM327 USB/Serial Diagnostic Adapter (Phase K-2).
@@ -1086,6 +1578,7 @@ class ELM327DiagnosticAdapter(DiagnosticAdapter):
         write_timeout: float = 2.0,
         capabilities: Optional[AdapterCapabilities] = None,
         serial_factory: Optional[Callable[..., Any]] = None,
+        simulation: bool = False,
     ):
         caps = capabilities or AdapterCapabilities(
             supports_iso15765_can=True,
@@ -1120,12 +1613,15 @@ class ELM327DiagnosticAdapter(DiagnosticAdapter):
         self.read_timeout = read_timeout
         self.write_timeout = write_timeout
         self.serial_factory = serial_factory
+        self.simulation = bool(simulation)
         self.ser: Optional[Any] = None
         self._transport_stage: ELM327TransportStage = ELM327TransportStage.DISCONNECTED
         self.last_raw_response: Optional[bytes] = None
         self.last_normalized_response: List[str] = []
         self.detected_protocol: Optional[str] = None
         self.elm_version: Optional[str] = None
+        self.last_probe_result: Optional[PortProbeResult] = None
+        self.last_probe_history: List[PortProbeResult] = []
 
     @property
     def port(self) -> Optional[str]:
@@ -1151,56 +1647,119 @@ class ELM327DiagnosticAdapter(DiagnosticAdapter):
         return self._transport_stage == ELM327TransportStage.VEHICLE_PROTOCOL_READY
 
     def _discover_port(self) -> Optional[str]:
-        """Auto-discovers candidate diagnostic COM port on Windows / Host."""
-        try:
-            from platform_abstraction import HostPlatformProvider
-            prov = HostPlatformProvider()
-            ports = prov.enumerate_serial_ports()
-            if not ports:
-                return None
-            keywords = ["vlinker", "elm327", "obd", "ch340", "ftdi", "cp210", "prolific"]
-            for p in ports:
-                desc = (str(p.get("description", "")) + " " + str(p.get("manufacturer", ""))).lower()
-                for kw in keywords:
-                    if kw in desc:
-                        return p["device"]
-            return ports[0]["device"]
-        except Exception as e:
-            logger.debug("Port discovery failed: %s", e)
-            return None
+        """Auto-discovers candidate diagnostic COM port on Windows / Host via probing."""
+        res, _ = discover_and_probe_elm327(
+            explicit_port=self._port,
+            serial_factory=self.serial_factory,
+            timeout_per_port=1.2,
+        )
+        return res.port if res else None
 
     def _do_connect(self, timeout: float) -> bool:
         """
         Establishes physical serial connection and executes deterministic ELM327 initialization.
+        Enforces candidate discovery on real hardware; never falls back to mock silently.
         """
-        # Engine delegation mode (backward compatibility)
-        if self.engine is not None and not self.ser:
-            if hasattr(self.engine, "ser") and self.engine.ser and getattr(self.engine.ser, "is_open", False):
-                self.ser = self.engine.ser
-                self._transport_stage = ELM327TransportStage.ELM327_RESPONSIVE
-                return True
+        # Phase K-1 compatibility: support lightweight mock engines used in unit tests
+        if self.engine is not None and type(self.engine).__name__ == "FakeEngineMock":
             if hasattr(self.engine, "baglan"):
                 ok = bool(self.engine.baglan())
                 if ok:
                     if hasattr(self.engine, "ser"):
                         self.ser = self.engine.ser
                     self._transport_stage = ELM327TransportStage.ELM327_RESPONSIVE
+                else:
+                    self._transport_stage = ELM327TransportStage.DISCONNECTED
+                    raise AdapterConnectionError("Mock engine connection failed.", adapter_id=self.adapter_id)
                 return ok
 
-        # Standalone Direct Serial Transport Mode:
+        is_mock = self.simulation or is_simulation_mode() or (self._port == "COM_MOCK")
+
+        if is_mock:
+            target_port = self._port or "COM_MOCK"
+            self._port = target_port
+            logger.info("Connecting in SIMULATION mode on '%s'...", target_port)
+            try:
+                if self.serial_factory:
+                    self.ser = self.serial_factory(
+                        target_port,
+                        baudrate=self._baudrate,
+                        timeout=self.read_timeout,
+                        write_timeout=self.write_timeout,
+                    )
+                else:
+                    self.ser = MockSerialForELM(port=target_port, baudrate=self._baudrate)
+
+                self._transport_stage = ELM327TransportStage.PORT_OPENED
+                if self.engine is not None:
+                    self.engine.ser = self.ser
+                    self.engine.bagli_port = target_port
+                    if hasattr(self.engine, "io_worker") and self.engine.io_worker:
+                        self.engine.io_worker.stop()
+                    from motor import SerialIOThread
+                    self.engine.io_worker = SerialIOThread(self.ser, timeout=self.read_timeout)
+                    self.engine.io_worker.start()
+                    self.engine._start_keep_alive_timer()
+                    self.engine.test_start_time = time.time()
+
+                init_ok = self._execute_initialization(timeout=timeout)
+                if not init_ok:
+                    self._do_disconnect()
+                    raise AdapterConnectionError(
+                        f"ELM327 initialization failed on mock port '{target_port}'.",
+                        adapter_id=self.adapter_id,
+                    )
+                return True
+            except Exception as e:
+                self._transport_stage = ELM327TransportStage.DISCONNECTED
+                if isinstance(e, AdapterError):
+                    raise
+                raise AdapterConnectionError(
+                    f"Failed to open mock serial port '{target_port}': {e}",
+                    adapter_id=self.adapter_id,
+                ) from e
+
+        # -------------------------------------------------------------
+        # STRICT PHYSICAL HARDWARE MODE (Normal User Connection)
+        # -------------------------------------------------------------
         target_port = self._port
-        if not target_port or str(target_port).upper() == "AUTO":
-            target_port = self._discover_port()
-        if not target_port:
-            self._transport_stage = ELM327TransportStage.DISCONNECTED
-            raise AdapterUnavailableError(
-                "No serial port specified or detected for ELM327 adapter.",
-                adapter_id=self.adapter_id,
+        if not target_port or str(target_port).upper() in ("AUTO", ""):
+            # Automatic candidate enumeration and probing across all available ports
+            probe_res, all_probes = discover_and_probe_elm327(
+                serial_factory=self.serial_factory,
+                timeout_per_port=min(1.8, max(0.8, timeout / 3.0)),
+                on_status=logger.info,
             )
+            self.last_probe_result = probe_res
+            self.last_probe_history = all_probes
 
-        self._port = target_port
+            if probe_res is None or not probe_res.adapter_detected:
+                self._transport_stage = ELM327TransportStage.DISCONNECTED
+                reasons = [f"{r.port} ({r.failure_reason})" for r in all_probes] or ["No COM ports detected"]
+                raise AdapterUnavailableError(
+                    f"No compatible ELM327 adapter detected on available COM ports: {', '.join(reasons)}",
+                    adapter_id=self.adapter_id,
+                )
 
-        # Open physical / mock serial port
+            target_port = probe_res.port
+            self._port = target_port
+            self._baudrate = probe_res.baudrate
+            self.elm_version = probe_res.adapter_identity
+        else:
+            log_real_connect(f"Using explicitly configured port: {target_port}")
+            self.last_probe_result = PortProbeResult(
+                port=target_port,
+                transport="serial",
+                connection_state="CONNECTING",
+                adapter_detected=True,
+                baudrate=self._baudrate,
+            )
+            self.last_probe_history = [self.last_probe_result]
+
+        # Open dedicated connection on target port
+        log_real_connect(f"Establishing active connection on {target_port}")
+        # Allow Windows Bluetooth stack to settle after probe closure
+        time.sleep(0.4)
         try:
             if self.serial_factory:
                 self.ser = self.serial_factory(
@@ -1217,12 +1776,18 @@ class ELM327DiagnosticAdapter(DiagnosticAdapter):
                     timeout=self.read_timeout,
                     write_timeout=self.write_timeout,
                 )
+                time.sleep(0.3)  # Bluetooth RFCOMM connection stabilization delay
+                if hasattr(self.ser, "reset_input_buffer"):
+                    self.ser.reset_input_buffer()
+
             self._transport_stage = ELM327TransportStage.PORT_OPENED
-            logger.info("Serial port '%s' opened successfully.", target_port)
+            log_real_connect(f"Active connection open on {target_port} @ {self._baudrate} baud")
+            logger.info("Physical serial port '%s' opened at %d baud.", target_port, self._baudrate)
         except Exception as e:
             self._transport_stage = ELM327TransportStage.DISCONNECTED
+            log_real_connect(f"Failed to open active connection on {target_port}: {e}")
             raise AdapterConnectionError(
-                f"Failed to open serial port '{target_port}': {e}",
+                f"Failed to open physical serial port '{target_port}': {e}",
                 adapter_id=self.adapter_id,
             ) from e
 
@@ -1230,29 +1795,46 @@ class ELM327DiagnosticAdapter(DiagnosticAdapter):
         init_ok = self._execute_initialization(timeout=timeout)
         if not init_ok:
             self._do_disconnect()
+            log_real_connect(f"ELM327 initialization failed on {target_port}")
             raise AdapterConnectionError(
-                f"ELM327 initialization failed on port '{target_port}'.",
+                f"ELM327 initialization failed on physical port '{target_port}'.",
                 adapter_id=self.adapter_id,
             )
+        log_real_connect(f"ELM327 initialization successful on {target_port} (Version: {self.elm_version})")
+
+        # Wire up engine if attached (maintains backward compatibility with C/D/E/F/G layers)
+        if self.engine is not None:
+            self.engine.ser = self.ser
+            self.engine.bagli_port = target_port
+            if hasattr(self.engine, "io_worker") and self.engine.io_worker:
+                self.engine.io_worker.stop()
+            from motor import SerialIOThread
+            self.engine.io_worker = SerialIOThread(self.ser, timeout=self.read_timeout)
+            self.engine.io_worker.start()
+            self.engine._start_keep_alive_timer()
+            self.engine.test_start_time = time.time()
 
         return True
 
     def _execute_initialization(self, timeout: float = 5.0) -> bool:
         """
         Deterministic, safe ELM327 initialization sequence.
+        Supports standard ELM327, vLinker, OBDLink, and STN chipsets.
         """
         # Step 1: AT Z / AT WS (Hardware/warm reset)
         lines, status = self._send_raw_command("AT Z", timeout=min(2.0, timeout))
         joined = "".join(lines).upper()
-        if "ELM327" not in joined and "OK" not in joined:
+        plausible_markers = ["ELM327", "OBDLINK", "VLINKER", "OK", "STN"]
+        if not any(m in joined for m in plausible_markers):
             lines, status = self._send_raw_command("AT WS", timeout=min(2.0, timeout))
             joined = "".join(lines).upper()
-            if "ELM327" not in joined and "OK" not in joined:
-                logger.error("ELM327 adapter failed to respond to AT Z / AT WS.")
+            if not any(m in joined for m in plausible_markers):
+                logger.error("ELM327/VLinker adapter failed to respond to AT Z / AT WS. Response: %s", lines)
                 return False
 
         self.elm_version = lines[0] if lines else "ELM327"
         self._transport_stage = ELM327TransportStage.ELM327_RESPONSIVE
+        log_real_connect(f"ELM327 adapter responsive: {self.elm_version}")
         logger.info("ELM327 adapter responsive: %s", self.elm_version)
 
         # Step 2: ATE0 (Echo off)
@@ -1686,3 +2268,23 @@ class AdapterRegistry:
 AdapterRegistry.register_factory(AdapterType.MOCK_REFERENCE, lambda **kw: MockDiagnosticAdapter(**kw), override=True)
 AdapterRegistry.register_factory(AdapterType.ELM327, lambda **kw: ELM327DiagnosticAdapter(**kw), override=True)
 AdapterRegistry.register_factory(AdapterType.J2534_PASS_THRU, lambda **kw: J2534DiagnosticAdapter(**kw), override=True)
+
+
+if __name__ == "__main__":
+    if "--list-ports" in sys.argv or "-l" in sys.argv:
+        list_available_com_ports(verbose=True)
+    elif "--probe-port" in sys.argv or "-p" in sys.argv:
+        idx = sys.argv.index("--probe-port") if "--probe-port" in sys.argv else sys.argv.index("-p")
+        if idx + 1 < len(sys.argv):
+            target = sys.argv[idx + 1]
+            cli_probe_port(target)
+        else:
+            print("Usage: python diagnostic_adapter.py --probe-port <COM_PORT>")
+            sys.exit(1)
+    else:
+        print("Seyyanen Diagnostic Adapter Layer (Phase J-1 / K-2)")
+        print("Usage:")
+        print("  python diagnostic_adapter.py --list-ports")
+        print("  python diagnostic_adapter.py --probe-port <COM_PORT>")
+        list_available_com_ports(verbose=True)
+

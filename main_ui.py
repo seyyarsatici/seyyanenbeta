@@ -57,6 +57,14 @@ class MainUI(QMainWindow):
         self.setGeometry(100, 100, 1400, 900)
         self.base_dir = Path(__file__).resolve().parent
         
+        # Simulation mode detection: explicit CLI flag or env var only (never silent mock)
+        self.simulation_mode = (
+            "--simulation" in sys.argv 
+            or "--mock" in sys.argv 
+            or os.environ.get("SEYYANEN_SIMULATION", "").lower() in ("1", "true", "yes")
+            or os.environ.get("SIMULATION", "").lower() in ("1", "true", "yes")
+        )
+
         # Veri saklama
         self.vehicle_info = {"marka": "Bilinmiyor", "model": "Bilinmiyor"}
         self.connection_status = {"port": "Bağlı Değil", "ecu": "ECU Yok"}
@@ -480,18 +488,20 @@ class MainUI(QMainWindow):
             from motor import AutoExpertEngine
             from live_runtime import LiveAcquisitionRuntime
             if not hasattr(self, "engine") or self.engine is None:
-                self.engine = AutoExpertEngine()
+                self.engine = AutoExpertEngine(simulation=self.simulation_mode)
+            else:
+                self.engine.simulation = self.simulation_mode
             
-            # Phase K-1: Non-blocking diagnostic connection runtime hardening.
-            # Do NOT block the GUI thread with synchronous baglan() here.
-            # LiveDiagnosticWidget and LiveAcquisitionRuntime handle connection
-            # asynchronously via dedicated background workers.
-            self.live_runtime = LiveAcquisitionRuntime(engine=self.engine)
+            # Phase K-1 & K-2: Non-blocking diagnostic connection runtime hardening.
+            # Normal user connection requires real physical hardware.
+            # Simulation is only active if explicitly requested via --simulation or SIMULATION=true.
+            self.live_runtime = LiveAcquisitionRuntime(engine=self.engine, simulation=self.simulation_mode)
             self.live_diagnostic_panel = LiveDiagnosticWidget(runtime=self.live_runtime, parent=self)
             self.analysis_stack.addWidget(self.live_diagnostic_panel)
 
         self.analysis_stack.setCurrentWidget(self.live_diagnostic_panel)
-        print("[LOG] Canlı Teşhis Paneli açıldı.")
+        mode_str = "Simülasyon (MockSerial)" if self.simulation_mode else "Gerçek Donanım (Real Hardware)"
+        print(f"[LOG] Canlı Teşhis Paneli açıldı. Mod: {mode_str}")
 
     def analyze_file(self, filename: str, file_path: str):
         """Dosya analizi başlat - AnalysisPanel'i MainUI içine göm"""

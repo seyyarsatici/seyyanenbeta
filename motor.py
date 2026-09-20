@@ -41,6 +41,22 @@ try:
 except ImportError:
     MOCK_AVAILABLE = False
 
+
+def is_simulation_mode(explicit: Optional[bool] = None) -> bool:
+    """
+    Checks if simulation mode (MockSerial / COM_MOCK) is explicitly enabled.
+    Mock mode must NEVER be selected silently during normal user connections.
+    """
+    if explicit is not None:
+        return bool(explicit)
+    for var in ("SEYYANEN_SIMULATION", "SIMULATION", "USE_MOCK_SERIAL", "MOCK_OBD"):
+        val = os.environ.get(var)
+        if val is not None:
+            return val.strip().lower() in ("1", "true", "yes", "on")
+    if any(arg.lower() in ("--simulation", "--mock") for arg in sys.argv):
+        return True
+    return False
+
 # --- LOGGING SETUP (V97.1: Instant Flush & Force) ---
 logging.basicConfig(filename='auto_expert_log.txt', level=logging.INFO, 
                     format='%(asctime)s - %(levelname)s - %(message)s', force=True)
@@ -439,11 +455,15 @@ class SerialIOThread(threading.Thread):
         """Thread'i kapat"""
         self.running = False
 
-def port_secici():
-    """Otomatik COM Port Seçici"""
-    if MOCK_AVAILABLE:
-        print("🔌 Simülasyon Aktif: MockSerial Kullanılıyor")
-        return "COM_MOCK"
+def port_secici(simulation: Optional[bool] = None, interactive: bool = False):
+    """Otomatik COM Port Seçici — Yalnızca açıkça talep edildiğinde simülasyon modu açılır."""
+    sim_active = simulation if simulation is not None else is_simulation_mode()
+    if sim_active:
+        if MOCK_AVAILABLE:
+            print("🔌 Simülasyon Aktif: MockSerial Kullanılıyor (Açıkça Talep Edildi)")
+            return "COM_MOCK"
+        print("❌ Simülasyon talep edildi ancak MockSerial modülü mevcut değil!")
+        return None
 
     if PLATFORM_MANAGER_AVAILABLE:
         devices = PlatformManager.discover_diagnostic_devices()
@@ -454,6 +474,9 @@ def port_secici():
         if not devices:
             print("❌ Hiç seri port / teşhis cihazı bulunamadı!")
             return None
+        if not interactive:
+            print(f"📡 Aday port seçildi: {devices[0]['device']}")
+            return devices[0]["device"]
         # Convert dictionary to objects with device/description attributes for manual picker below
         ports = [type("PortInfo", (), {"device": d["device"], "description": d.get("description", "")})() for d in devices]
     else:
@@ -462,15 +485,18 @@ def port_secici():
             print("❌ Hiç COM portu bulunamadı!")
             return None
         
-        keywords = ['vlinker', 'ch340', 'ftdi', 'elm327', 'obd']
+        keywords = ['vlinker', 'ch340', 'ftdi', 'elm327', 'obd', 'bluetooth', 'bth']
         for port in ports:
             desc = (port.description + " " + (port.manufacturer or "")).lower()
             for k in keywords:
                 if k in desc:
                     print(f"✅ Otomatik: {port.device}")
                     return port.device
+        if not interactive:
+            print(f"📡 Aday port seçildi: {ports[0].device}")
+            return ports[0].device
     
-    # Manuel Seçim
+    # Manuel Seçim (Sadece interaktif terminal/CLI modunda)
     print("\n📡 Mevcut Portlar:")
     for i, p in enumerate(ports, 1):
         print(f"  {i}. {p.device} - {p.description}")
@@ -570,7 +596,8 @@ def _decode_0101(x):
 
 class AutoExpertEngine:
     """V136: Industrial Safe Math Parser (No eval)"""
-    def __init__(self):
+    def __init__(self, simulation: Optional[bool] = None):
+        self.simulation = simulation
         self.ops = {
             ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
             ast.Div: operator.truediv, ast.Pow: operator.pow, ast.BitAnd: operator.and_,
@@ -588,6 +615,7 @@ class AutoExpertEngine:
         }
         # GÖREV 1: __init__ içine state değişkenlerini ekle
         self.ser = None
+        self.bagli_port: Optional[str] = None
         self._connect_lock = threading.Lock()
         self.is_can = False
         self.is_slow_protocol = False
@@ -824,10 +852,10 @@ class AutoExpertEngine:
             # Parse hatası durumunda None döner
             return None
 
-# Updated baglan() method to start KeepAliveThread
-    def baglan(self, profil=None):
+    def baglan(self, profil=None, port: Optional[str] = None, simulation: Optional[bool] = None):
         """
-        Evrensel ve Garantili Bağlantı Stratejisi
+        Evrensel ve Garantili Bağlantı Stratejisi.
+        Açıkça talep edilmedikçe MockSerial'a sessizce geçilmez.
         """
         if not hasattr(self, "_connect_lock"):
             self._connect_lock = threading.Lock()
@@ -837,20 +865,38 @@ class AutoExpertEngine:
             return False
 
         try:
-            if self.ser and self.ser.is_open:
+            if self.ser and getattr(self.ser, "is_open", False):
                 self.ser.close()
 
-            selected_port = port_secici()
-            if not selected_port: return False
+            sim_active = simulation if simulation is not None else (
+                self.simulation if getattr(self, "simulation", None) is not None else is_simulation_mode()
+            )
 
-            print(f"🚀 Bağlantı Başlatılıyor: {selected_port}")
+            if port:
+                selected_port = port
+            elif sim_active:
+                selected_port = "COM_MOCK"
+            else:
+                selected_port = port_secici(simulation=False)
+
+            if not selected_port:
+                log_flush("[BAGLAN_FAIL] Kullanılabilir port bulunamadı.")
+                return False
+
+            self.bagli_port = selected_port
 
             try:
-                if MOCK_AVAILABLE:
+                if selected_port == "COM_MOCK" or sim_active:
+                    if not MOCK_AVAILABLE:
+                        log_flush("[BAGLAN_ERROR] Mock port seçildi ancak MockSerial mevcut değil.")
+                        return False
+                    print(f"🚀 Simülasyon Başlatılıyor: {selected_port}")
                     self.ser = MockSerial(port=selected_port, baudrate=38400, timeout=2.0)
                 else:
+                    print(f"🚀 Fiziksel Bağlantı Başlatılıyor: {selected_port}")
                     self.ser = serial.Serial(selected_port, 38400, timeout=2.0)
-                    self.ser.reset_input_buffer()
+                    if hasattr(self.ser, "reset_input_buffer"):
+                        self.ser.reset_input_buffer()
 
                 # V200: SerialIOThread başlat
                 if self.io_worker:

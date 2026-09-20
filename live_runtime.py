@@ -112,13 +112,18 @@ class LiveAcquisitionRuntime:
         vehicle_context: Optional[Any] = None,
         target_ecu: str = "ECM",
         persistence_queue_size: int = 1000,
+        simulation: bool = False,
     ):
-        self.engine = engine if engine is not None else AutoExpertEngine()
+        self.simulation = bool(simulation)
+        self.engine = engine if engine is not None else AutoExpertEngine(simulation=self.simulation)
+        if hasattr(self.engine, "simulation") and self.engine.simulation is None:
+            self.engine.simulation = self.simulation
+
         if adapter is not None:
             self.adapter = adapter
         else:
             try:
-                self.adapter = ELM327DiagnosticAdapter(engine=self.engine)
+                self.adapter = ELM327DiagnosticAdapter(engine=self.engine, simulation=self.simulation)
             except Exception as e:
                 logging.warning(f"Could not initialize ELM327DiagnosticAdapter: {e}")
                 self.adapter = None
@@ -299,7 +304,7 @@ class LiveAcquisitionRuntime:
                 logging.warning(f"LiveRuntime adapter connect failed: {e}")
                 return False
         if hasattr(self.engine, "baglan"):
-            return bool(self.engine.baglan())
+            return bool(self.engine.baglan(simulation=self.simulation))
         return False
 
     def connect_async(self, timeout: float = 5.0, on_finished: Optional[Callable[[bool, Optional[Exception]], None]] = None) -> bool:

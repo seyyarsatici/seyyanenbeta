@@ -185,7 +185,14 @@ class LivePresentationModel:
         return mapping.get(state, {"text": state, "bg": "#BDC3C7", "fg": "#2C3E50"})
 
     @staticmethod
-    def get_connection_info(runtime_state: str, is_serial_open: bool, failure_count: int = 0, connection_state: Optional[str] = None) -> Dict[str, str]:
+    def get_connection_info(
+        runtime_state: str,
+        is_serial_open: bool,
+        failure_count: int = 0,
+        connection_state: Optional[str] = None,
+        is_simulation: bool = False,
+        port: Optional[str] = None,
+    ) -> Dict[str, str]:
         """Computes top-level connection badge and status description."""
         conn_str = str(connection_state).upper() if connection_state else ""
         if "CONNECTING" in conn_str:
@@ -194,12 +201,17 @@ class LivePresentationModel:
             return {"status": "BAĞLANTI HATASI", "bg": "#E74C3C", "fg": "#FFFFFF", "detail": "Adaptör veya seri port bağlantısı kurulamadı"}
         if not is_serial_open:
             return {"status": "BAĞLANTI YOK", "bg": "#E74C3C", "fg": "#FFFFFF", "detail": "Seri port kapalı veya kablo takılı değil"}
+        if is_simulation:
+            port_label = f" ({port})" if port else ""
+            return {"status": f"SİMÜLASYON{port_label}", "bg": "#8E44AD", "fg": "#FFFFFF", "detail": "MockSerial test ortamı devrede"}
+        port_label = f": {port}" if port and port not in ("AUTO", "COM_MOCK") else ""
         if runtime_state == LIVE_ERROR:
             return {"status": "SİSTEM HATASI", "bg": "#C0392B", "fg": "#FFFFFF", "detail": "Çalışma zamanında kritik hata oluştu"}
         if runtime_state == LIVE_DEGRADED:
-            return {"status": "KISITLI ÇALIŞMA", "bg": "#E67E22", "fg": "#FFFFFF", "detail": f"Kısmi veri kaybı / {failure_count} başarısız sorgu"}
+            return {"status": f"KISITLI{port_label}", "bg": "#E67E22", "fg": "#FFFFFF", "detail": f"Kısmi veri kaybı / {failure_count} başarısız sorgu"}
         if runtime_state in (LIVE_RUNNING, LIVE_STARTING):
-            return {"status": "BAĞLI VE AKTİF", "bg": "#2ECC71", "fg": "#FFFFFF", "detail": "ECU canlı veri akışı aktif"}
+            status_text = f"BAĞLI{port_label}" if port_label else "BAĞLI VE AKTİF"
+            return {"status": status_text, "bg": "#2ECC71", "fg": "#FFFFFF", "detail": f"ECU canlı veri akışı aktif ({port or 'OBD'})"}
         if runtime_state == LIVE_STOPPING:
             return {"status": "DURDURULUYOR", "bg": "#F39C12", "fg": "#FFFFFF", "detail": "İş parçacığı kapatılıyor"}
         return {"status": "HAZIR (DURDU)", "bg": "#34495E", "fg": "#FFFFFF", "detail": "Canlı okuma durduruldu"}
@@ -287,7 +299,17 @@ class LiveConnectWorker(QThread):
     def run(self):
         try:
             ok = self.runtime.connect(timeout=self.timeout)
-            msg = "Adaptör ve ECU bağlantısı başarıyla kuruldu." if ok else "Adaptör veya seri porta bağlanılamadı. Port ve kablo bağlantılarını kontrol edin."
+            port_str = getattr(getattr(self.runtime, "adapter", None), "port", None) or "OBD"
+            if ok:
+                if getattr(self.runtime, "simulation", False):
+                    msg = f"Simülasyon bağlantısı aktif ({port_str})."
+                else:
+                    msg = f"ELM327 adaptörü ({port_str}) başarıyla bağlandı."
+            else:
+                if getattr(self.runtime, "simulation", False):
+                    msg = "Simülasyon bağlantısı kurulamadı."
+                else:
+                    msg = "Kullanılabilir COM portlarında uyumlu ELM327 adaptörü bulunamadı. Port ve Bluetooth bağlantılarını kontrol edin."
             self.connect_finished.emit(ok, msg)
         except Exception as e:
             self.connect_finished.emit(False, f"Bağlantı hatası: {e}")
@@ -705,7 +727,16 @@ class LiveDiagnosticWidget(QWidget):
             health = self.runtime.get_runtime_health()
             fail_count = health.get("failure_counts", {}).get("total", 0)
 
-            conn_info = LivePresentationModel.get_connection_info(state, is_serial_alive, fail_count, connection_state=conn_state)
+            is_sim = getattr(self.runtime, "simulation", False)
+            active_port = getattr(getattr(self.runtime, "adapter", None), "port", None)
+            conn_info = LivePresentationModel.get_connection_info(
+                state,
+                is_serial_alive,
+                fail_count,
+                connection_state=conn_state,
+                is_simulation=is_sim,
+                port=active_port,
+            )
             self.badge_connection.setText(conn_info["status"])
             self.badge_connection.setStyleSheet(f"background-color: {conn_info['bg']}; color: {conn_info['fg']}; border-radius: 4px; padding: 4px;")
             self.badge_connection.setToolTip(conn_info["detail"])
