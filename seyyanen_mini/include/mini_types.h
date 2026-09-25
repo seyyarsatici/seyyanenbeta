@@ -271,6 +271,22 @@ static inline const char* adapterBrandToString(AdapterBrand b) {
     }
 }
 
+static inline const char* transportErrorToString(TransportError e) {
+    switch (e) {
+        case TRANSPORT_ERR_NONE:                     return "NONE";
+        case TRANSPORT_ERR_BT_INIT_FAILED:           return "BT_INIT_FAILED";
+        case TRANSPORT_ERR_TARGET_NOT_FOUND:         return "TARGET_NOT_FOUND";
+        case TRANSPORT_ERR_SPP_CONNECT_FAILED:       return "SPP_CONNECT_FAILED";
+        case TRANSPORT_ERR_SPP_DISCONNECTED:         return "SPP_DISCONNECTED";
+        case TRANSPORT_ERR_TRANSACTION_TIMEOUT:      return "TRANSACTION_TIMEOUT";
+        case TRANSPORT_ERR_INVALID_ADAPTER_RESPONSE: return "INVALID_ADAPTER_RESPONSE";
+        case TRANSPORT_ERR_REMOTE_REJECTED:          return "REMOTE_REJECTED";
+        case TRANSPORT_ERR_SAFETY_BLOCKED:           return "SAFETY_BLOCKED";
+        case TRANSPORT_ERR_UNKNOWN:                  return "UNKNOWN";
+        default:                                     return "UNKNOWN";
+    }
+}
+
 static inline const char* elm327StateToString(Elm327State s) {
     switch (s) {
         case ELM_STATE_UNINITIALIZED:    return "UNINITIALIZED";
@@ -314,6 +330,10 @@ static inline const char* freshnessStateToString(FreshnessState f) {
         case FRESHNESS_NEVER_VALID: return "NEVER_VALID";
         default:                    return "UNKNOWN";
     }
+}
+
+static inline const char* freshnessToString(FreshnessState f) {
+    return freshnessStateToString(f);
 }
 
 static inline const char* qualityGradeToString(QualityGrade q) {
@@ -378,6 +398,25 @@ typedef enum {
     SESSION_STATE_RECOVERABLE_INCOMPLETE = 6,
     SESSION_STATE_ERROR                  = 7
 } SessionState;
+
+// 21b. High-Level OBD Diagnostic Operation Ownership State
+typedef enum {
+    DIAG_OP_IDLE          = 0,
+    DIAG_OP_AUTO_SEQUENCE = 1,
+    DIAG_OP_MANUAL_INIT   = 2,
+    DIAG_OP_MANUAL_SCAN   = 3
+} DiagnosticOpState;
+
+static inline const char* diagnosticOpStateToString(DiagnosticOpState s) {
+    switch (s) {
+        case DIAG_OP_IDLE:          return "IDLE";
+        case DIAG_OP_AUTO_SEQUENCE: return "AUTO_SEQUENCE";
+        case DIAG_OP_MANUAL_INIT:   return "MANUAL_INIT";
+        case DIAG_OP_MANUAL_SCAN:   return "MANUAL_SCAN";
+        default:                    return "UNKNOWN";
+    }
+}
+
 
 // 22. MicroSD Physical Storage Information
 typedef struct {

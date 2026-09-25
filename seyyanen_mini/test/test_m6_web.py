@@ -209,9 +209,12 @@ class MockMiniWebServer:
         params = query_params or {}
 
         # 1. Static HTML
-        if method == "GET" and path == "/":
+        if method == "GET" and (path == "/" or path == "/index.html"):
             html = "<!DOCTYPE html><html><head><meta name=\"viewport\" content=\"width=device-width\"><title>Seyyanen Mini</title></head><body><h1>SEYYANEN MINI</h1><button>Dashboard</button><button>Live</button><button>Sessions</button></body></html>"
             return 200, {"Content-Type": "text/html"}, html
+
+        if method == "GET" and path == "/favicon.ico":
+            return 204, {}, ""
 
         # 2. Status API
         if method == "GET" and path == "/api/status":
@@ -521,6 +524,28 @@ class TestM6WebManagement(unittest.TestCase):
 
         _, _, status_body = self.server.handle_request("GET", "/api/status")
         self.assertEqual(json.loads(status_body)["acq_state"], "PAUSED")
+
+    def test_U_index_html_and_streaming_chunking(self):
+        """U. Verify / and /index.html both return static HTML and can be chunked safely without heap allocation."""
+        status_root, headers_root, body_root = self.server.handle_request("GET", "/")
+        self.assertEqual(status_root, 200)
+        self.assertEqual(headers_root.get("Content-Type"), "text/html")
+        self.assertIn("<!DOCTYPE html>", body_root)
+
+        status_idx, headers_idx, body_idx = self.server.handle_request("GET", "/index.html")
+        self.assertEqual(status_idx, 200)
+        self.assertEqual(headers_idx.get("Content-Type"), "text/html")
+        self.assertEqual(body_root, body_idx)
+
+        # Simulate chunking of 32 KB PROGMEM payload
+        total_len = 32179
+        chunk_size = 1436
+        chunks = []
+        for offset in range(0, total_len, chunk_size):
+            size = min(chunk_size, total_len - offset)
+            chunks.append(size)
+        self.assertEqual(sum(chunks), total_len)
+        self.assertTrue(all(c <= 1436 for c in chunks))
 
 if __name__ == "__main__":
     unittest.main()

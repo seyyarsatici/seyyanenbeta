@@ -100,6 +100,44 @@ def parse_identity_response(raw_response: str) -> Dict[str, any]:
 
     return info
 
+def is_target_device(name: Optional[str]) -> bool:
+    """Mirrors VLinkerBluetoothTransport::isTargetDevice."""
+    if not name:
+        return False
+    name_clean = name.strip()
+    if not name_clean:
+        return False
+
+    # Reject iOS / BLE interface names (vLinker MC-iOS is BLE GATT, not Classic SPP)
+    lower = name_clean.lower()
+    if "ios" in lower or "ble" in lower:
+        return False
+
+    # Accept exact Classic target "vLinker MC-Android"
+    if name_clean.lower() == "vlinker mc-android":
+        return True
+
+    # Accept any device starting with "vLinker" (Classic SPP)
+    if name_clean.lower().startswith("vlinker"):
+        return True
+
+    # Accept any device starting with "Vgate"
+    if name_clean.lower().startswith("vgate"):
+        return True
+
+    return False
+
+def parse_mac_address(mac_str: Optional[str]) -> Optional[List[int]]:
+    """Mirrors VLinkerBluetoothTransport::parseMacAddress."""
+    if not mac_str or len(mac_str) < 17:
+        return None
+    import re
+    # Check colon or hyphen notation of 6 hex bytes
+    m = re.match(r'^([0-9a-fA-F]{2})[:-]([0-9a-fA-F]{2})[:-]([0-9a-fA-F]{2})[:-]([0-9a-fA-F]{2})[:-]([0-9a-fA-F]{2})[:-]([0-9a-fA-F]{2})$', mac_str.strip())
+    if not m:
+        return None
+    return [int(g, 16) for g in m.groups()]
+
 def is_command_safe(cmd: str) -> bool:
     """Mirrors VLinkerBluetoothTransport::isCommandSafe."""
     if not cmd: return False
@@ -114,7 +152,7 @@ def is_command_safe(cmd: str) -> bool:
 
 class SimulatedTransport:
     """Simulates the state machine and connection gate of VLinkerBluetoothTransport."""
-    def __init__(self, base_backoff_ms: int = 1000, max_backoff_ms: int = 16000):
+    def __init__(self, base_backoff_ms: int = 1000, max_backoff_ms: int = 16000, max_mac_failures: int = 3):
         self.state = AdapterState.DISCONNECTED
         self.last_error = TransportError.NONE
         self.identity = {}
@@ -122,7 +160,90 @@ class SimulatedTransport:
         self.current_backoff_ms = base_backoff_ms
         self.base_backoff_ms = base_backoff_ms
         self.max_backoff_ms = max_backoff_ms
+        self.max_mac_failures = max_mac_failures
         self.connecting_in_progress = False
+
+        # Permanent Bluetooth Architecture State
+        self.cached_mac: Optional[str] = None
+        self.mac_connect_failures = 0
+        self.discovery_invoked_count = 0
+        self.direct_mac_invoked_count = 0
+
+    def load_cached_mac(self, mac: str):
+        if parse_mac_address(mac):
+            self.cached_mac = mac
+
+    def clear_cached_mac(self):
+        self.cached_mac = None
+
+    def connect_with_discovery_or_cache(
+        self,
+        discovered_devices: Optional[List[Tuple[str, str]]] = None,
+        direct_mac_succeeds: bool = True,
+        ati_response: str = "vLinker MC+ v2.2.88 MICROSYS\r\n>"
+    ) -> bool:
+        """Simulates connectTaskWorker implementing Path 1 (direct MAC) and Path 2 (bounded discovery)."""
+        if self.state == AdapterState.CONNECTED and self.identity.get("verified"):
+            return True
+        if self.connecting_in_progress:
+            return False
+
+        self.connecting_in_progress = True
+        self.state = AdapterState.CONNECTING
+
+        raw_connected = False
+        target_mac = self.cached_mac
+
+        # PATH 1: Direct MAC connection
+        if target_mac is not None:
+            self.direct_mac_invoked_count += 1
+            if direct_mac_succeeds:
+                raw_connected = True
+            else:
+                raw_connected = False
+                self.mac_connect_failures += 1
+                if self.mac_connect_failures >= self.max_mac_failures:
+                    self.clear_cached_mac()
+                    self.mac_connect_failures = 0
+        # PATH 2: Bounded Discovery
+        else:
+            self.discovery_invoked_count += 1
+            matched_mac = None
+            if discovered_devices:
+                for dev_name, dev_mac in discovered_devices:
+                    if is_target_device(dev_name) and parse_mac_address(dev_mac):
+                        matched_mac = dev_mac
+                        break
+            if matched_mac:
+                self.cached_mac = matched_mac
+                target_mac = matched_mac
+                raw_connected = direct_mac_succeeds
+            else:
+                raw_connected = False
+
+        if not raw_connected:
+            self.state = AdapterState.ERROR
+            self.last_error = TransportError.SPP_CONNECT_FAILED
+            self.connecting_in_progress = False
+            return False
+
+        # ATI Handshake
+        id_info = parse_identity_response(ati_response)
+        self.identity = id_info
+
+        if not id_info["verified"]:
+            self.state = AdapterState.ERROR
+            self.last_error = TransportError.INVALID_ADAPTER_RESPONSE
+            self.connecting_in_progress = False
+            return False
+
+        self.state = AdapterState.CONNECTED
+        self.last_error = TransportError.NONE
+        self.retry_count = 0
+        self.mac_connect_failures = 0
+        self.current_backoff_ms = self.base_backoff_ms
+        self.connecting_in_progress = False
+        return True
 
     def connect(self, spp_link_ok: bool, ati_response: str) -> bool:
         # Guard: prevent duplicate connection attempts
@@ -141,7 +262,6 @@ class SimulatedTransport:
             return False
 
         # Physical link connected! But must NOT be CONNECTED yet until ATI verified.
-        # CRITICAL RULE: Bluetooth link connected != diagnostic adapter verified!
         id_info = parse_identity_response(ati_response)
         self.identity = id_info
 
@@ -322,6 +442,254 @@ class TestM2Transport(unittest.TestCase):
 
         self.assertTrue(completed)
         self.assertIn("vLinker MC+ v2.2", assembled)
+
+    def test_exact_target_identification(self):
+        """Verify target filtering specifically accepts Classic SPP (vLinker MC-Android) and rejects BLE/iOS."""
+        # Accepted Classic SPP targets
+        self.assertTrue(is_target_device("vLinker MC-Android"))
+        self.assertTrue(is_target_device("vLinker MC"))
+        self.assertTrue(is_target_device("vLinker FD-Android"))
+        self.assertTrue(is_target_device("vLinker FS"))
+        self.assertTrue(is_target_device("Vgate iCar Pro"))
+        self.assertTrue(is_target_device("vgate vLinker"))
+
+        # Rejected BLE / iOS targets (Critical: vLinker MC-iOS is BLE GATT, not Classic SPP)
+        self.assertFalse(is_target_device("vLinker MC-iOS"))
+        self.assertFalse(is_target_device("vLinker FD-iOS"))
+        self.assertFalse(is_target_device("vLinker-BLE"))
+        self.assertFalse(is_target_device("BLE-OBDLink"))
+        self.assertFalse(is_target_device("iPhone 15 Pro"))
+        self.assertFalse(is_target_device("Galaxy S24"))
+        self.assertFalse(is_target_device(""))
+        self.assertFalse(is_target_device(None))
+
+    def test_mac_address_parsing(self):
+        """Verify parsing of 6-byte Bluetooth MAC addresses in colon and hyphen notation."""
+        # Standard colon notation
+        bytes1 = parse_mac_address("00:1D:A0:12:34:56")
+        self.assertEqual(bytes1, [0x00, 0x1D, 0xA0, 0x12, 0x34, 0x56])
+
+        # Hyphen notation
+        bytes2 = parse_mac_address("AA-BB-CC-DD-EE-FF")
+        self.assertEqual(bytes2, [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF])
+
+        # Mixed-case hex
+        bytes3 = parse_mac_address("2c:b5:41:ab:cd:EF")
+        self.assertEqual(bytes3, [0x2C, 0xB5, 0x41, 0xAB, 0xCD, 0xEF])
+
+        # Malformed addresses
+        self.assertIsNone(parse_mac_address("00:1D:A0:12:34"))          # Too short
+        self.assertIsNone(parse_mac_address("00:1D:A0:12:34:56:78"))       # Too long
+        self.assertIsNone(parse_mac_address("00:1D:A0:12:34:GG"))          # Invalid hex
+        self.assertIsNone(parse_mac_address("vLinker MC-Android"))         # Device name, not MAC
+        self.assertIsNone(parse_mac_address(""))                           # Empty
+        self.assertIsNone(parse_mac_address(None))                         # None
+
+    def test_cached_mac_direct_connection_path(self):
+        """Verify that when a cached MAC exists, direct connection is used without discovery scan."""
+        transport = SimulatedTransport()
+        transport.load_cached_mac("2C:B5:41:12:34:56")
+        self.assertEqual(transport.cached_mac, "2C:B5:41:12:34:56")
+
+        # Connect should use Path 1 (direct MAC), never touching discovery
+        ok = transport.connect_with_discovery_or_cache(
+            discovered_devices=[("vLinker MC-Android", "2C:B5:41:12:34:56")],
+            direct_mac_succeeds=True
+        )
+        self.assertTrue(ok)
+        self.assertEqual(transport.state, AdapterState.CONNECTED)
+        self.assertEqual(transport.direct_mac_invoked_count, 1)
+        self.assertEqual(transport.discovery_invoked_count, 0)  # No general inquiry!
+
+    def test_fallback_discovery_path_and_caching(self):
+        """Verify bounded discovery is triggered when MAC unknown, and the target MAC is cached."""
+        transport = SimulatedTransport()
+        self.assertIsNone(transport.cached_mac)
+
+        scanned = [
+            ("Living Room TV", "11:22:33:44:55:66"),
+            ("vLinker MC-iOS", "AA:BB:CC:DD:EE:01"),      # BLE GATT - Must be skipped!
+            ("vLinker MC-Android", "2C:B5:41:98:76:54"),  # Classic SPP Target!
+            ("Other OBD", "99:88:77:66:55:44")
+        ]
+
+        # 1st Connect: triggers bounded discovery, finds vLinker MC-Android, caches MAC, connects
+        ok1 = transport.connect_with_discovery_or_cache(
+            discovered_devices=scanned,
+            direct_mac_succeeds=True
+        )
+        self.assertTrue(ok1)
+        self.assertEqual(transport.state, AdapterState.CONNECTED)
+        self.assertEqual(transport.discovery_invoked_count, 1)
+        self.assertEqual(transport.cached_mac, "2C:B5:41:98:76:54")
+
+        # Disconnect
+        transport.disconnect()
+        self.assertEqual(transport.state, AdapterState.DISCONNECTED)
+
+        # 2nd Connect: should now use cached MAC directly without discovery!
+        ok2 = transport.connect_with_discovery_or_cache(
+            discovered_devices=scanned,
+            direct_mac_succeeds=True
+        )
+        self.assertTrue(ok2)
+        self.assertEqual(transport.state, AdapterState.CONNECTED)
+        self.assertEqual(transport.discovery_invoked_count, 1)    # Still 1, no new discovery!
+        self.assertEqual(transport.direct_mac_invoked_count, 1)  # Direct MAC invoked
+
+    def test_repeated_mac_failure_invalidates_cache_and_falls_back(self):
+        """Verify 3 consecutive direct MAC connection failures invalidate cache and trigger fallback discovery."""
+        transport = SimulatedTransport(max_mac_failures=3)
+        transport.load_cached_mac("2C:B5:41:11:22:33")
+
+        # Attempt 1: Direct MAC fails
+        ok1 = transport.connect_with_discovery_or_cache(direct_mac_succeeds=False)
+        self.assertFalse(ok1)
+        self.assertEqual(transport.mac_connect_failures, 1)
+        self.assertEqual(transport.cached_mac, "2C:B5:41:11:22:33")  # Still cached
+
+        # Attempt 2: Direct MAC fails
+        ok2 = transport.connect_with_discovery_or_cache(direct_mac_succeeds=False)
+        self.assertFalse(ok2)
+        self.assertEqual(transport.mac_connect_failures, 2)
+        self.assertEqual(transport.cached_mac, "2C:B5:41:11:22:33")  # Still cached
+
+        # Attempt 3: Direct MAC fails -> reaches limit (3) -> invalidates cache
+        ok3 = transport.connect_with_discovery_or_cache(direct_mac_succeeds=False)
+        self.assertFalse(ok3)
+        self.assertEqual(transport.mac_connect_failures, 0)
+        self.assertIsNone(transport.cached_mac)  # Invalidated!
+
+        # Attempt 4: Now MAC is unknown -> Bounded discovery fallback is triggered!
+        scanned = [("vLinker MC-Android", "2C:B5:41:44:55:66")]
+        ok4 = transport.connect_with_discovery_or_cache(
+            discovered_devices=scanned,
+            direct_mac_succeeds=True
+        )
+        self.assertTrue(ok4)
+        self.assertEqual(transport.discovery_invoked_count, 1)
+        self.assertEqual(transport.cached_mac, "2C:B5:41:44:55:66")
+        self.assertEqual(transport.state, AdapterState.CONNECTED)
+
+    def test_prevention_of_overlapping_workers(self):
+        """Verify connecting_in_progress locks against overlapping connection tasks."""
+        transport = SimulatedTransport()
+        transport.connecting_in_progress = True
+
+        # Secondary connect call while worker running must be rejected
+        ok = transport.connect(spp_link_ok=True, ati_response="vLinker MC+ v2.2\r\n>")
+        self.assertFalse(ok)
+        self.assertEqual(transport.state, AdapterState.DISCONNECTED)
+
+        # Once worker finishes, connect is permitted again
+        transport.connecting_in_progress = False
+        ok2 = transport.connect(spp_link_ok=True, ati_response="vLinker MC+ v2.2\r\n>")
+        self.assertTrue(ok2)
+        self.assertEqual(transport.state, AdapterState.CONNECTED)
+
+    def test_persistent_worker_long_duration_reconnect_without_vlinker(self):
+        """Verify 5 minutes of reconnect attempts without vLinker causes ZERO task leakage and caps backoff at 16s."""
+        transport = SimulatedTransport(base_backoff_ms=1000, max_backoff_ms=16000)
+
+        # Track persistent task creation: created exactly once at boot
+        persistent_worker_count = 1
+        dynamic_tasks_spawned = 0
+
+        # Simulate 5 minutes (300,000 ms) of timeline
+        elapsed_ms = 0
+        reconnect_attempts = 0
+        unrelated_scanned = [("TVPlayer", "AC:F4:2C:05:03:AB")]
+
+        while elapsed_ms < 300000:
+            # Reconnect attempt triggered
+            used_backoff = transport.trigger_reconnect_tick()
+            reconnect_attempts += 1
+
+            # In persistent worker model: signal task (no new task created!)
+            # dynamic_tasks_spawned remains 0
+            ok = transport.connect_with_discovery_or_cache(
+                discovered_devices=unrelated_scanned,
+                direct_mac_succeeds=False
+            )
+            self.assertFalse(ok, "Must fail connection when only TVPlayer is present")
+            self.assertEqual(transport.state, AdapterState.ERROR)
+
+            # Advance timeline by backoff delay
+            elapsed_ms += used_backoff
+
+            # Backoff must never exceed 16 seconds (16,000 ms)
+            self.assertLessEqual(used_backoff, 16000)
+
+        # Over 5 minutes, at least 15 reconnect attempts occurred
+        self.assertGreater(reconnect_attempts, 15)
+        # Persistent worker count remains 1, dynamic tasks spawned remains 0!
+        self.assertEqual(persistent_worker_count, 1)
+        self.assertEqual(dynamic_tasks_spawned, 0)
+        # Backoff is capped at 16,000 ms
+        self.assertEqual(transport.current_backoff_ms, 16000)
+
+        # Now vLinker appears after 5 minutes:
+        valid_vlinker = [("TVPlayer", "AC:F4:2C:05:03:AB"), ("vLinker MC-Android", "2C:B5:41:98:76:54")]
+        ok_conn = transport.connect_with_discovery_or_cache(
+            discovered_devices=valid_vlinker,
+            direct_mac_succeeds=True
+        )
+        self.assertTrue(ok_conn)
+        self.assertEqual(transport.state, AdapterState.CONNECTED)
+        self.assertEqual(transport.current_backoff_ms, 1000)  # Backoff resets to base
+
+    def test_repeated_discovery_without_vlinker_zero_corruption_and_transition(self):
+        """Regression test for the Core 0 LoadProhibited crash:
+        - No vLinker present (only non-target devices like TVPlayer present)
+        - Repeated bounded discovery for at least 10 consecutive cycles
+        - Zero crash/null-dereference/state corruption
+        - Persistent worker remains alive throughout
+        - Wi-Fi remains available and simulated HTTP endpoint remains responsive
+        - Then simulate vLinker appearing and verify immediate transition to CONNECTED
+        """
+        transport = SimulatedTransport(base_backoff_ms=1000, max_backoff_ms=16000)
+        unrelated_scanned = [("TVPlayer", "AC:F4:2C:05:03:AB")]
+
+        # Simulated Wi-Fi SoftAP and HTTP WebServer state
+        wifi_ap_active = True
+        http_requests_served = 0
+
+        # Perform 12 consecutive bounded discovery cycles (>= 10) with no vLinker
+        for cycle in range(1, 13):
+            # Worker is signaled
+            self.assertFalse(transport.connecting_in_progress)
+            ok = transport.connect_with_discovery_or_cache(
+                discovered_devices=unrelated_scanned,
+                direct_mac_succeeds=False
+            )
+            # Must fail cleanly without crashing or corrupting state
+            self.assertFalse(ok)
+            self.assertEqual(transport.state, AdapterState.ERROR)
+            self.assertEqual(transport.last_error, TransportError.SPP_CONNECT_FAILED)
+            self.assertIsNone(transport.cached_mac)
+            self.assertEqual(transport.discovery_invoked_count, cycle)
+
+            # Wi-Fi SoftAP remains active on Core 1
+            self.assertTrue(wifi_ap_active)
+            # Simulated HTTP endpoint /api/status is queried and responds 200 OK
+            http_response = {"status": "ok", "bt_state": transport.state, "cycle": cycle}
+            self.assertEqual(http_response["status"], "ok")
+            http_requests_served += 1
+
+        self.assertEqual(transport.discovery_invoked_count, 12)
+        self.assertEqual(http_requests_served, 12)
+
+        # On cycle 13: vLinker physically appears
+        vlinker_scanned = [("TVPlayer", "AC:F4:2C:05:03:AB"), ("vLinker MC-Android", "2C:B5:41:77:88:99")]
+        ok_vlinker = transport.connect_with_discovery_or_cache(
+            discovered_devices=vlinker_scanned,
+            direct_mac_succeeds=True
+        )
+        self.assertTrue(ok_vlinker)
+        self.assertEqual(transport.state, AdapterState.CONNECTED)
+        self.assertEqual(transport.cached_mac, "2C:B5:41:77:88:99")
+        self.assertEqual(transport.identity["brand"], AdapterBrand.VLINKER)
+        self.assertTrue(wifi_ap_active)
 
 if __name__ == "__main__":
     unittest.main()

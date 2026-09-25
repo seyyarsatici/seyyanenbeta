@@ -24,8 +24,12 @@ public:
                   SdLogger& logger);
     ~MiniWebServer();
 
+    typedef bool (*DiagOpRequester)(DiagnosticOpState op);
+    typedef DiagnosticOpState (*DiagOpGetter)();
+
     bool begin();
     void update();
+    void setDiagOpCallbacks(DiagOpRequester req, DiagOpGetter get);
 
 private:
     WebServer                  _server;
@@ -34,6 +38,8 @@ private:
     PidScanner&               _scanner;
     AcquisitionScheduler&     _scheduler;
     SdLogger&                 _logger;
+    DiagOpRequester           _diagOpRequester;
+    DiagOpGetter              _diagOpGetter;
 
     void setupRoutes();
 

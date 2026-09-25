@@ -5,6 +5,7 @@
 #include <BluetoothSerial.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <freertos/semphr.h>
 #include "mini_config.h"
 #include "mini_types.h"
 
@@ -37,6 +38,16 @@ public:
     const char* getTargetName() const;
     bool isConnectingInProgress() const { return _connectingInProgress; }
 
+    // MAC Caching Inspection & Control
+    bool hasCachedMac() const { return _hasCachedMac; }
+    const char* getCachedMac() const { return _cachedMac; }
+    bool loadCachedMac();
+    void saveCachedMac(const char* macStr);
+    void clearCachedMac();
+
+    // Target Filtering
+    static bool isTargetDevice(const char* name);
+
     // Transport I/O Operations
     bool sendRaw(const uint8_t* data, size_t len);
     bool send(const char* cmd);
@@ -45,11 +56,13 @@ public:
     bool transact(const char* request, char* response, size_t maxLen, uint32_t timeoutMs = SEYYANEN_BT_TRANSACTION_TIMEOUT);
     void flushRx();
 
-    // Safety Filter
+    // Safety Filter & Helpers
     static bool isCommandSafe(const char* cmd);
+    static bool parseMacAddress(const char* macStr, uint8_t* outBytes);
 
 private:
-    BluetoothSerial     _btSerial;
+    mutable BluetoothSerial _btSerial;
+    SemaphoreHandle_t   _busMutex;
     AdapterState        _state;
     TransportError      _lastError;
     AdapterIdentityInfo _identity;
@@ -60,15 +73,24 @@ private:
     uint8_t             _macBytes[6];
     bool                _hasMacTarget;
 
+    char                _cachedMac[24];
+    uint8_t             _cachedMacBytes[6];
+    bool                _hasCachedMac;
+    uint32_t            _macConnectFailures;
+
     bool                _btStarted;
+    volatile bool       _workerRunning;
     volatile bool       _connectingInProgress;
     volatile bool       _abortConnection;
+    volatile bool       _discoveredTarget;
     TaskHandle_t        _connectTaskHandle;
     uint32_t            _lastAttemptMs;
     uint32_t            _currentBackoffMs;
 
+    static void onDeviceDiscovered(BTAdvertisedDevice* dev);
+    static VLinkerBluetoothTransport* s_discoveryInstance;
+
     void setState(AdapterState newState, TransportError err = TRANSPORT_ERR_NONE);
-    bool parseMacAddress(const char* macStr, uint8_t* outBytes);
     bool performIdentityHandshake();
     void parseIdentityResponse(const char* rawResponse);
     void cancelConnectTask();

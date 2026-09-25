@@ -431,7 +431,8 @@ void SdLogger::processStorageQueue() {
         }
 
         if (_queueCount < SEYYANEN_STORAGE_BACKPRESSURE_THRESHOLD &&
-            _metrics.health_state == STORAGE_HEALTH_BACKPRESSURE) {
+            (_metrics.health_state == STORAGE_HEALTH_BACKPRESSURE ||
+             _metrics.health_state == STORAGE_HEALTH_OVERFLOW)) {
             _metrics.health_state = STORAGE_HEALTH_OK;
         }
 

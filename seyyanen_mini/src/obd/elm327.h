@@ -18,6 +18,7 @@ public:
     // Initialization Sequence
     // Executes: ATZ -> ATE0 -> ATL0 -> ATS0 -> ATH0 -> ATSP0 -> ATDP
     bool initialize();
+    void reset();
 
     // State Inspection
     Elm327State getState() const;

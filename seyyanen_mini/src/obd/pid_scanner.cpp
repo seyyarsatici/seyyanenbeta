@@ -36,47 +36,47 @@ void PidScanner::initPidRegistry() {
 
     registerPid(0x0104, "Calculated Engine Load", "LOAD", "%",
                 "Calculated percentage of engine peak torque", "A*100/255", "DECODER_LOAD",
-                SEYYANEN_INTERVAL_MEDIUM, 1, Obd2::decodeEngineLoad, 0.0f, 100.0f);
+                SEYYANEN_INTERVAL_MEDIUM_MS, 1, Obd2::decodeEngineLoad, 0.0f, 100.0f);
 
     registerPid(0x0105, "Engine Coolant Temperature", "ECT", "degC",
                 "Coolant temp measured by cylinder head/radiator sensor", "A-40", "DECODER_ECT",
-                SEYYANEN_INTERVAL_SLOW, 2, Obd2::decodeECT, -40.0f, 150.0f);
+                SEYYANEN_INTERVAL_SLOW_MS, 2, Obd2::decodeECT, -40.0f, 150.0f);
 
     registerPid(0x0106, "Short Term Fuel Trim Bank 1", "STFT1", "%",
                 "Immediate closed-loop air/fuel ratio correction", "(A-128)*100/128", "DECODER_STFT",
-                SEYYANEN_INTERVAL_MEDIUM, 1, Obd2::decodeSTFT, -100.0f, 100.0f);
+                SEYYANEN_INTERVAL_MEDIUM_MS, 1, Obd2::decodeSTFT, -100.0f, 100.0f);
 
     registerPid(0x0107, "Long Term Fuel Trim Bank 1", "LTFT1", "%",
                 "Persistent learned air/fuel ratio correction", "(A-128)*100/128", "DECODER_LTFT",
-                SEYYANEN_INTERVAL_MEDIUM, 1, Obd2::decodeLTFT, -100.0f, 100.0f);
+                SEYYANEN_INTERVAL_MEDIUM_MS, 1, Obd2::decodeLTFT, -100.0f, 100.0f);
 
     registerPid(0x010B, "Intake Manifold Absolute Pressure", "MAP", "kPa",
                 "Absolute manifold pressure measured downstream of throttle", "A", "DECODER_MAP",
-                SEYYANEN_INTERVAL_MEDIUM, 1, Obd2::decodeMAP, 0.0f, 255.0f);
+                SEYYANEN_INTERVAL_MEDIUM_MS, 1, Obd2::decodeMAP, 0.0f, 255.0f);
 
     registerPid(0x010C, "Engine Speed", "RPM", "rpm",
                 "Rotational speed of crankshaft in revolutions per minute", "((A*256)+B)/4", "DECODER_RPM",
-                SEYYANEN_INTERVAL_FAST, 0, Obd2::decodeRPM, 0.0f, 10000.0f);
+                SEYYANEN_INTERVAL_FAST_MS, 0, Obd2::decodeRPM, 0.0f, 10000.0f);
 
     registerPid(0x010D, "Vehicle Speed", "SPEED", "km/h",
                 "Current road speed calculated by transmission sensor", "A", "DECODER_SPEED",
-                SEYYANEN_INTERVAL_MEDIUM, 1, Obd2::decodeSpeed, 0.0f, 350.0f);
+                SEYYANEN_INTERVAL_MEDIUM_MS, 1, Obd2::decodeSpeed, 0.0f, 350.0f);
 
     registerPid(0x010E, "Ignition Timing Advance", "TIMING", "deg",
                 "Ignition spark timing advance before top dead center", "(A/2)-64", "DECODER_TIMING",
-                SEYYANEN_INTERVAL_MEDIUM, 1, Obd2::decodeTimingAdvance, -64.0f, 63.5f);
+                SEYYANEN_INTERVAL_MEDIUM_MS, 1, Obd2::decodeTimingAdvance, -64.0f, 63.5f);
 
     registerPid(0x010F, "Intake Air Temperature", "IAT", "degC",
                 "Air temperature inside intake manifold/airbox", "A-40", "DECODER_IAT",
-                SEYYANEN_INTERVAL_SLOW, 2, Obd2::decodeIAT, -40.0f, 150.0f);
+                SEYYANEN_INTERVAL_SLOW_MS, 2, Obd2::decodeIAT, -40.0f, 150.0f);
 
     registerPid(0x0110, "MAF Air Flow Rate", "MAF", "g/s",
                 "Mass of air entering cylinders per second", "((A*256)+B)/100", "DECODER_MAF",
-                SEYYANEN_INTERVAL_MEDIUM, 1, Obd2::decodeMAF, 0.0f, 655.35f);
+                SEYYANEN_INTERVAL_MEDIUM_MS, 1, Obd2::decodeMAF, 0.0f, 655.35f);
 
     registerPid(0x0111, "Throttle Position", "TPS", "%",
                 "Absolute throttle blade opening percentage", "A*100/255", "DECODER_TPS",
-                SEYYANEN_INTERVAL_FAST, 0, Obd2::decodeTPS, 0.0f, 100.0f);
+                SEYYANEN_INTERVAL_FAST_MS, 0, Obd2::decodeTPS, 0.0f, 100.0f);
 
     // Chained Range Marker PIDs up to 01E0
     registerPid(0x0120, "Supported PIDs [21-40]", "PID20", "bitmap",
@@ -157,8 +157,8 @@ void PidScanner::applyBitmapToRegistry(uint8_t basePid, uint32_t bitmap) {
         if (_registry[i].mode != 0x01) continue;
 
         // Check if PID falls inside block [basePid + 1 ... basePid + 32]
-        if (pidNumber > basePid && pidNumber <= (basePid + 32)) {
-            uint8_t relativePid = pidNumber - basePid;
+        if ((uint16_t)pidNumber > basePid && (uint16_t)pidNumber <= ((uint16_t)basePid + 32)) {
+            uint8_t relativePid = (uint8_t)(pidNumber - basePid);
             bool supp = Obd2::isPidBitSet(bitmap, relativePid);
             _registry[i].supported = supp;
             _registry[i].source_range = basePid;
@@ -173,7 +173,13 @@ void PidScanner::applyBitmapToRegistry(uint8_t basePid, uint32_t bitmap) {
     // 2. Dynamically register any newly discovered supported PIDs not yet in registry
     for (uint8_t relativePid = 1; relativePid <= 32; ++relativePid) {
         if (Obd2::isPidBitSet(bitmap, relativePid)) {
-            uint8_t pidNum = basePid + relativePid;
+            uint16_t calcPid = (uint16_t)basePid + relativePid;
+            if (calcPid > 0xFF) {
+                // Arithmetic boundary check: relative bit 32 at base 0xE0 is 0x100.
+                // Standard Mode 01 PIDs cannot exceed 0xFF; do not wrap uint8_t to 0x00!
+                continue;
+            }
+            uint8_t pidNum = (uint8_t)calcPid;
             uint16_t fullPid = 0x0100 | pidNum;
 
             if (!findPid(fullPid)) {

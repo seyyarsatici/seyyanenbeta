@@ -1,14 +1,22 @@
 #include "vlinker_bt.h"
 #include <ctype.h>
 #include <string.h>
+#include <Preferences.h>
+
+VLinkerBluetoothTransport* VLinkerBluetoothTransport::s_discoveryInstance = nullptr;
 
 VLinkerBluetoothTransport::VLinkerBluetoothTransport()
-    : _state(ADAPTER_STATE_DISCONNECTED),
+    : _busMutex(NULL),
+      _state(ADAPTER_STATE_DISCONNECTED),
       _lastError(TRANSPORT_ERR_NONE),
       _hasMacTarget(false),
+      _hasCachedMac(false),
+      _macConnectFailures(0),
       _btStarted(false),
+      _workerRunning(false),
       _connectingInProgress(false),
       _abortConnection(false),
+      _discoveredTarget(false),
       _connectTaskHandle(NULL),
       _lastAttemptMs(0),
       _currentBackoffMs(SEYYANEN_BT_BACKOFF_BASE_MS) {
@@ -17,6 +25,10 @@ VLinkerBluetoothTransport::VLinkerBluetoothTransport()
     memset(_targetName, 0, sizeof(_targetName));
     memset(_targetMac, 0, sizeof(_targetMac));
     memset(_macBytes, 0, sizeof(_macBytes));
+    memset(_cachedMac, 0, sizeof(_cachedMac));
+    memset(_cachedMacBytes, 0, sizeof(_cachedMacBytes));
+
+    _busMutex = xSemaphoreCreateRecursiveMutex();
 
     strncpy(_identity.transport, "BLUETOOTH_SPP", sizeof(_identity.transport) - 1);
     strncpy(_identity.adapter_name, "UNKNOWN", sizeof(_identity.adapter_name) - 1);
@@ -34,17 +46,87 @@ VLinkerBluetoothTransport::VLinkerBluetoothTransport()
 }
 
 VLinkerBluetoothTransport::~VLinkerBluetoothTransport() {
-    cancelConnectTask();
     end();
+    if (_busMutex != NULL) {
+        vSemaphoreDelete(_busMutex);
+        _busMutex = NULL;
+    }
 }
 
 void VLinkerBluetoothTransport::cancelConnectTask() {
     _abortConnection = true;
-    if (_connectTaskHandle != NULL) {
-        vTaskDelete(_connectTaskHandle);
-        _connectTaskHandle = NULL;
+}
+
+bool VLinkerBluetoothTransport::loadCachedMac() {
+    Preferences prefs;
+    if (!prefs.begin("seyyanen_bt", true)) {
+        return false;
     }
-    _connectingInProgress = false;
+    String mac = prefs.getString("vlinker_mac", "");
+    prefs.end();
+
+    if (mac.length() >= 17 && parseMacAddress(mac.c_str(), _cachedMacBytes)) {
+        strncpy(_cachedMac, mac.c_str(), sizeof(_cachedMac) - 1);
+        _hasCachedMac = true;
+        return true;
+    }
+    return false;
+}
+
+void VLinkerBluetoothTransport::saveCachedMac(const char* macStr) {
+    if (!macStr || strlen(macStr) < 17) return;
+    uint8_t tmp[6];
+    if (!parseMacAddress(macStr, tmp)) return;
+
+    memcpy(_cachedMacBytes, tmp, 6);
+    strncpy(_cachedMac, macStr, sizeof(_cachedMac) - 1);
+    _hasCachedMac = true;
+
+    Preferences prefs;
+    if (prefs.begin("seyyanen_bt", false)) {
+        prefs.putString("vlinker_mac", macStr);
+        prefs.end();
+        Serial.printf("[MINI-BT] Cached MAC persisted to NVS: %s\n", macStr);
+    }
+}
+
+void VLinkerBluetoothTransport::clearCachedMac() {
+    _hasCachedMac = false;
+    _cachedMac[0] = '\0';
+    memset(_cachedMacBytes, 0, sizeof(_cachedMacBytes));
+
+    Preferences prefs;
+    if (prefs.begin("seyyanen_bt", false)) {
+        prefs.remove("vlinker_mac");
+        prefs.end();
+        Serial.println("[MINI-BT] Cached MAC invalidated and removed from NVS.");
+    }
+}
+
+bool VLinkerBluetoothTransport::isTargetDevice(const char* name) {
+    if (!name || strlen(name) == 0) return false;
+
+    // Reject iOS / BLE interface names (vLinker MC-iOS is BLE GATT, not Classic SPP)
+    if (strstr(name, "iOS") != nullptr || strstr(name, "ios") != nullptr || strstr(name, "BLE") != nullptr) {
+        return false;
+    }
+
+    // Accept exact Classic target "vLinker MC-Android"
+    if (strcasecmp(name, "vLinker MC-Android") == 0) {
+        return true;
+    }
+
+    // Accept any device starting with "vLinker" (Classic SPP)
+    if (strncasecmp(name, "vLinker", 7) == 0) {
+        return true;
+    }
+
+    // Accept any device starting with "Vgate"
+    if (strncasecmp(name, "Vgate", 5) == 0) {
+        return true;
+    }
+
+    return false;
 }
 
 bool VLinkerBluetoothTransport::begin(const char* localName) {
@@ -60,11 +142,62 @@ bool VLinkerBluetoothTransport::begin(const char* localName) {
     _btStarted = true;
     setState(ADAPTER_STATE_DISCONNECTED, TRANSPORT_ERR_NONE);
     Serial.printf("[MINI-BT] Bluetooth initialized. Device Name: '%s'\n", localName);
+
+    // Initial MAC discovery: check static configuration first, then persistent cache
+    if (strlen(SEYYANEN_VLINKER_MAC) >= 17 && parseMacAddress(SEYYANEN_VLINKER_MAC, _macBytes)) {
+        strncpy(_targetMac, SEYYANEN_VLINKER_MAC, sizeof(_targetMac) - 1);
+        _hasMacTarget = true;
+        saveCachedMac(_targetMac);
+        Serial.printf("[MINI-BT] Static vLinker MAC configured: %s (Direct SPP mode)\n", _targetMac);
+    } else if (loadCachedMac()) {
+        strncpy(_targetMac, _cachedMac, sizeof(_targetMac) - 1);
+        memcpy(_macBytes, _cachedMacBytes, 6);
+        _hasMacTarget = true;
+        Serial.printf("[MINI-BT] Found cached vLinker MAC from prior session: %s (Direct SPP mode)\n", _targetMac);
+    } else {
+        _hasMacTarget = false;
+        Serial.println("[MINI-BT] No target MAC known. Bounded discovery will be used on first connection.");
+    }
+
+    // Spawn persistent connection worker task (pinned to Core 0: Protocol core)
+    // Ensures zero dynamic task creation/deletion churn during reconnect loops
+    if (_connectTaskHandle == NULL) {
+        _workerRunning = true;
+        _abortConnection = false;
+        _connectingInProgress = false;
+
+        BaseType_t res = xTaskCreatePinnedToCore(
+            connectTaskWorker,
+            "btWorkerTask",
+            4096,
+            this,
+            1,
+            &_connectTaskHandle,
+            0 // Core 0 (Protocol core, keeping Core 1 100% free for WebServer & loopTask)
+        );
+
+        if (res != pdPASS) {
+            Serial.println("[MINI-BT] Failed to spawn initial connection worker task!");
+            _connectTaskHandle = NULL;
+        }
+    }
+
     return true;
 }
 
 void VLinkerBluetoothTransport::end() {
     disconnect();
+    if (_connectTaskHandle != NULL) {
+        _workerRunning = false;
+        _abortConnection = true;
+        _btSerial.discoverAsyncStop();
+        s_discoveryInstance = nullptr;
+        xTaskNotifyGive(_connectTaskHandle);
+        for (int i = 0; i < 20 && _connectTaskHandle != NULL; ++i) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        _connectTaskHandle = NULL;
+    }
     if (_btStarted) {
         _btSerial.end();
         _btStarted = false;
@@ -93,6 +226,28 @@ bool VLinkerBluetoothTransport::parseMacAddress(const char* macStr, uint8_t* out
     return false;
 }
 
+void VLinkerBluetoothTransport::onDeviceDiscovered(BTAdvertisedDevice* dev) {
+    if (!dev || !s_discoveryInstance) {
+        return;
+    }
+    if (dev->haveName()) {
+        std::string dName = dev->getName();
+        Serial.printf("[MINI-BT] Scanned: '%s' [%s]\n",
+                      dName.c_str(), dev->getAddress().toString(true).c_str());
+        if (isTargetDevice(dName.c_str())) {
+            BTAddress addr = dev->getAddress();
+            String macStr = addr.toString(true);
+            strncpy(s_discoveryInstance->_targetMac, macStr.c_str(), sizeof(s_discoveryInstance->_targetMac) - 1);
+            s_discoveryInstance->parseMacAddress(s_discoveryInstance->_targetMac, s_discoveryInstance->_macBytes);
+            s_discoveryInstance->_hasMacTarget = true;
+            s_discoveryInstance->saveCachedMac(s_discoveryInstance->_targetMac);
+            Serial.printf("[MINI-BT] TARGET IDENTIFIED: '%s' [%s]. Cached for future connections.\n",
+                          dName.c_str(), s_discoveryInstance->_targetMac);
+            s_discoveryInstance->_discoveredTarget = true;
+        }
+    }
+}
+
 void VLinkerBluetoothTransport::connectTaskWorker(void* param) {
     VLinkerBluetoothTransport* self = static_cast<VLinkerBluetoothTransport*>(param);
     if (!self) {
@@ -100,74 +255,158 @@ void VLinkerBluetoothTransport::connectTaskWorker(void* param) {
         return;
     }
 
-    bool rawConnected = false;
-    if (self->_hasMacTarget) {
-        Serial.printf("[MINI-BT] Connecting SPP to target MAC: %s...\n", self->_targetMac);
-        rawConnected = self->_btSerial.connect(self->_macBytes);
-    } else {
-        Serial.printf("[MINI-BT] Searching for target: %s...\n", self->_targetName);
-        Serial.printf("[MINI-BT] Connecting SPP to target Name: '%s'...\n", self->_targetName);
-        rawConnected = self->_btSerial.connect(self->_targetName);
-    }
+    while (self->_workerRunning) {
+        // Wait indefinitely until triggered by connect()
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (!self->_workerRunning) {
+            break;
+        }
 
-    if (self->_abortConnection) {
-        self->_connectingInProgress = false;
-        self->_connectTaskHandle = NULL;
-        vTaskDelete(NULL);
-        return;
-    }
+        self->_connectingInProgress = true;
+        self->_abortConnection = false;
+        bool rawConnected = false;
 
-    if (!rawConnected) {
-        Serial.println("[MINI-BT] State: ERROR");
-        Serial.println("[MINI-BT] Reason: SPP_CONNECT_FAILED");
-        self->setState(ADAPTER_STATE_ERROR, TRANSPORT_ERR_SPP_CONNECT_FAILED);
-        self->_connectingInProgress = false;
-        self->_connectTaskHandle = NULL;
-        vTaskDelete(NULL);
-        return;
-    }
+        // PATH 1: Direct MAC connection (Fast, zero-inquiry, 100% Wi-Fi safe)
+        if (self->_hasMacTarget) {
+            Serial.printf("[MINI-BT] Connecting directly to target MAC: %s (No inquiry scan)...\n", self->_targetMac);
+            rawConnected = self->_btSerial.connect(self->_macBytes);
 
-    Serial.println("[MINI-BT] SPP connected");
+            if (!rawConnected) {
+                self->_macConnectFailures++;
+                Serial.printf("[MINI-BT] Direct MAC connect failed (attempt %u/%u).\n",
+                              (unsigned int)self->_macConnectFailures,
+                              (unsigned int)SEYYANEN_BT_MAX_DIRECT_MAC_FAILURES);
 
-    // Physical link stabilization delay with abort check
-    for (int i = 0; i < (SEYYANEN_BT_STABILIZE_DELAY_MS / 50); ++i) {
+                if (self->_macConnectFailures >= SEYYANEN_BT_MAX_DIRECT_MAC_FAILURES) {
+                    Serial.println("[MINI-BT] Consecutive direct MAC failures reached limit. Invalidating cached MAC and switching to bounded discovery.");
+                    self->clearCachedMac();
+                    self->_hasMacTarget = false;
+                    self->_targetMac[0] = '\0';
+                    self->_macConnectFailures = 0;
+                }
+            }
+        } 
+        // PATH 2: Bounded Discovery (Asynchronous inquiry with active cancellation)
+        // Starts 10s inquiry in controller but cancels at SEYYANEN_BT_DISCOVERY_TIMEOUT_MS (or upon target found).
+        // Crucially: cancelling inquiry while active (cancel_pending=TRUE in Bluedroid) prevents the stack from
+        // initiating Remote Name Request (RNR) via ACL paging against non-target devices (e.g. TVPlayer).
+        // That prevents exhaustion of BTM_SEC_MAX_DEVICE_RECORDS and eliminates null-pointer crashes in btm_acl_paging.
+        else {
+            Serial.printf("[MINI-BT] Target MAC unknown. Starting bounded discovery (~%u ms)...\n", 
+                          (unsigned int)SEYYANEN_BT_DISCOVERY_TIMEOUT_MS);
+            
+            s_discoveryInstance = self;
+            self->_discoveredTarget = false;
+            
+            // Start async discovery with 10s controller inquiry limit (10000 ms > SEYYANEN_BT_DISCOVERY_TIMEOUT_MS)
+            if (self->_btSerial.discoverAsync(onDeviceDiscovered, 10000)) {
+                uint32_t startMs = millis();
+                while ((millis() - startMs < SEYYANEN_BT_DISCOVERY_TIMEOUT_MS) && 
+                       !self->_discoveredTarget && 
+                       !self->_abortConnection && 
+                       self->_workerRunning) {
+                    vTaskDelay(pdMS_TO_TICKS(50));
+                }
+                
+                // Actively cancel discovery while inquiry is still running
+                self->_btSerial.discoverAsyncStop();
+            } else {
+                Serial.println("[MINI-BT] discoverAsync failed to start.");
+            }
+            
+            s_discoveryInstance = nullptr;
+            
+            // Settling delay for Bluedroid GAP state machine to become idle
+            vTaskDelay(pdMS_TO_TICKS(100));
+
+            if (self->_abortConnection) {
+                self->_connectingInProgress = false;
+                continue;
+            }
+
+            if (self->_discoveredTarget) {
+                Serial.printf("[MINI-BT] Connecting directly to discovered MAC: %s...\n", self->_targetMac);
+                rawConnected = self->_btSerial.connect(self->_macBytes);
+            } else {
+                Serial.println("[MINI-BT] No valid vLinker Classic SPP device discovered in this window.");
+                rawConnected = false;
+            }
+        }
+
         if (self->_abortConnection) {
-            self->disconnect();
             self->_connectingInProgress = false;
-            self->_connectTaskHandle = NULL;
-            vTaskDelete(NULL);
-            return;
+            continue;
         }
-        vTaskDelay(pdMS_TO_TICKS(50));
-    }
-    self->flushRx();
 
-    // Mandatory Step: Adapter Identity Handshake (ATI)
-    // Rule: Bluetooth link connected != diagnostic adapter verified!
-    // The state transitions to CONNECTED only after ATI handshake succeeds.
-    if (self->_abortConnection || !self->performIdentityHandshake()) {
-        Serial.println("[MINI-BT] State: ERROR");
-        Serial.println("[MINI-BT] Reason: INVALID_ADAPTER_RESPONSE");
-        if (self->_btSerial.connected()) {
-            self->_btSerial.disconnect();
+        if (!rawConnected) {
+            Serial.println("[MINI-BT] State: ERROR");
+            Serial.println("[MINI-BT] Reason: SPP_CONNECT_FAILED");
+            self->setState(ADAPTER_STATE_ERROR, TRANSPORT_ERR_SPP_CONNECT_FAILED);
+            self->_connectingInProgress = false;
+            continue;
         }
-        self->_identity.verified = false;
-        self->setState(ADAPTER_STATE_ERROR, TRANSPORT_ERR_INVALID_ADAPTER_RESPONSE);
+
+        Serial.println("[MINI-BT] SPP connected");
+
+        // Physical link stabilization delay with abort check
+        for (int i = 0; i < (SEYYANEN_BT_STABILIZE_DELAY_MS / 50); ++i) {
+            if (self->_abortConnection) {
+                break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(50));
+        }
+
+        if (self->_abortConnection) {
+            if (self->_busMutex) {
+                xSemaphoreTakeRecursive(self->_busMutex, pdMS_TO_TICKS(100));
+            }
+            if (self->_btSerial.connected()) {
+                self->_btSerial.disconnect();
+            }
+            self->_identity.verified = false;
+            self->setState(ADAPTER_STATE_DISCONNECTED, TRANSPORT_ERR_NONE);
+            if (self->_busMutex) {
+                xSemaphoreGiveRecursive(self->_busMutex);
+            }
+            self->_connectingInProgress = false;
+            continue;
+        }
+
+        self->flushRx();
+
+        // Mandatory Step: Adapter Identity Handshake (ATI)
+        // Rule: Bluetooth link connected != diagnostic adapter verified!
+        // The state transitions to CONNECTED only after ATI handshake succeeds.
+        if (self->_abortConnection || !self->performIdentityHandshake()) {
+            Serial.println("[MINI-BT] State: ERROR");
+            Serial.println("[MINI-BT] Reason: INVALID_ADAPTER_RESPONSE");
+            if (self->_busMutex) {
+                xSemaphoreTakeRecursive(self->_busMutex, pdMS_TO_TICKS(100));
+            }
+            if (self->_btSerial.connected()) {
+                self->_btSerial.disconnect();
+            }
+            self->_identity.verified = false;
+            self->setState(ADAPTER_STATE_ERROR, TRANSPORT_ERR_INVALID_ADAPTER_RESPONSE);
+            if (self->_busMutex) {
+                xSemaphoreGiveRecursive(self->_busMutex);
+            }
+            self->_connectingInProgress = false;
+            continue;
+        }
+
+        // Success: State transitions to CONNECTED only now!
+        self->setState(ADAPTER_STATE_CONNECTED, TRANSPORT_ERR_NONE);
+        self->_health.connected_since_ms = millis();
+        self->_health.retry_count = 0;
+        self->_currentBackoffMs = SEYYANEN_BT_BACKOFF_BASE_MS;
+        self->_health.current_backoff_ms = self->_currentBackoffMs;
+        self->_macConnectFailures = 0;
+
+        Serial.println("[MINI-BT] State: CONNECTED. vLinker adapter identity verified.");
         self->_connectingInProgress = false;
-        self->_connectTaskHandle = NULL;
-        vTaskDelete(NULL);
-        return;
     }
 
-    // Success: State transitions to CONNECTED only now!
-    self->setState(ADAPTER_STATE_CONNECTED, TRANSPORT_ERR_NONE);
-    self->_health.connected_since_ms = millis();
-    self->_health.retry_count = 0;
-    self->_currentBackoffMs = SEYYANEN_BT_BACKOFF_BASE_MS;
-    self->_health.current_backoff_ms = self->_currentBackoffMs;
-
-    Serial.println("[MINI-BT] State: CONNECTED");
-    self->_connectingInProgress = false;
     self->_connectTaskHandle = NULL;
     vTaskDelete(NULL);
 }
@@ -179,69 +418,67 @@ bool VLinkerBluetoothTransport::connect(const char* targetName, const char* targ
         return true;
     }
 
-    if (_connectingInProgress || _connectTaskHandle != NULL) {
+    if (_connectingInProgress) {
         Serial.println("[MINI-BT] Connect attempt already in progress, ignoring duplicate call.");
         return false;
     }
 
-    _connectingInProgress = true;
-    _abortConnection = false;
-
-    // Configure Target
-    if (targetMac && strlen(targetMac) >= 17 && parseMacAddress(targetMac, _macBytes)) {
-        strncpy(_targetMac, targetMac, sizeof(_targetMac) - 1);
-        strncpy(_identity.remote_mac, targetMac, sizeof(_identity.remote_mac) - 1);
-        _hasMacTarget = true;
-    } else {
-        _hasMacTarget = false;
-        _targetMac[0] = '\0';
+    if (!_btStarted) {
+        if (!begin()) {
+            return false;
+        }
     }
 
+    if (_connectTaskHandle == NULL) {
+        Serial.println("[MINI-BT] Connection worker task handle is NULL!");
+        return false;
+    }
+
+    _abortConnection = false;
+
+    // Configure Target Name
     if (targetName && strlen(targetName) > 0) {
         strncpy(_targetName, targetName, sizeof(_targetName) - 1);
     } else {
         strncpy(_targetName, SEYYANEN_VLINKER_NAME, sizeof(_targetName) - 1);
     }
 
-    if (!_btStarted) {
-        if (!begin()) {
-            _connectingInProgress = false;
-            return false;
-        }
+    // Configure Target MAC (explicit argument overrides cached MAC)
+    if (targetMac && strlen(targetMac) >= 17 && parseMacAddress(targetMac, _macBytes)) {
+        strncpy(_targetMac, targetMac, sizeof(_targetMac) - 1);
+        strncpy(_identity.remote_mac, targetMac, sizeof(_identity.remote_mac) - 1);
+        _hasMacTarget = true;
+        saveCachedMac(_targetMac);
+    } else if (_hasCachedMac) {
+        strncpy(_targetMac, _cachedMac, sizeof(_targetMac) - 1);
+        memcpy(_macBytes, _cachedMacBytes, 6);
+        _hasMacTarget = true;
     }
 
     setState(ADAPTER_STATE_CONNECTING, TRANSPORT_ERR_NONE);
     _lastAttemptMs = millis();
 
-    // Dispatch non-blocking FreeRTOS connection worker
-    BaseType_t res = xTaskCreate(
-        connectTaskWorker,
-        "btConnectTask",
-        4096,
-        this,
-        1,
-        &_connectTaskHandle
-    );
-
-    if (res != pdPASS) {
-        Serial.println("[MINI-BT] Failed to spawn connection worker task!");
-        setState(ADAPTER_STATE_ERROR, TRANSPORT_ERR_BT_INIT_FAILED);
-        _connectingInProgress = false;
-        _connectTaskHandle = NULL;
-        return false;
-    }
-
+    // Signal persistent worker task to run connection attempt
+    xTaskNotifyGive(_connectTaskHandle);
     return true;
 }
 
 bool VLinkerBluetoothTransport::disconnect() {
-    cancelConnectTask(); // Always terminates worker and resets _connectingInProgress = false
+    _abortConnection = true;
+    cancelConnectTask();
+    if (_busMutex) {
+        xSemaphoreTakeRecursive(_busMutex, pdMS_TO_TICKS(200));
+    }
     if (_btSerial.connected()) {
         _btSerial.disconnect();
     }
     _identity.verified = false;
     setState(ADAPTER_STATE_DISCONNECTED, TRANSPORT_ERR_NONE);
     Serial.println("[MINI-BT] SPP link disconnected.");
+    if (_busMutex) {
+        xSemaphoreGiveRecursive(_busMutex);
+    }
+    _abortConnection = false;
     return true;
 }
 
@@ -267,7 +504,7 @@ void VLinkerBluetoothTransport::update() {
     if (SEYYANEN_BT_AUTO_RECONNECT && 
         (_state == ADAPTER_STATE_RECONNECTING || _state == ADAPTER_STATE_ERROR)) {
         
-        if (!_connectingInProgress && _connectTaskHandle == NULL && (millis() - _lastAttemptMs >= _currentBackoffMs)) {
+        if (!_connectingInProgress && _connectTaskHandle != NULL && (millis() - _lastAttemptMs >= _currentBackoffMs)) {
             _lastAttemptMs = millis();
             _health.retry_count++;
 
@@ -287,6 +524,10 @@ void VLinkerBluetoothTransport::update() {
 }
 
 bool VLinkerBluetoothTransport::performIdentityHandshake() {
+    if (_busMutex && xSemaphoreTakeRecursive(_busMutex, pdMS_TO_TICKS(SEYYANEN_BT_ATI_TIMEOUT_MS)) != pdTRUE) {
+        _lastError = TRANSPORT_ERR_TRANSACTION_TIMEOUT;
+        return false;
+    }
     Serial.println("[MINI-BT] Sending ATI");
 
     char response[96];
@@ -297,6 +538,7 @@ bool VLinkerBluetoothTransport::performIdentityHandshake() {
     uint32_t tStart = millis();
     if (!send("ATI")) {
         _lastError = TRANSPORT_ERR_REMOTE_REJECTED;
+        if (_busMutex) xSemaphoreGiveRecursive(_busMutex);
         return false;
     }
 
@@ -304,6 +546,8 @@ bool VLinkerBluetoothTransport::performIdentityHandshake() {
     int bytes = receiveUntil(response, sizeof(response), '>', SEYYANEN_BT_ATI_TIMEOUT_MS);
     uint32_t tLatency = millis() - tStart;
     _health.last_latency_ms = tLatency;
+
+    if (_busMutex) xSemaphoreGiveRecursive(_busMutex);
 
     if (bytes <= 0) {
         Serial.printf("[MINI-BT] ATI failed to receive response within %u ms!\n", SEYYANEN_BT_ATI_TIMEOUT_MS);
@@ -493,8 +737,12 @@ bool VLinkerBluetoothTransport::sendRaw(const uint8_t* data, size_t len) {
     if (!_btSerial.connected() || !data || len == 0) {
         return false;
     }
+    if (_busMutex && xSemaphoreTakeRecursive(_busMutex, pdMS_TO_TICKS(500)) != pdTRUE) {
+        return false;
+    }
     size_t written = _btSerial.write(data, len);
     _health.tx_byte_count += written;
+    if (_busMutex) xSemaphoreGiveRecursive(_busMutex);
     return (written == len);
 }
 
@@ -509,10 +757,14 @@ bool VLinkerBluetoothTransport::send(const char* cmd) {
         return false;
     }
 
+    if (_busMutex && xSemaphoreTakeRecursive(_busMutex, pdMS_TO_TICKS(500)) != pdTRUE) {
+        return false;
+    }
     size_t len = strlen(cmd);
     size_t written = _btSerial.print(cmd);
     written += _btSerial.print("\r");
     _health.tx_byte_count += written;
+    if (_busMutex) xSemaphoreGiveRecursive(_busMutex);
     return (written >= len);
 }
 
@@ -525,10 +777,21 @@ int VLinkerBluetoothTransport::receive(char* buffer, size_t maxLen, uint32_t tim
         return -1;
     }
 
+    if (_busMutex && xSemaphoreTakeRecursive(_busMutex, pdMS_TO_TICKS(timeoutMs)) != pdTRUE) {
+        _lastError = TRANSPORT_ERR_TRANSACTION_TIMEOUT;
+        return -2;
+    }
+
     size_t idx = 0;
     uint32_t startMs = millis();
 
     while ((millis() - startMs) < timeoutMs) {
+        if (_abortConnection || !_btSerial.connected() || _state == ADAPTER_STATE_DISCONNECTED) {
+            _lastError = TRANSPORT_ERR_SPP_DISCONNECTED;
+            if (_busMutex) xSemaphoreGiveRecursive(_busMutex);
+            return -1;
+        }
+
         while (_btSerial.available() > 0) {
             char c = (char)_btSerial.read();
             _health.rx_byte_count++;
@@ -538,11 +801,13 @@ int VLinkerBluetoothTransport::receive(char* buffer, size_t maxLen, uint32_t tim
         }
         if (idx > 0) {
             buffer[idx] = '\0';
+            if (_busMutex) xSemaphoreGiveRecursive(_busMutex);
             return (int)idx;
         }
         yield();
     }
 
+    if (_busMutex) xSemaphoreGiveRecursive(_busMutex);
     buffer[idx] = '\0';
     return (idx > 0) ? (int)idx : -2; // -2 = timeout
 }
@@ -556,16 +821,28 @@ int VLinkerBluetoothTransport::receiveUntil(char* buffer, size_t maxLen, char te
         return -1;
     }
 
+    if (_busMutex && xSemaphoreTakeRecursive(_busMutex, pdMS_TO_TICKS(timeoutMs)) != pdTRUE) {
+        _lastError = TRANSPORT_ERR_TRANSACTION_TIMEOUT;
+        return -2;
+    }
+
     size_t idx = 0;
     uint32_t startMs = millis();
 
     while ((millis() - startMs) < timeoutMs) {
+        if (_abortConnection || !_btSerial.connected() || _state == ADAPTER_STATE_DISCONNECTED) {
+            _lastError = TRANSPORT_ERR_SPP_DISCONNECTED;
+            if (_busMutex) xSemaphoreGiveRecursive(_busMutex);
+            return -1;
+        }
+
         while (_btSerial.available() > 0) {
             char c = (char)_btSerial.read();
             _health.rx_byte_count++;
 
             if (c == terminator) {
                 buffer[idx] = '\0';
+                if (_busMutex) xSemaphoreGiveRecursive(_busMutex);
                 return (int)idx;
             }
 
@@ -576,6 +853,7 @@ int VLinkerBluetoothTransport::receiveUntil(char* buffer, size_t maxLen, char te
         yield();
     }
 
+    if (_busMutex) xSemaphoreGiveRecursive(_busMutex);
     buffer[idx] = '\0';
     return (idx > 0) ? (int)idx : -2;
 }
@@ -589,16 +867,24 @@ bool VLinkerBluetoothTransport::transact(const char* request, char* response, si
         return false;
     }
 
+    if (_busMutex && xSemaphoreTakeRecursive(_busMutex, pdMS_TO_TICKS(timeoutMs)) != pdTRUE) {
+        _lastError = TRANSPORT_ERR_TRANSACTION_TIMEOUT;
+        return false;
+    }
+
     flushRx();
 
     uint32_t tStart = millis();
     if (!send(request)) {
+        if (_busMutex) xSemaphoreGiveRecursive(_busMutex);
         return false;
     }
 
     int bytes = receiveUntil(response, maxLen, '>', timeoutMs);
     uint32_t tLatency = millis() - tStart;
     _health.last_latency_ms = tLatency;
+
+    if (_busMutex) xSemaphoreGiveRecursive(_busMutex);
 
     if (bytes >= 0) {
         _health.last_successful_comm_ms = millis();
@@ -611,7 +897,9 @@ bool VLinkerBluetoothTransport::transact(const char* request, char* response, si
 }
 
 void VLinkerBluetoothTransport::flushRx() {
+    if (_busMutex) xSemaphoreTakeRecursive(_busMutex, pdMS_TO_TICKS(100));
     while (_btSerial.available() > 0) {
         _btSerial.read();
     }
+    if (_busMutex) xSemaphoreGiveRecursive(_busMutex);
 }

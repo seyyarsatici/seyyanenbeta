@@ -636,9 +636,16 @@ MiniWebServer::MiniWebServer(VLinkerBluetoothTransport& bt,
       _elm(elm),
       _scanner(scanner),
       _scheduler(scheduler),
-      _logger(logger) {}
+      _logger(logger),
+      _diagOpRequester(nullptr),
+      _diagOpGetter(nullptr) {}
 
 MiniWebServer::~MiniWebServer() {}
+
+void MiniWebServer::setDiagOpCallbacks(DiagOpRequester req, DiagOpGetter get) {
+    _diagOpRequester = req;
+    _diagOpGetter = get;
+}
 
 bool MiniWebServer::begin() {
     Serial.println("[WEB] Starting Wi-Fi SoftAP for Phase M-6 Management...");
@@ -668,7 +675,10 @@ void MiniWebServer::update() {
 }
 
 void MiniWebServer::setupRoutes() {
+    _server.enableCORS(true);
     _server.on("/", HTTP_GET, [this]() { handleRoot(); });
+    _server.on("/index.html", HTTP_GET, [this]() { handleRoot(); });
+    _server.on("/favicon.ico", HTTP_GET, [this]() { _server.send(204); });
     _server.on("/api/status", HTTP_GET, [this]() { handleApiStatus(); });
     _server.on("/api/live", HTTP_GET, [this]() { handleApiLive(); });
     _server.on("/api/metrics", HTTP_GET, [this]() { handleApiMetrics(); });
@@ -695,7 +705,7 @@ void MiniWebServer::setupRoutes() {
 }
 
 void MiniWebServer::handleRoot() {
-    _server.send(200, "text/html", M6_INDEX_HTML);
+    _server.send_P(200, "text/html", M6_INDEX_HTML);
 }
 
 void MiniWebServer::handleApiStatus() {
@@ -715,6 +725,7 @@ void MiniWebServer::handleApiStatus() {
         "\"protocol\":\"%s\","
         "\"scanner_state\":\"%s\","
         "\"acq_state\":\"%s\","
+        "\"diag_op_state\":\"%s\","
         "\"session_id\":\"%s\","
         "\"sd_status\":\"%s\","
         "\"sd_health\":\"%s\","
@@ -731,6 +742,7 @@ void MiniWebServer::handleApiStatus() {
         _elm.getProtocol(),
         _scanner.getStateString(),
         _scheduler.getStateString(),
+        _diagOpGetter ? diagnosticOpStateToString(_diagOpGetter()) : "IDLE",
         _scheduler.getSessionId(),
         storageStatusToString(sInfo.status),
         storageHealthToString(sMetrics.health_state),
@@ -796,7 +808,7 @@ void MiniWebServer::handleApiLive() {
         json += ",\"quality\":\"";
         json += qualityGradeToString(s.quality);
         json += "\",\"freshness\":\"";
-        json += freshnessToString(s.freshness);
+        json += freshnessStateToString(s.freshness);
         json += "\",\"age_ms\":";
         json += s.age_ms;
         json += ",\"latency_ms\":";
@@ -946,17 +958,55 @@ void MiniWebServer::handleApiReconnect() {
 }
 
 void MiniWebServer::handleApiObdInit() {
-    bool ok = _elm.initialize();
-    char buf[64];
-    snprintf(buf, sizeof(buf), "{\"status\":\"%s\"}", ok ? "ok" : "failed");
-    _server.send(ok ? 200 : 500, "application/json", buf);
+    if (_diagOpGetter && _diagOpGetter() != DIAG_OP_IDLE) {
+        char buf[96];
+        snprintf(buf, sizeof(buf), "{\"status\":\"busy\",\"operation\":\"%s\"}",
+                 diagnosticOpStateToString(_diagOpGetter()));
+        _server.send(409, "application/json", buf);
+        return;
+    }
+    if (!_bt.isConnected()) {
+        _server.send(400, "application/json", "{\"status\":\"error\",\"reason\":\"NOT_CONNECTED\"}");
+        return;
+    }
+    if (_diagOpRequester) {
+        if (_diagOpRequester(DIAG_OP_MANUAL_INIT)) {
+            _server.send(202, "application/json", "{\"status\":\"accepted\",\"operation\":\"MANUAL_INIT\"}");
+        } else {
+            _server.send(500, "application/json", "{\"status\":\"error\",\"reason\":\"FAILED_TO_START_TASK\"}");
+        }
+    } else {
+        bool ok = _elm.initialize();
+        char buf[64];
+        snprintf(buf, sizeof(buf), "{\"status\":\"%s\"}", ok ? "ok" : "failed");
+        _server.send(ok ? 200 : 500, "application/json", buf);
+    }
 }
 
 void MiniWebServer::handleApiObdScan() {
-    bool ok = _scanner.scanSupportedPids();
-    char buf[64];
-    snprintf(buf, sizeof(buf), "{\"status\":\"%s\"}", ok ? "ok" : "failed");
-    _server.send(ok ? 200 : 500, "application/json", buf);
+    if (_diagOpGetter && _diagOpGetter() != DIAG_OP_IDLE) {
+        char buf[96];
+        snprintf(buf, sizeof(buf), "{\"status\":\"busy\",\"operation\":\"%s\"}",
+                 diagnosticOpStateToString(_diagOpGetter()));
+        _server.send(409, "application/json", buf);
+        return;
+    }
+    if (!_elm.isReady()) {
+        _server.send(400, "application/json", "{\"status\":\"error\",\"reason\":\"ELM_NOT_READY\"}");
+        return;
+    }
+    if (_diagOpRequester) {
+        if (_diagOpRequester(DIAG_OP_MANUAL_SCAN)) {
+            _server.send(202, "application/json", "{\"status\":\"accepted\",\"operation\":\"MANUAL_SCAN\"}");
+        } else {
+            _server.send(500, "application/json", "{\"status\":\"error\",\"reason\":\"FAILED_TO_START_TASK\"}");
+        }
+    } else {
+        bool ok = _scanner.scanSupportedPids();
+        char buf[64];
+        snprintf(buf, sizeof(buf), "{\"status\":\"%s\"}", ok ? "ok" : "failed");
+        _server.send(ok ? 200 : 500, "application/json", buf);
+    }
 }
 
 void MiniWebServer::handleApiAcqStart() {

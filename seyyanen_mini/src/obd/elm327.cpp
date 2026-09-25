@@ -10,6 +10,11 @@ Elm327Client::Elm327Client(VLinkerBluetoothTransport& transport)
 
 Elm327Client::~Elm327Client() {}
 
+void Elm327Client::reset() {
+    _state = ELM_STATE_UNINITIALIZED;
+    strncpy(_protocol, "UNKNOWN", sizeof(_protocol) - 1);
+}
+
 Elm327State Elm327Client::getState() const {
     return _state;
 }
@@ -84,6 +89,7 @@ bool Elm327Client::initialize() {
     }
 
     _state = ELM_STATE_INITIALIZING;
+    strncpy(_protocol, "AUTO (SEARCHING)", sizeof(_protocol) - 1);
     Serial.println("[MINI-OBD] ELM327 initialization started");
 
     // 1. ATZ (Reset adapter)

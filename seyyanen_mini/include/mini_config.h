@@ -19,13 +19,15 @@
 
 // 2. Bluetooth Classic SPP (VLinker MC+ / ELM327 / STN)
 #define SEYYANEN_BT_DEVICE_NAME         "SeyyanenMini"
-#define SEYYANEN_VLINKER_NAME           "vLinker MC"          // Target name substring
-#define SEYYANEN_VLINKER_MAC            ""                    // Optional known MAC
+#define SEYYANEN_VLINKER_NAME           "vLinker MC-Android"  // Target Classic SPP device name
+#define SEYYANEN_VLINKER_MAC            ""                    // Optional known MAC (empty = auto-discover & cache)
 #define SEYYANEN_BT_CONNECT_TIMEOUT_MS  12000                 // Timeout per SPP connect attempt
 #define SEYYANEN_BT_STABILIZE_DELAY_MS  350                   // Pause after SPP link up before first TX
 #define SEYYANEN_BT_TRANSACTION_TIMEOUT 2500                  // ms per command/response transaction
 #define SEYYANEN_BT_ATI_TIMEOUT_MS      2000                  // Timeout specifically for ATI handshake
 #define SEYYANEN_COMMAND_TIMEOUT        1200                  // ms per OBD query
+#define SEYYANEN_BT_DISCOVERY_TIMEOUT_MS 3840                 // ~3.84s bounded discovery window (3 * 1280ms)
+#define SEYYANEN_BT_MAX_DIRECT_MAC_FAILURES 3                 // Invalidate cached MAC after 3 failed direct connects
 
 // 3. Exponential Backoff Reconnect Parameters
 #define SEYYANEN_BT_BACKOFF_BASE_MS     1000                  // Initial retry delay (1s)
@@ -43,7 +45,7 @@
 #define SEYYANEN_STALE_THRESHOLD_US     5000000ULL            // Stale: >= 2.5s
 
 // 6. Bounded In-Memory History & Scheduler Limits
-#define SEYYANEN_RING_BUFFER_SIZE       256                   // Maximum samples in RAM
+#define SEYYANEN_RING_BUFFER_SIZE       64                    // Maximum samples in RAM (bounded for ESP32 DRAM)
 #define SEYYANEN_MAX_SCHEDULED_PIDS     16                    // Maximum active PIDs in scheduler
 #define SEYYANEN_MAX_REGISTERED_PIDS    64                    // Maximum registered PIDs in scanner
 #define SEYYANEN_MAX_UNSCHEDULED_PIDS   48                    // Maximum tracked unscheduled PIDs

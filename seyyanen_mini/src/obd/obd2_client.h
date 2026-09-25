@@ -27,6 +27,9 @@ public:
     // Readiness
     bool isReady() const;
 
+    // Active Protocol
+    const char* getProtocol() const { return _elm.getProtocol(); }
+
     // Strict Safety Check
     static bool isModeAllowed(uint8_t mode);
 

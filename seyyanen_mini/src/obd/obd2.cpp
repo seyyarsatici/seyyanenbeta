@@ -1,4 +1,5 @@
 #include "obd2.h"
+#include <cstdio>
 #include <ctype.h>
 #include <string.h>
 

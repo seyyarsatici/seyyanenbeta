@@ -1,14 +1,24 @@
 #include "sample.h"
 #include <string.h>
+#include <new>
 
 SampleRingBuffer::SampleRingBuffer(size_t capacity)
-    : _capacity(capacity),
+    : _buffer(nullptr),
+      _capacity(capacity),
       _head(0),
       _tail(0),
       _count(0),
-      _totalPushed(0) {
-    if (_capacity == 0) _capacity = 128;
-    _buffer = new MeasurementSample[_capacity];
+      _totalPushed(0),
+      _mutex(nullptr) {
+    if (_capacity == 0) _capacity = SEYYANEN_RING_BUFFER_SIZE;
+    _buffer = new (std::nothrow) MeasurementSample[_capacity];
+    if (!_buffer && _capacity > 32) {
+        _capacity = 32;
+        _buffer = new (std::nothrow) MeasurementSample[_capacity];
+    }
+    if (!_buffer) {
+        _capacity = 0;
+    }
     _mutex = xSemaphoreCreateMutex();
 }
 
