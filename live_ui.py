@@ -87,6 +87,7 @@ from live_safety import (
     CIRCUIT_HALF_OPEN,
     CIRCUIT_OPEN,
 )
+from diagnostic_adapter import log_real_connect
 
 
 # =====================================================================
@@ -291,7 +292,7 @@ class LiveConnectWorker(QThread):
     """
     connect_finished = pyqtSignal(bool, str)
 
-    def __init__(self, runtime: LiveAcquisitionRuntime, timeout: float = 5.0):
+    def __init__(self, runtime: LiveAcquisitionRuntime, timeout: float = 12.0):
         super().__init__()
         self.runtime = runtime
         self.timeout = timeout
@@ -970,8 +971,10 @@ class LiveDiagnosticWidget(QWidget):
 
         # Prevent duplicate concurrent workers
         if self._connect_worker and self._connect_worker.isRunning():
+            log_real_connect("[UI] Duplicate start click ignored: connect worker already running.")
             return
         if self._reconnect_worker and self._reconnect_worker.isRunning():
+            log_real_connect("[UI] Duplicate start click ignored: reconnect worker already running.")
             return
 
         # If not connected yet, initiate non-blocking background connection
@@ -982,12 +985,13 @@ class LiveDiagnosticWidget(QWidget):
             self.btn_stop.setEnabled(False)
             self.btn_reconnect.setEnabled(False)
 
-            self._connect_worker = LiveConnectWorker(self.runtime, timeout=5.0)
+            self._connect_worker = LiveConnectWorker(self.runtime, timeout=12.0)
             self._connect_worker.connect_finished.connect(self._on_connect_completed)
             self._connect_worker.start()
             return
 
         # Already connected, start acquisition immediately
+        log_real_connect("[UI] Runtime is already connected. Starting acquisition directly without reopening port.")
         ok = self.runtime.start()
         if not ok:
             QMessageBox.warning(self, "Uyarı", "Canlı veri başlatılamadı. Seri bağlantıyı ve araç durumunu kontrol edin.")
@@ -995,11 +999,17 @@ class LiveDiagnosticWidget(QWidget):
 
     def _on_connect_completed(self, ok: bool, msg: str):
         """Slot invoked safely on Qt GUI thread when initial connection finishes."""
+        self._connect_worker = None
+        self.btn_start.setEnabled(True)
+        self.btn_stop.setEnabled(True)
+        self.btn_reconnect.setEnabled(True)
         if ok:
+            log_real_connect("[UI] Background connection completed successfully. Starting live acquisition...")
             start_ok = self.runtime.start()
             if not start_ok:
                 QMessageBox.warning(self, "Uyarı", "Bağlantı kuruldu fakat canlı veri akışı başlatılamadı.")
         else:
+            log_real_connect(f"[UI] Connection failed: {msg}")
             QMessageBox.critical(self, "Bağlantı Hatası", msg)
         self.update_ui_state()
 

@@ -38,6 +38,7 @@ from diagnostic_adapter import (
     AdapterConnectionState,
     ELM327DiagnosticAdapter,
     PROHIBITED_SERVICES,
+    log_real_connect,
 )
 try:
     from diagnostic_persistence import DiagnosticRepository
@@ -287,7 +288,13 @@ class LiveAcquisitionRuntime:
     def connection_state(self) -> AdapterConnectionState:
         """Exposes authoritative adapter connection state."""
         if hasattr(self, "adapter") and self.adapter is not None:
-            return self.adapter.connection_state
+            state = self.adapter.connection_state
+            if state == AdapterConnectionState.CONNECTED:
+                return AdapterConnectionState.CONNECTED
+            # If serial handle is actively open on adapter, reflect CONNECTED
+            if getattr(self.adapter, "ser", None) and getattr(self.adapter.ser, "is_open", False):
+                return AdapterConnectionState.CONNECTED
+            return state
         is_open = bool(self.engine and hasattr(self.engine, "ser") and self.engine.ser and getattr(self.engine.ser, "is_open", False))
         return AdapterConnectionState.CONNECTED if is_open else AdapterConnectionState.DISCONNECTED
 
@@ -295,20 +302,37 @@ class LiveAcquisitionRuntime:
         """Check whether the underlying adapter/serial is connected."""
         return self.connection_state == AdapterConnectionState.CONNECTED
 
-    def connect(self, timeout: float = 5.0) -> bool:
+    def connect(self, timeout: float = 12.0) -> bool:
         """Synchronous connect via authoritative adapter or engine."""
+        runtime_hex = hex(id(self))
+        log_real_connect(f"[Runtime id={runtime_hex}] connect() called (timeout={timeout}s)")
+        if self.is_connected():
+            log_real_connect(f"[Runtime id={runtime_hex}] Already connected; idempotent return True.")
+            return True
         if hasattr(self, "adapter") and self.adapter is not None:
             try:
-                return self.adapter.connect(timeout=timeout)
+                ok = self.adapter.connect(timeout=timeout)
+                log_real_connect(f"[Runtime id={runtime_hex}] Adapter connect completed: success={ok}")
+                return ok
             except Exception as e:
                 logging.warning(f"LiveRuntime adapter connect failed: {e}")
+                log_real_connect(f"[Runtime id={runtime_hex}] Adapter connect failed with exception: {e}")
                 return False
         if hasattr(self.engine, "baglan"):
-            return bool(self.engine.baglan(simulation=self.simulation))
+            ok = bool(self.engine.baglan(simulation=self.simulation))
+            log_real_connect(f"[Runtime id={runtime_hex}] Engine baglan completed: success={ok}")
+            return ok
         return False
 
-    def connect_async(self, timeout: float = 5.0, on_finished: Optional[Callable[[bool, Optional[Exception]], None]] = None) -> bool:
+    def connect_async(self, timeout: float = 12.0, on_finished: Optional[Callable[[bool, Optional[Exception]], None]] = None) -> bool:
         """Non-blocking connect via authoritative adapter."""
+        runtime_hex = hex(id(self))
+        log_real_connect(f"[Runtime id={runtime_hex}] connect_async() called (timeout={timeout}s)")
+        if self.is_connected():
+            log_real_connect(f"[Runtime id={runtime_hex}] Already connected; idempotent return True (async).")
+            if on_finished:
+                on_finished(True, None)
+            return True
         if hasattr(self, "adapter") and self.adapter is not None:
             return self.adapter.connect_async(timeout=timeout, on_finished=on_finished)
         return False
@@ -323,14 +347,17 @@ class LiveAcquisitionRuntime:
 
         SAFETY NOTE: connect() is intentionally called OUTSIDE the state lock to
         avoid blocking concurrent get_state()/is_running() callers for the full
-        serial port connection timeout (up to 5 s). The state is set to
+        serial port connection timeout (up to 12 s). The state is set to
         LIVE_STARTING before releasing the lock, so duplicate start calls that
         arrive during connection are correctly rejected.
         """
+        runtime_hex = hex(id(self))
+        log_real_connect(f"[Runtime id={runtime_hex}] start() called. State={self._state}, is_connected={self.is_connected()}")
         # --- Phase 1: Guard and claim LIVE_STARTING (lock held briefly) ---
         with self._state_lock:
             if self._state in (LIVE_RUNNING, LIVE_STARTING, LIVE_DEGRADED):
                 logging.warning("LiveRuntime is already running or starting. Duplicate start call ignored.")
+                log_real_connect(f"[Runtime id={runtime_hex}] Duplicate start call ignored (state={self._state}).")
                 return False
             if not self._transition_state(LIVE_STARTING):
                 return False
@@ -338,10 +365,13 @@ class LiveAcquisitionRuntime:
 
         # --- Phase 2: Connect outside the lock (may block up to timeout) ---
         if not already_connected:
+            log_real_connect(f"[Runtime id={runtime_hex}] start() requires connection; calling connect()...")
             if not self.connect():
                 with self._state_lock:
                     self._transition_state(LIVE_ERROR, "Serial port connection failed during start")
                 return False
+        else:
+            log_real_connect(f"[Runtime id={runtime_hex}] start() reusing authoritative connected serial handle without reopen.")
 
         # --- Phase 3: Launch workers (lock held briefly) ---
         with self._state_lock:

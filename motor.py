@@ -469,20 +469,32 @@ def port_secici(simulation: Optional[bool] = None, interactive: bool = False):
         devices = PlatformManager.discover_diagnostic_devices()
         likely = [d["device"] for d in devices if d.get("is_likely_vci")]
         if likely:
-            print(f"✅ Otomatik: {likely[0]}")
+            try:
+                print(f"[+] Otomatik: {likely[0]}")
+            except Exception:
+                pass
             return likely[0]
         if not devices:
-            print("❌ Hiç seri port / teşhis cihazı bulunamadı!")
+            try:
+                print("[-] Hic seri port / tesgis cihazi bulunamadi!")
+            except Exception:
+                pass
             return None
         if not interactive:
-            print(f"📡 Aday port seçildi: {devices[0]['device']}")
+            try:
+                print(f"[>] Aday port secildi: {devices[0]['device']}")
+            except Exception:
+                pass
             return devices[0]["device"]
         # Convert dictionary to objects with device/description attributes for manual picker below
         ports = [type("PortInfo", (), {"device": d["device"], "description": d.get("description", "")})() for d in devices]
     else:
         ports = list_ports.comports()
         if not ports:
-            print("❌ Hiç COM portu bulunamadı!")
+            try:
+                print("[-] Hic COM portu bulunamadi!")
+            except Exception:
+                pass
             return None
         
         keywords = ['vlinker', 'ch340', 'ftdi', 'elm327', 'obd', 'bluetooth', 'bth']

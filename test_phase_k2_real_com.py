@@ -586,7 +586,164 @@ class TestPhaseK2RealCOM(unittest.TestCase):
         self.assertIn("[REAL-CONNECT] COM3 rejected: reason=TIMEOUT", output)
         self.assertIn("[REAL-CONNECT] Probing COM4", output)
         self.assertIn("[REAL-CONNECT] ELM327 detected on COM4", output)
-        self.assertIn("[REAL-CONNECT] Establishing active connection on COM4", output)
+        self.assertTrue(any("Establishing active connection on COM4" in line for line in output.splitlines()))
+
+    # -----------------------------------------------------------------
+    # REGRESSION: Duplicate Serial Port Opening Bug Prevention
+    # -----------------------------------------------------------------
+    def test_regression_first_connect_opens_once_and_subsequent_calls_are_idempotent(self):
+        """
+        Regression Test: Proves that:
+          1. First connect opens COM3 exactly once.
+          2. Calling runtime.start() after successful runtime.connect() does NOT reopen COM3.
+          3. Calling connect() on an already CONNECTED adapter returns success without touching serial.
+          4. If a duplicate connection is attempted while the port is open, it is rejected
+             before serial.Serial(COM3) is called.
+          5. No PermissionError occurs.
+        """
+        open_calls = []
+        active_ports = set()
+
+        def exclusive_factory(port="COM3", baudrate=38400, **kw):
+            # Simulates real Windows exclusive COM handle behavior
+            if port in active_ports:
+                raise PermissionError(13, f"Access is denied: '{port}' is already opened by this process", None, 5)
+            open_calls.append(port)
+            active_ports.add(port)
+            handle = FakeCandidateSerial(port=port, baudrate=baudrate, behavior="ok", **kw)
+            # When closed, remove from active_ports
+            orig_close = handle.close
+            def tracking_close():
+                active_ports.discard(port)
+                orig_close()
+            handle.close = tracking_close
+            return handle
+
+        mock_ports = [MockPortInfo("COM3", "Standard Serial over Bluetooth link (COM3)")]
+        with patch("serial.tools.list_ports.comports", return_value=mock_ports):
+            adapter = ELM327DiagnosticAdapter(
+                adapter_id="REGRESSION_DUP_PORT",
+                simulation=False,
+                serial_factory=exclusive_factory,
+            )
+            runtime = LiveAcquisitionRuntime(adapter=adapter, simulation=False)
+
+            # Step 1: First connect via runtime
+            conn_ok = runtime.connect(timeout=2.0)
+            self.assertTrue(conn_ok, "Initial runtime.connect() must succeed")
+            self.assertTrue(runtime.is_connected(), "Runtime must report is_connected=True")
+            self.assertTrue(adapter.is_connected(), "Adapter must report is_connected=True")
+
+            # Active handle count check: probe opened once and closed; persistent connection opened once
+            self.assertIn("COM3", active_ports, "COM3 must be actively held open")
+            initial_open_calls_count = len(open_calls)
+
+            # Step 2: Calling runtime.start() after successful connect must NOT reopen COM3 or fail with PermissionError
+            start_ok = runtime.start()
+            self.assertTrue(start_ok, "runtime.start() after successful connect must succeed")
+            self.assertEqual(
+                len(open_calls),
+                initial_open_calls_count,
+                "runtime.start() must NOT reopen serial port or call serial factory again",
+            )
+
+            # Step 3: Calling adapter.connect() directly while connected must return True idempotently without touching serial
+            dup_adapter_conn = adapter.connect(timeout=2.0)
+            self.assertTrue(dup_adapter_conn, "adapter.connect() on connected adapter must return True")
+            self.assertEqual(
+                len(open_calls),
+                initial_open_calls_count,
+                "Subsequent adapter.connect() must not touch serial factory",
+            )
+
+            # Step 4: Calling runtime.connect() directly while connected must return True idempotently without touching serial
+            dup_runtime_conn = runtime.connect(timeout=2.0)
+            self.assertTrue(dup_runtime_conn, "runtime.connect() on connected runtime must return True")
+            self.assertEqual(
+                len(open_calls),
+                initial_open_calls_count,
+                "Subsequent runtime.connect() must not touch serial factory",
+            )
+
+            # Step 5: Calling runtime.start() while already running must be rejected safely
+            dup_start = runtime.start()
+            self.assertFalse(dup_start, "Duplicate runtime.start() must return False without reopening port")
+            self.assertEqual(
+                len(open_calls),
+                initial_open_calls_count,
+                "Duplicate runtime.start() must not call serial factory",
+            )
+
+            # Clean teardown
+            runtime.stop(timeout=1.0)
+            adapter.disconnect()
+            self.assertNotIn("COM3", active_ports, "COM3 handle must be released after disconnect")
+
+    def test_regression_duplicate_connect_attempt_rejected_before_serial_call(self):
+        """
+        Section 9: Even if adapter state is somehow altered (e.g. state reset or ERROR),
+        an existing open serial handle on COM3 prevents serial_factory / serial.Serial
+        from being called, avoiding Windows WinError 5 PermissionError.
+        """
+        open_attempts = []
+        def strict_factory(port="COM3", baudrate=38400, **kw):
+            open_attempts.append(port)
+            if len(open_attempts) > 2:  # 1 probe + 1 persistent open
+                raise PermissionError(13, f"Access is denied: '{port}' reopened!", None, 5)
+            return FakeCandidateSerial(port=port, baudrate=baudrate, behavior="ok", **kw)
+
+        mock_ports = [MockPortInfo("COM3", "Bluetooth Serial")]
+        with patch("serial.tools.list_ports.comports", return_value=mock_ports):
+            adapter = ELM327DiagnosticAdapter(
+                adapter_id="STRICT_REJECT_TEST",
+                simulation=False,
+                serial_factory=strict_factory,
+            )
+            # Initial connect
+            ok = adapter.connect(timeout=2.0)
+            self.assertTrue(ok)
+            active_count_before = len(open_attempts)
+
+            # Manually simulate state disruption while serial handle is still open
+            with adapter._lock:
+                adapter._state = AdapterConnectionState.ERROR
+
+            # Calling connect() must see the open handle, restore state, and NOT call factory again
+            retry_ok = adapter.connect(timeout=2.0)
+            self.assertTrue(retry_ok, "connect() must restore CONNECTED and succeed without PermissionError")
+            self.assertEqual(len(open_attempts), active_count_before, "No additional serial open allowed")
+            self.assertTrue(adapter.is_connected())
+
+            adapter.disconnect()
+
+    def test_identity_logging_in_real_connect(self):
+        """Section 10: [REAL-CONNECT] messages contain adapter and runtime object IDs."""
+        import io
+        import contextlib
+
+        mock_ports = [MockPortInfo("COM3", "Bluetooth Outgoing")]
+        def factory(port="COM3", baudrate=38400, **kw):
+            return FakeCandidateSerial(port=port, baudrate=baudrate, behavior="ok", **kw)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            with patch("serial.tools.list_ports.comports", return_value=mock_ports):
+                adapter = ELM327DiagnosticAdapter(
+                    adapter_id="IDENT_TEST",
+                    simulation=False,
+                    serial_factory=factory,
+                )
+                runtime = LiveAcquisitionRuntime(adapter=adapter, simulation=False)
+                runtime.connect(timeout=2.0)
+                runtime.start()
+                runtime.stop(timeout=1.0)
+                adapter.disconnect()
+
+        output = buf.getvalue()
+        adapter_hex = hex(id(adapter))
+        runtime_hex = hex(id(runtime))
+        self.assertIn(f"[Adapter id={adapter_hex}]", output)
+        self.assertIn(f"[Runtime id={runtime_hex}]", output)
 
 
 if __name__ == "__main__":

@@ -559,6 +559,18 @@ class MainUI(QMainWindow):
         mode_str = "Simülasyon (MockSerial)" if self.simulation_mode else "Gerçek Donanım (Real Hardware)"
         print(f"[LOG] Canlı Teşhis Paneli açıldı. Mod: {mode_str}")
 
+    def closeEvent(self, event):
+        """Ensures clean shutdown of live acquisition and serial adapter upon window exit."""
+        if hasattr(self, "live_runtime") and self.live_runtime:
+            try:
+                if self.live_runtime.is_running():
+                    self.live_runtime.stop(timeout=1.0)
+                if hasattr(self.live_runtime, "adapter") and self.live_runtime.adapter:
+                    self.live_runtime.adapter.disconnect()
+            except Exception:
+                pass
+        super().closeEvent(event)
+
     def analyze_file(self, filename: str, file_path: str):
         """Dosya analizi başlat - AnalysisPanel'i MainUI içine göm"""
         print(f"\n{'=' * 60}")

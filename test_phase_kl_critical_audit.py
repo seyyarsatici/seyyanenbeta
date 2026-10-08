@@ -71,7 +71,14 @@ from diagnostic_security import (
 
 def _make_adapter(responses: Optional[Dict] = None) -> MockDiagnosticAdapter:
     """Create a connected MockDiagnosticAdapter with optional response map."""
-    adapter = MockDiagnosticAdapter(responses=responses or {})
+    default_resp = {
+        "010C": ["41 0C 1A F8"],
+        "010D": ["41 0D 32"],
+        "0105": ["41 05 5A"],
+    }
+    if responses is not None:
+        default_resp.update(responses)
+    adapter = MockDiagnosticAdapter(responses=default_resp)
     adapter.connect()
     return adapter
 

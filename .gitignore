@@ -37,3 +37,7 @@ history.json
 
 # pytest cache
 .pytest_cache/
+
+# PlatformIO build artifacts & local environments
+.pio/
+seyyanen_mini/.pio/

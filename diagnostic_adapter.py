@@ -408,6 +408,11 @@ class DiagnosticAdapter(ITransportAdapter, abc.ABC):
     @property
     def connection_state(self) -> AdapterConnectionState:
         with self._lock:
+            if self._state == AdapterConnectionState.CONNECTED:
+                return AdapterConnectionState.CONNECTED
+            ser_obj = getattr(self, "ser", None)
+            if ser_obj is not None and getattr(ser_obj, "is_open", False):
+                return AdapterConnectionState.CONNECTED
             return self._state
 
     @property
@@ -431,15 +436,26 @@ class DiagnosticAdapter(ITransportAdapter, abc.ABC):
     # Lifecycle Management
     # -----------------------------------------------------------------
 
-    def connect(self, timeout: float = 5.0) -> bool:
+    def connect(self, timeout: float = 12.0) -> bool:
         """
         Transitions adapter from DISCONNECTED to CONNECTED.
         Thread-safe, state-validated, and time-bounded.
         Synchronous entry point for non-UI callers and tests.
         """
+        adapter_hex = hex(id(self))
         with self._lock:
             if self._state == AdapterConnectionState.CONNECTED:
-                logger.debug("Adapter %s already connected.", self.adapter_id)
+                log_real_connect(f"[Adapter id={adapter_hex}] Already CONNECTED. Idempotent return True.")
+                logger.debug("Adapter %s (%s) already connected.", self.adapter_id, adapter_hex)
+                return True
+
+            ser_obj = getattr(self, "ser", None)
+            if ser_obj is not None and getattr(ser_obj, "is_open", False):
+                self._state = AdapterConnectionState.CONNECTED
+                log_real_connect(
+                    f"[Adapter id={adapter_hex}] Serial handle already open on {getattr(self, '_port', 'UNKNOWN')}; "
+                    "restored state to CONNECTED. Idempotent return True."
+                )
                 return True
 
             if self._state not in (AdapterConnectionState.DISCONNECTED, AdapterConnectionState.ERROR, AdapterConnectionState.FAILED):
@@ -451,26 +467,37 @@ class DiagnosticAdapter(ITransportAdapter, abc.ABC):
 
             self._state = AdapterConnectionState.CONNECTING
             self._connect_cancel_event.clear()
-            logger.info("Connecting diagnostic adapter '%s'...", self.adapter_id)
+            log_real_connect(f"[Adapter id={adapter_hex}] Connecting diagnostic adapter '{self.adapter_id}' (timeout={timeout}s)...")
+            logger.info("Connecting diagnostic adapter '%s' (%s)...", self.adapter_id, adapter_hex)
 
         start_time = time.time()
         try:
             success = self._do_connect(timeout=timeout)
-            if not success or (time.time() - start_time) > timeout:
+            elapsed = time.time() - start_time
+            if not success or elapsed > timeout:
+                self._do_disconnect()
                 with self._lock:
                     self._state = AdapterConnectionState.ERROR
+                if elapsed > timeout:
+                    raise AdapterTimeoutError(
+                        f"Connection timed out after {elapsed:.2f}s for adapter '{self.adapter_id}'.",
+                        adapter_id=self.adapter_id,
+                        state=AdapterConnectionState.ERROR,
+                    )
                 raise AdapterConnectionError(
-                    f"Connection timed out or failed for adapter '{self.adapter_id}'.",
+                    f"Connection failed for adapter '{self.adapter_id}'.",
                     adapter_id=self.adapter_id,
                     state=AdapterConnectionState.ERROR,
                 )
 
             with self._lock:
                 self._state = AdapterConnectionState.CONNECTED
-            logger.info("Adapter '%s' successfully CONNECTED.", self.adapter_id)
+            log_real_connect(f"[Adapter id={adapter_hex}] Adapter successfully CONNECTED.")
+            logger.info("Adapter '%s' (%s) successfully CONNECTED.", self.adapter_id, adapter_hex)
             return True
 
         except Exception as e:
+            self._do_disconnect()
             with self._lock:
                 self._state = AdapterConnectionState.ERROR
             if isinstance(e, AdapterError):
@@ -483,7 +510,7 @@ class DiagnosticAdapter(ITransportAdapter, abc.ABC):
 
     def connect_async(
         self,
-        timeout: float = 5.0,
+        timeout: float = 12.0,
         on_finished: Optional[Callable[[bool, Optional[Exception]], None]] = None,
     ) -> bool:
         """
@@ -492,9 +519,21 @@ class DiagnosticAdapter(ITransportAdapter, abc.ABC):
         and returns immediately without blocking caller.
         Rejects concurrent duplicate connect attempts while CONNECTING.
         """
+        adapter_hex = hex(id(self))
         with self._lock:
             if self._state == AdapterConnectionState.CONNECTED:
-                logger.debug("Adapter %s already connected.", self.adapter_id)
+                log_real_connect(f"[Adapter id={adapter_hex}] Already CONNECTED (async). Idempotent return True.")
+                if on_finished:
+                    on_finished(True, None)
+                return True
+
+            ser_obj = getattr(self, "ser", None)
+            if ser_obj is not None and getattr(ser_obj, "is_open", False):
+                self._state = AdapterConnectionState.CONNECTED
+                log_real_connect(
+                    f"[Adapter id={adapter_hex}] Serial handle already open on {getattr(self, '_port', 'UNKNOWN')}; "
+                    "restored state to CONNECTED (async). Idempotent return True."
+                )
                 if on_finished:
                     on_finished(True, None)
                 return True
@@ -512,6 +551,7 @@ class DiagnosticAdapter(ITransportAdapter, abc.ABC):
 
             self._state = AdapterConnectionState.CONNECTING
             self._connect_cancel_event.clear()
+            log_real_connect(f"[Adapter id={adapter_hex}] Asynchronously connecting diagnostic adapter '{self.adapter_id}' (timeout={timeout}s)...")
             logger.info("Asynchronously connecting diagnostic adapter '%s'...", self.adapter_id)
 
         def _bg_connect():
@@ -533,13 +573,17 @@ class DiagnosticAdapter(ITransportAdapter, abc.ABC):
                 if self._connect_cancel_event.is_set():
                     self._do_disconnect()
                     with self._lock:
-                        self._state = AdapterConnectionState.DISCONNECTED
+                        if self._state == AdapterConnectionState.DISCONNECTED:
+                            pass
+                        else:
+                            self._state = AdapterConnectionState.DISCONNECTED
                     if on_finished:
                         on_finished(False, None)
                     return
 
                 if not success or elapsed > timeout:
                     success = False
+                    self._do_disconnect()
                     with self._lock:
                         self._state = AdapterConnectionState.FAILED
                     if elapsed > timeout:
@@ -557,9 +601,11 @@ class DiagnosticAdapter(ITransportAdapter, abc.ABC):
                 else:
                     with self._lock:
                         self._state = AdapterConnectionState.CONNECTED
+                    log_real_connect(f"[Adapter id={adapter_hex}] Adapter successfully CONNECTED (async).")
                     logger.info("Adapter '%s' successfully CONNECTED (async).", self.adapter_id)
 
             except Exception as e:
+                self._do_disconnect()
                 with self._lock:
                     self._state = AdapterConnectionState.FAILED
                 if isinstance(e, AdapterError):
@@ -591,8 +637,11 @@ class DiagnosticAdapter(ITransportAdapter, abc.ABC):
 
     def disconnect(self) -> bool:
         """Transitions adapter from CONNECTED or CONNECTING to DISCONNECTED cleanly."""
+        adapter_hex = hex(id(self))
+        log_real_connect(f"[Adapter id={adapter_hex}] disconnect() called (state={self._state.value}).")
         with self._lock:
-            if self._state == AdapterConnectionState.DISCONNECTED:
+            ser_obj = getattr(self, "ser", None)
+            if self._state == AdapterConnectionState.DISCONNECTED and (ser_obj is None or not getattr(ser_obj, "is_open", False)):
                 return True
 
             if self._state == AdapterConnectionState.CONNECTING:
@@ -611,13 +660,19 @@ class DiagnosticAdapter(ITransportAdapter, abc.ABC):
         finally:
             with self._lock:
                 self._state = AdapterConnectionState.DISCONNECTED
+            log_real_connect(f"[Adapter id={adapter_hex}] Adapter DISCONNECTED cleanly.")
             logger.info("Adapter '%s' DISCONNECTED.", self.adapter_id)
         return True
 
     def is_connected(self) -> bool:
         """ITransportAdapter compatibility method."""
         with self._lock:
-            return self._state == AdapterConnectionState.CONNECTED
+            if self._state == AdapterConnectionState.CONNECTED:
+                return True
+            ser_obj = getattr(self, "ser", None)
+            if ser_obj is not None and getattr(ser_obj, "is_open", False):
+                return True
+            return False
 
     def reset(self, hard: bool = False) -> bool:
         """
@@ -1099,7 +1154,14 @@ def is_simulation_mode(explicit: Optional[bool] = None) -> bool:
 
 def log_real_connect(msg: str) -> None:
     """Structured console output for real hardware connection diagnostics."""
-    print(f"[REAL-CONNECT] {msg}", flush=True)
+    try:
+        print(f"[REAL-CONNECT] {msg}", flush=True)
+    except (UnicodeEncodeError, OSError):
+        try:
+            safe_msg = msg.encode("ascii", errors="backslashreplace").decode("ascii")
+            print(f"[REAL-CONNECT] {safe_msg}", flush=True)
+        except Exception:
+            pass
     logger.info("[REAL-CONNECT] %s", msg)
 
 
@@ -1178,6 +1240,15 @@ def enumerate_candidate_ports(explicit_port: Optional[str] = None) -> List[Dict[
         return (item["priority"], num, dev_name)
 
     ports_found.sort(key=sort_key)
+    # Opt-in virtual ELM327 test harness fallback when no physical ports are discovered
+    if not ports_found and os.environ.get("SEYYANEN_VIRTUAL_ELM327") == "1":
+        ports_found.append({
+            "device": "COM_VIRTUAL",
+            "description": "Virtual ELM327 Test Harness",
+            "manufacturer": "Seyyanen Test",
+            "hwid": "VIRTUAL_ELM327",
+            "priority": 99,
+        })
     return ports_found
 
 
@@ -1206,6 +1277,14 @@ def probe_elm327_port(
         try:
             if serial_factory:
                 ser = serial_factory(port=port, baudrate=baud, timeout=0.1, write_timeout=1.0)
+            elif port == "COM_VIRTUAL" or (not serial_factory and os.environ.get("SEYYANEN_VIRTUAL_ELM327") == "1"):
+                try:
+                    from virtual_elm327 import create_virtual_serial_factory
+                    v_fact = create_virtual_serial_factory()
+                    ser = v_fact(port=port, baudrate=baud, timeout=0.1, write_timeout=1.0)
+                except Exception as ex:
+                    log_real_connect(f"Failed to instantiate virtual serial on {port}: {ex}")
+                    continue
             else:
                 import serial
                 ser = serial.Serial(port, baudrate=baud, timeout=0.1, write_timeout=1.0)
@@ -1265,7 +1344,7 @@ def probe_elm327_port(
                             time.sleep(0.01)
 
             resp_str = raw_buf.decode("ascii", errors="ignore").upper()
-            sanitized_resp = repr(raw_buf.decode("ascii", errors="replace"))
+            sanitized_resp = repr(raw_buf.decode("ascii", errors="backslashreplace"))
             log_real_connect(f"{port} response: {sanitized_resp}")
 
             plausible_markers = ["ELM327", "OBDLINK", "VLINKER", "OK", "STN"]
@@ -1460,6 +1539,10 @@ def cli_probe_port(
         print(f"[PROBE-PORT] Opening {port} @ {baudrate} baud (timeout=0.1s)...", flush=True)
         if serial_factory:
             ser = serial_factory(port=port, baudrate=baudrate, timeout=0.1, write_timeout=1.0)
+        elif port == "COM_VIRTUAL" or os.environ.get("SEYYANEN_VIRTUAL_ELM327") == "1":
+            from virtual_elm327 import create_virtual_serial_factory
+            v_fact = create_virtual_serial_factory()
+            ser = v_fact(port=port, baudrate=baudrate, timeout=0.1, write_timeout=1.0)
         else:
             import serial
             ser = serial.Serial(port, baudrate=baudrate, timeout=0.1, write_timeout=1.0)
@@ -1513,8 +1596,11 @@ def cli_probe_port(
                         time.sleep(0.01)
 
         # 7: Print sanitized raw response
-        sanitized = repr(raw_buf.decode("ascii", errors="replace"))
-        print(f"[PROBE-PORT] Raw Response: {sanitized}", flush=True)
+        sanitized = repr(raw_buf.decode("ascii", errors="backslashreplace"))
+        try:
+            print(f"[PROBE-PORT] Raw Response: {sanitized}", flush=True)
+        except Exception:
+            pass
 
         resp_upper = raw_buf.decode("ascii", errors="ignore").upper()
         plausible_markers = ["ELM327", "OBDLINK", "VLINKER", "OK", "STN"]
@@ -1613,6 +1699,13 @@ class ELM327DiagnosticAdapter(DiagnosticAdapter):
         self.read_timeout = read_timeout
         self.write_timeout = write_timeout
         self.serial_factory = serial_factory
+        if self.serial_factory is None and (self._port == "COM_VIRTUAL" or os.environ.get("SEYYANEN_VIRTUAL_ELM327") == "1"):
+            try:
+                from virtual_elm327 import create_virtual_serial_factory
+                self.serial_factory = create_virtual_serial_factory()
+                logger.info("[VIRTUAL-ELM] Opt-in test environment SEYYANEN_VIRTUAL_ELM327=1 detected: injected virtual serial factory.")
+            except ImportError:
+                pass
         self.simulation = bool(simulation)
         self.ser: Optional[Any] = None
         self._transport_stage: ELM327TransportStage = ELM327TransportStage.DISCONNECTED
@@ -1722,7 +1815,33 @@ class ELM327DiagnosticAdapter(DiagnosticAdapter):
         # -------------------------------------------------------------
         # STRICT PHYSICAL HARDWARE MODE (Normal User Connection)
         # -------------------------------------------------------------
+        adapter_hex = hex(id(self))
         target_port = self._port
+
+        # Guard 1: Existing serial handle already open on this adapter
+        if self.ser is not None and getattr(self.ser, "is_open", False):
+            log_real_connect(
+                f"[Adapter id={adapter_hex}] Serial handle is ALREADY OPEN on {target_port or self._port}. "
+                "Rejecting duplicate serial open attempt and reusing authoritative connection."
+            )
+            self._transport_stage = max(self._transport_stage, ELM327TransportStage.PORT_OPENED)
+            if self.engine is not None and (not hasattr(self.engine, "ser") or self.engine.ser is None):
+                self.engine.ser = self.ser
+                self.engine.bagli_port = target_port or self._port
+            return True
+
+        # Guard 2: Existing engine serial handle already open
+        if self.engine is not None and hasattr(self.engine, "ser"):
+            eng_ser = self.engine.ser
+            if eng_ser is not None and getattr(eng_ser, "is_open", False):
+                log_real_connect(
+                    f"[Adapter id={adapter_hex}] Engine serial handle is ALREADY OPEN. "
+                    "Adopting handle and rejecting duplicate serial open."
+                )
+                self.ser = eng_ser
+                self._transport_stage = max(self._transport_stage, ELM327TransportStage.PORT_OPENED)
+                return True
+
         if not target_port or str(target_port).upper() in ("AUTO", ""):
             # Automatic candidate enumeration and probing across all available ports
             probe_res, all_probes = discover_and_probe_elm327(
@@ -1746,7 +1865,7 @@ class ELM327DiagnosticAdapter(DiagnosticAdapter):
             self._baudrate = probe_res.baudrate
             self.elm_version = probe_res.adapter_identity
         else:
-            log_real_connect(f"Using explicitly configured port: {target_port}")
+            log_real_connect(f"[Adapter id={adapter_hex}] Using explicitly configured port: {target_port}")
             self.last_probe_result = PortProbeResult(
                 port=target_port,
                 transport="serial",
@@ -1756,13 +1875,30 @@ class ELM327DiagnosticAdapter(DiagnosticAdapter):
             )
             self.last_probe_history = [self.last_probe_result]
 
+        # Guard 3: Re-check guard right before opening physical serial handle
+        if self.ser is not None and getattr(self.ser, "is_open", False):
+            log_real_connect(
+                f"[Adapter id={adapter_hex}] Existing serial handle detected before open on {target_port}. "
+                "Rejecting duplicate serial open attempt and reusing handle."
+            )
+            return True
+
         # Open dedicated connection on target port
-        log_real_connect(f"Establishing active connection on {target_port}")
+        log_real_connect(f"[Adapter id={adapter_hex}] Establishing active connection on {target_port}")
         # Allow Windows Bluetooth stack to settle after probe closure
         time.sleep(0.4)
         try:
             if self.serial_factory:
                 self.ser = self.serial_factory(
+                    target_port,
+                    baudrate=self._baudrate,
+                    timeout=self.read_timeout,
+                    write_timeout=self.write_timeout,
+                )
+            elif target_port == "COM_VIRTUAL" or os.environ.get("SEYYANEN_VIRTUAL_ELM327") == "1":
+                from virtual_elm327 import create_virtual_serial_factory
+                v_fact = create_virtual_serial_factory()
+                self.ser = v_fact(
                     target_port,
                     baudrate=self._baudrate,
                     timeout=self.read_timeout,
@@ -1781,11 +1917,11 @@ class ELM327DiagnosticAdapter(DiagnosticAdapter):
                     self.ser.reset_input_buffer()
 
             self._transport_stage = ELM327TransportStage.PORT_OPENED
-            log_real_connect(f"Active connection open on {target_port} @ {self._baudrate} baud")
+            log_real_connect(f"[Adapter id={adapter_hex}] Active connection open on {target_port} @ {self._baudrate} baud")
             logger.info("Physical serial port '%s' opened at %d baud.", target_port, self._baudrate)
         except Exception as e:
             self._transport_stage = ELM327TransportStage.DISCONNECTED
-            log_real_connect(f"Failed to open active connection on {target_port}: {e}")
+            log_real_connect(f"[Adapter id={adapter_hex}] Failed to open active connection on {target_port}: {e}")
             raise AdapterConnectionError(
                 f"Failed to open physical serial port '{target_port}': {e}",
                 adapter_id=self.adapter_id,
@@ -1795,12 +1931,12 @@ class ELM327DiagnosticAdapter(DiagnosticAdapter):
         init_ok = self._execute_initialization(timeout=timeout)
         if not init_ok:
             self._do_disconnect()
-            log_real_connect(f"ELM327 initialization failed on {target_port}")
+            log_real_connect(f"[Adapter id={adapter_hex}] ELM327 initialization failed on {target_port}")
             raise AdapterConnectionError(
                 f"ELM327 initialization failed on physical port '{target_port}'.",
                 adapter_id=self.adapter_id,
             )
-        log_real_connect(f"ELM327 initialization successful on {target_port} (Version: {self.elm_version})")
+        log_real_connect(f"[Adapter id={adapter_hex}] ELM327 initialization successful on {target_port} (Version: {self.elm_version})")
 
         # Wire up engine if attached (maintains backward compatibility with C/D/E/F/G layers)
         if self.engine is not None:
@@ -1870,6 +2006,8 @@ class ELM327DiagnosticAdapter(DiagnosticAdapter):
 
     def _do_disconnect(self) -> None:
         """Tears down serial link and invalidates transport state."""
+        adapter_hex = hex(id(self))
+        log_real_connect(f"[Adapter id={adapter_hex}] _do_disconnect() closing serial handle.")
         if self.ser is not None:
             try:
                 if hasattr(self.ser, "close"):
