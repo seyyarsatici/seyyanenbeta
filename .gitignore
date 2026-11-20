@@ -40,4 +40,9 @@ history.json
 
 # PlatformIO build artifacts & local environments
 .pio/
-seyyanen_mini/.pio/
+seyyanen_mini/.pio/
+
+# Local-only generated reports and retained private originals
+/.local-private-data/
+/rapor/
+/pdf/rapor_aveo_*.pdf

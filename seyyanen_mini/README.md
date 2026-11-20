@@ -243,12 +243,12 @@ python -m unittest discover -s seyyanen_mini/test -p "test_*.py" -v
 
 ### Physical Hardware Acceptance Walkthrough
 Follow the comprehensive step-by-step physical test procedures in:
-- Phase M-2: [`m2_hardware_walkthrough.md`](file:///c:/Users/chnyg/OneDrive/Belgeler/py/seyyanen/seyyanen_mini/m2_hardware_walkthrough.md)
-- Phase M-3: [`m3_hardware_walkthrough.md`](file:///c:/Users/chnyg/OneDrive/Belgeler/py/seyyanen/seyyanen_mini/m3_hardware_walkthrough.md)
-- Phase M-4: [`m4_hardware_walkthrough.md`](file:///c:/Users/chnyg/OneDrive/Belgeler/py/seyyanen/seyyanen_mini/m4_hardware_walkthrough.md)
-- Phase M-5: [`m5_hardware_walkthrough.md`](file:///c:/Users/chnyg/OneDrive/Belgeler/py/seyyanen/seyyanen_mini/m5_hardware_walkthrough.md)
-- Phase M-6: [`m6_hardware_walkthrough.md`](file:///c:/Users/chnyg/OneDrive/Belgeler/py/seyyanen/seyyanen_mini/m6_hardware_walkthrough.md)
-- Phase M-7: [`m7_physical_validation_report.md`](file:///c:/Users/chnyg/OneDrive/Belgeler/py/seyyanen/seyyanen_mini/m7_physical_validation_report.md) & [`m7_walkthrough.md`](file:///c:/Users/chnyg/OneDrive/Belgeler/py/seyyanen/seyyanen_mini/m7_walkthrough.md)
+- Phase M-2: [`m2_hardware_walkthrough.md`](../docs/hardware/seyyanen_mini/m2_hardware_walkthrough.md)
+- Phase M-3: [`m3_hardware_walkthrough.md`](../docs/hardware/seyyanen_mini/m3_hardware_walkthrough.md)
+- Phase M-4: [`m4_hardware_walkthrough.md`](../docs/hardware/seyyanen_mini/m4_hardware_walkthrough.md)
+- Phase M-5: [`m5_hardware_walkthrough.md`](../docs/hardware/seyyanen_mini/m5_hardware_walkthrough.md)
+- Phase M-6: [`m6_hardware_walkthrough.md`](../docs/hardware/seyyanen_mini/m6_hardware_walkthrough.md)
+- Phase M-7: [`m7_physical_validation_report.md`](../docs/hardware/seyyanen_mini/m7_physical_validation_report.md) & [`m7_walkthrough.md`](../docs/history/phases/M/m7_walkthrough.md)
 
 ---
 
