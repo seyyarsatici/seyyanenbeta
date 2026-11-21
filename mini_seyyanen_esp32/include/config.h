@@ -28,9 +28,9 @@ constexpr char VlinkerMac[] = "";
 // This label is shown in the dashboard when the adapter is connected.
 constexpr char VlinkerDisplayName[] = "VLINKER MC+";
 constexpr uint32_t PollIntervalMs = 500;
-// At the requested 700 ms response example + 500 ms inter-request interval,
-// five PIDs take about 6 s. 20 s allows multiple sweeps; actual adapter latency
-// has not been measured on this vehicle.
+// Simulated response times 100/500/700/1500/3000 ms plus five 500 ms request
+// intervals make one five-PID sweep about 8.3 s. 20 s exceeds that cycle while
+// still expiring data that stops updating; vehicle timing is not yet measured.
 constexpr uint32_t StaleTimeoutMs = 20000;
 // AUTO search/KWP initialization can exceed short ELM timeouts; allow 25 s for
 // the initial bitmap response. Physical timing remains unverified.

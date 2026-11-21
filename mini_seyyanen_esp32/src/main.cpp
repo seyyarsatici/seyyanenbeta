@@ -53,6 +53,7 @@ void loop() {
     case EcuState::Searching: ecuStatus="ECU: SEARCHING"; break;
     case EcuState::Connected: ecuStatus="ECU: CONNECTED"; break;
     case EcuState::ConnectedNoTargets: ecuStatus="ECU: NO TARGET PID"; break;
+    case EcuState::ConnectedAmbiguous: ecuStatus="ECU: AMBIGUOUS"; break;
     case EcuState::Failed: ecuStatus="ECU: FAILED"; break;
     case EcuState::Disconnected: default: break;
   }

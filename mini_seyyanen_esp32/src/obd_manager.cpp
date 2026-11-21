@@ -78,6 +78,7 @@ void ObdManager::scheduleDiscoveryRetry(const char* reason) {
   _fallbackTried = false;
   _usingKwp = false;
   _hasSelectedEcuHeader = false;
+  _ambiguousEcuSelection = false;
   _selectedEcuHeader[0] = '\0';
   _nextIndex = 0;
   _consecutiveTimeouts = 0;
@@ -130,6 +131,22 @@ void ObdManager::consume(const String& response, bool timedOut) {
     Serial.printf("[OBD PARSER] frame capacity exceeded; raw response may contain additional ECU frames: %s\n",
                   response.c_str());
 
+  if (parsed.overflow) {
+    if (!_supportKnown) {
+      scheduleDiscoveryRetry("0100 response exceeded parser frame capacity; ECU selection is incomplete");
+      return;
+    }
+    const uint8_t index = _nextIndex < Count ? _nextIndex : 0;
+    if (_failures[index] < 255) ++_failures[index];
+    if (_failures[index] >= Config::PidFailureLimit) {
+      portENTER_CRITICAL(&_valueMux); _values[index].valid = false; portEXIT_CRITICAL(&_valueMux);
+    }
+    Serial.printf("[OBD ERROR] PID=01%02X REASON=frame capacity exceeded; refusing partial ECU response RAW=%s\n",
+                  Pids[index], response.c_str());
+    _nextIndex = static_cast<uint8_t>((index + 1) % Count);
+    return;
+  }
+
   if (!_supportKnown) {
     uint8_t candidates[ObdResponseParser::MaxFrames]{};
     uint8_t candidateCount = 0;
@@ -175,8 +192,13 @@ void ObdManager::consume(const String& response, bool timedOut) {
       bool allHeadered = true;
       for (uint8_t i = 0; i < uniqueCount; ++i)
         allHeadered = allHeadered && parsed.frames[unique[i]].hasEcuHeader;
+      _ambiguousEcuSelection = !allHeadered;
       Serial.printf("[OBD BITMAP] %u distinct ECU bitmap(s); selecting by target-PID count (%s heuristic, ties keep first response; not proof of engine ECU)\n",
                     uniqueCount, allHeadered ? "header-aware" : "headerless/ambiguous");
+      if (!allHeadered)
+        Serial.println("[OBD ECU] Multiple bitmap replies lack ECU headers; refusing PID polling because bitmap-to-ECU identity cannot be verified");
+    } else {
+      _ambiguousEcuSelection = false;
     }
     Serial.printf("[OBD RX] PID=0100 ECU=%s RAW=%s\n",
                   selected.hasEcuHeader ? selected.ecuHeader : "UNKNOWN",
@@ -199,7 +221,8 @@ void ObdManager::consume(const String& response, bool timedOut) {
         portENTER_CRITICAL(&_valueMux); _values[i].valid = false; portEXIT_CRITICAL(&_valueMux);
       }
     }
-    _ecuState = supportedCount ? EcuState::Connected : EcuState::ConnectedNoTargets;
+    _ecuState = !supportedCount ? EcuState::ConnectedNoTargets :
+                (_ambiguousEcuSelection ? EcuState::ConnectedAmbiguous : EcuState::Connected);
     if (!supportedCount)
       Serial.println("[OBD ECU] ECU answered, but none of the five requested PIDs are supported; PID polling is stopped");
     else
@@ -213,8 +236,16 @@ void ObdManager::consume(const String& response, bool timedOut) {
   Frame positive{};
   Frame negative{};
   uint8_t positiveCount = 0;
-  const bool hasPositive = ObdResponseParser::findPositive(
+  bool hasPositive = ObdResponseParser::findPositive(
       parsed, pid, 1, positive, _hasSelectedEcuHeader ? _selectedEcuHeader : nullptr, &positiveCount);
+  bool unidentifiedEcuResponse = false;
+  if (!_hasSelectedEcuHeader && hasPositive &&
+      (positiveCount > 1 || positive.hasEcuHeader)) {
+    Serial.printf("[OBD ECU] PID=01%02X has no verifiable bitmap-to-response ECU identity; positive frames=%u; refusing value\n",
+                  pid, positiveCount);
+    hasPositive = false;
+    unidentifiedEcuResponse = true;
+  }
   const bool hasNegative = ObdResponseParser::findNegative(parsed, 0x01, negative);
 
   // A matching positive reply wins, even if a different ECU supplied a
@@ -224,9 +255,10 @@ void ObdManager::consume(const String& response, bool timedOut) {
     const bool wrongEcu = expectedButShort && _hasSelectedEcuHeader &&
                           (!positive.hasEcuHeader || strcmp(positive.ecuHeader, _selectedEcuHeader) != 0);
     const char* reason = timedOut ? "response timeout before ELM prompt" :
-                         (wrongEcu ? "positive PID response did not match selected bitmap ECU" :
+                         (unidentifiedEcuResponse ? "PID reply ECU identity is ambiguous" :
+                          (wrongEcu ? "positive PID response did not match selected bitmap ECU" :
                           (hasNegative ? "ECU negative response" :
-                           (expectedButShort ? "matching PID response has incomplete payload" : responseFailure(response))));
+                           (expectedButShort ? "matching PID response has incomplete payload" : responseFailure(response)))));
     Serial.printf("[OBD RX] PID=01%02X RAW=%s\n", pid, response.c_str());
     if (hasNegative && !timedOut)
       Serial.printf("[OBD ERROR] PID=01%02X REASON=%s ECU=%s NRC=%02X RAW=%s\n",
@@ -292,6 +324,7 @@ void ObdManager::tick(VlinkerClient& client) {
     const bool preserveKwpFallback = continueKwpAfterResync && _fallbackTried;
     _supportKnown = false; _pending = false; _pendingCommand = PendingCommand::None;
     _fallbackTried = preserveKwpFallback; _usingKwp = false; _hasSelectedEcuHeader = false;
+    _ambiguousEcuSelection = false;
     _selectedEcuHeader[0] = '\0'; _nextIndex = 0; _consecutiveTimeouts = 0;
     for (uint8_t i = 0; i < Count; ++i) { _supported[i] = false; _failures[i] = 0; }
     invalidateValues();
@@ -398,7 +431,7 @@ void ObdManager::tick(VlinkerClient& client) {
     requestBitmap(client, true); // Initial adapter initialization selected ATSP0.
     return;
   }
-  if (_ecuState == EcuState::ConnectedNoTargets) {
+  if (_ecuState == EcuState::ConnectedNoTargets || _ecuState == EcuState::ConnectedAmbiguous) {
     if (!requestBitmap(client, !_usingKwp)) _nextRequest = millis() + 250;
     return;
   }

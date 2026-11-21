@@ -6,7 +6,7 @@
 #include <atomic>
 
 struct ObdValue { const char* name; const char* unit; float value; bool valid; uint32_t updatedAt; };
-enum class EcuState : uint8_t { Disconnected, AdapterInitializing, Searching, Connected, ConnectedNoTargets, Failed };
+enum class EcuState : uint8_t { Disconnected, AdapterInitializing, Searching, Connected, ConnectedNoTargets, ConnectedAmbiguous, Failed };
 class ObdManager {
  public:
   void tick(VlinkerClient& client);
@@ -21,6 +21,7 @@ class ObdManager {
   bool _fallbackTried{false};
   bool _usingKwp{false};
   bool _hasSelectedEcuHeader{false};
+  bool _ambiguousEcuSelection{false};
   char _selectedEcuHeader[9]{};
   uint32_t _nextRequest{0};
   uint8_t _nextIndex{0};

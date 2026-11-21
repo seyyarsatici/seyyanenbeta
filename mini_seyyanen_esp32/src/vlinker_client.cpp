@@ -14,9 +14,17 @@ bool adapterAccepted(const char* command, const String& response) {
   upper.toUpperCase();
   upper.trim();
   if (!upper.length() || upper.indexOf('?') >= 0 || upper.indexOf("ERROR") >= 0 ||
-      upper.indexOf("UNABLE TO CONNECT") >= 0 || upper.indexOf("NO DATA") >= 0) return false;
-  if (!strcmp(command, "ATZ"))
-    return upper != "ATZ"; // Reset may return firmware text or a plain OK.
+      upper.indexOf("UNABLE TO CONNECT") >= 0 || upper.indexOf("NO DATA") >= 0 ||
+      upper.indexOf("SEARCHING") >= 0 || upper.indexOf("BUS INIT") >= 0) return false;
+  if (!strcmp(command, "ATZ")) {
+    // Clone adapters vary: accept a reset banner or plain OK, but not an echo
+    // alone or arbitrary nonempty text as evidence that the adapter reset.
+    if (upper == "ATZ") return false;
+    return upper.indexOf("OK") >= 0 || upper.indexOf("ELM") >= 0 ||
+           upper.indexOf("STN") >= 0 || upper.indexOf("VLINKER") >= 0 ||
+           upper.indexOf("VGATE") >= 0 || upper.indexOf("OBD") >= 0 ||
+           upper.indexOf("VERSION") >= 0 || upper.indexOf("FW") >= 0;
+  }
   if (!strcmp(command, "ATE0") || !strcmp(command, "ATL0") ||
       !strcmp(command, "ATS0") || !strcmp(command, "ATH0"))
     return upper.indexOf("OK") >= 0;
@@ -33,10 +41,26 @@ bool adapterAccepted(const char* command, const String& response) {
 }
 }
 
+bool ArduinoBluetoothTransport::begin(const char* localName, bool master) {
+  return _serial.begin(localName, master);
+}
+bool ArduinoBluetoothTransport::connected() { return _serial.connected(); }
+bool ArduinoBluetoothTransport::connectByName(const String& remoteName) { return _serial.connect(remoteName); }
+bool ArduinoBluetoothTransport::connectByMac(uint8_t remoteAddress[6]) { return _serial.connect(remoteAddress); }
+int ArduinoBluetoothTransport::available() { return _serial.available(); }
+int ArduinoBluetoothTransport::read() { return _serial.read(); }
+size_t ArduinoBluetoothTransport::print(const char* text) { return _serial.print(text); }
+size_t ArduinoBluetoothTransport::print(char character) { return _serial.print(character); }
+bool ArduinoBluetoothTransport::disconnect() { return _serial.disconnect(); }
+
+VlinkerClient::VlinkerClient() : _transport(&_defaultTransport) {}
+VlinkerClient::VlinkerClient(BluetoothTransport& transport) : _transport(&transport) {}
+
 bool VlinkerClient::begin() {
   // BluetoothClassic SPP is available on the original ESP32 used by this board.
-  _ready=_bt.begin("Seyyanen-OBD", true);
+  _ready=_transport->begin("Seyyanen-OBD", true);
   _lastConnectAttempt=millis()-5000;
+  _resyncRecoveryPending=false;
   Serial.printf("[SPP] Classic SPP master initialization %s; target=%s\n",
                 _ready ? "ready" : "failed", Config::VlinkerName);
   return _ready;
@@ -52,10 +76,10 @@ bool VlinkerClient::connectNow() {
       Serial.println("[SPP] Invalid MAC in config.h");
     } else {
       for(int i=0;i<6;i++) mac[i]=static_cast<uint8_t>(b[i]);
-      ok=_bt.connect(mac);
+      ok=_transport->connectByMac(mac);
     }
   } else {
-    ok=_bt.connect(String(Config::VlinkerName));
+    ok=_transport->connectByName(String(Config::VlinkerName));
   }
   _state=ok?LinkState::Connected:LinkState::Disconnected;
   _lastConnectAttempt=millis();
@@ -74,7 +98,7 @@ bool VlinkerClient::connectNow() {
 void VlinkerClient::startCommand(const char* command,uint32_t timeoutMs) {
   _rx=""; _response=""; _complete=false; _responseTimedOut=false;
   _responseStarted=millis(); _responseTimeout=timeoutMs;
-  _bt.print(command); _bt.print('\r'); _waiting=true;
+  _transport->print(command); _transport->print('\r'); _waiting=true;
   Serial.printf("[SPP TX] %s\n",command);
 }
 
@@ -90,7 +114,7 @@ void VlinkerClient::tick() {
     if ((uint32_t)(millis()-_lastConnectAttempt)>=5000) connectNow();
     return;
   }
-  if (!_bt.connected()) {
+  if (!_transport->connected()) {
     _state=LinkState::Disconnected;
     _waiting=false; _complete=false; _initialized=false; _responseTimedOut=false;
     _initStep=0; _initCommandInFlight=false; _desynchronized=false; _desyncStarted=0; _rx=""; _response="";
@@ -98,8 +122,8 @@ void VlinkerClient::tick() {
     return;
   }
 
-  while (_bt.available()) {
-    char c=static_cast<char>(_bt.read());
+  while (_transport->available()) {
+    char c=static_cast<char>(_transport->read());
     if (_desynchronized) {
       // After a timeout, discard the old command's tail through its ELM prompt.
       // It must never be delivered as the response to the next OBD request.
@@ -125,7 +149,7 @@ void VlinkerClient::tick() {
   if(_desynchronized && (uint32_t)(millis()-_desyncStarted)>=Config::SppResyncTimeoutMs) {
     Serial.println("[SPP] Old ELM prompt not received; disconnecting to resynchronize safely");
     _resyncRecoveryPending = !_initCommandInFlight;
-    _bt.disconnect();
+    _transport->disconnect();
     _state=LinkState::Disconnected;
     _lastConnectAttempt=millis();
     _waiting=false; _complete=false; _initialized=false; _initStep=0;

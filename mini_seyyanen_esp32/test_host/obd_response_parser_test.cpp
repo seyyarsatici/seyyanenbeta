@@ -3,6 +3,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <string>
 
 using namespace ObdResponseParser;
 
@@ -96,6 +97,32 @@ static void testPositiveAndNegativeAndMultipleEcus() {
   assert(!findPositive(parsed, 0x05, 1, positiveFrame, "7EA"));
 }
 
+static void testMalformedAndCapacityCases() {
+  Result parsed;
+  Frame frame{};
+  parse("7E8 07 41 00 BE 3F A8 13", parsed); // Declared ISO-TP length too long.
+  assert(parsed.count == 0);
+  parse("4105", parsed);
+  assert(!findPositive(parsed, 0x05, 1, frame));
+  parse("410B26", parsed);
+  assert(!findPositive(parsed, 0x05, 1, frame));
+
+  std::string longLine(180, 'A');
+  parse(longLine.c_str(), parsed);
+  assert(parsed.count == 0);
+  assert(parsed.ignoredTextLines > 0);
+
+  std::string manyFrames;
+  for (unsigned i = 0; i < MaxFrames + 3; ++i) {
+    if (!manyFrames.empty()) manyFrames += "\r\n";
+    manyFrames += "4105";
+    manyFrames += (i & 1) ? "5F" : "59";
+  }
+  parse(manyFrames.c_str(), parsed);
+  assert(parsed.count == MaxFrames);
+  assert(parsed.overflow);
+}
+
 static void testConversions() {
   float value = 0;
   assert(decodeMode01Byte(0x05, 0x5F, value) && fabsf(value - 55.0f) < 0.001f);
@@ -111,6 +138,7 @@ int main() {
   testPidFormsAndEcho();
   testWrongShortAndTextResponses();
   testPositiveAndNegativeAndMultipleEcus();
+  testMalformedAndCapacityCases();
   testConversions();
   puts("OBD response parser tests passed");
   return 0;
