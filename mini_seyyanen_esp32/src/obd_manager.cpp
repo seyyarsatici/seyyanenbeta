@@ -76,6 +76,7 @@ void ObdManager::scheduleDiscoveryRetry(const char* reason) {
   _pending = false;
   _pendingCommand = PendingCommand::None;
   _fallbackTried = false;
+  _kwpFallbackQueued = false;
   _usingKwp = false;
   _hasSelectedEcuHeader = false;
   _ambiguousEcuSelection = false;
@@ -111,15 +112,16 @@ void ObdManager::failAutoAndSelectKwp(VlinkerClient& client, const String& respo
   Serial.printf("[OBD ERROR] PID=0100 AUTO discovery failed reason=%s RAW=%s\n",
                 responseFailure(response), response.c_str());
   _fallbackTried = true;
+  _kwpFallbackQueued = true;
   Serial.println("[OBD PROTOCOL] Trying ATSP4 (ISO 14230-4 KWP, 5-baud initialization)");
   if (client.sendCommand("ATSP4", 3000)) {
     _pending = true;
     _pendingCommand = PendingCommand::SelectKwp;
+    _kwpFallbackQueued = false;
     _nextRequest = millis() + 3000;
   } else {
-    // A timed-out AUTO command may still own the SPP stream until its prompt
-    // arrives. Preserve the fallback decision and queue ATSP4 after resync.
-    _pendingCommand = PendingCommand::SelectKwp;
+    // The fallback is a queued decision, not an in-flight response owner.
+    // Keep PendingCommand empty until ATSP4 is actually sent.
     _nextRequest = millis() + 250;
   }
 }
@@ -194,6 +196,7 @@ void ObdManager::consumeBitmap(const String& response) {
 
     _supportKnown = true;
     _fallbackTried = false;
+    _kwpFallbackQueued = false;
     _consecutiveTimeouts = 0;
     _nextIndex = 0;
     uint8_t supportedCount = 0;
@@ -322,7 +325,8 @@ void ObdManager::tick(VlinkerClient& client) {
     const bool continueKwpAfterResync = client.takeResyncRecovery();
     const bool preserveKwpFallback = continueKwpAfterResync && _fallbackTried;
     _supportKnown = false; _pending = false; _pendingCommand = PendingCommand::None;
-    _fallbackTried = preserveKwpFallback; _usingKwp = false; _hasSelectedEcuHeader = false;
+    _fallbackTried = preserveKwpFallback; _kwpFallbackQueued = preserveKwpFallback;
+    _usingKwp = false; _hasSelectedEcuHeader = false;
     _ambiguousEcuSelection = false;
     _selectedEcuHeader[0] = '\0'; _nextIndex = 0; _consecutiveTimeouts = 0;
     for (uint8_t i = 0; i < Count; ++i) { _supported[i] = false; _failures[i] = 0; }
@@ -404,25 +408,29 @@ void ObdManager::tick(VlinkerClient& client) {
         if (!requestBitmap(client, false)) scheduleDiscoveryRetry("KWP 0100 could not be queued");
       }
     }
-    if (_supportKnown) {
+    if (_supportKnown && !_kwpFallbackQueued) {
       _nextRequest = millis() + (_ecuState == EcuState::Connected ? Config::PollIntervalMs : Config::EcuRetryIntervalMs);
     }
   }
 
   if (!connected || !client.ready() || _pending || static_cast<int32_t>(millis() - _nextRequest) < 0) return;
+  if (_kwpFallbackQueued) {
+    if (client.sendCommand("ATSP4", 3000)) {
+      _pending = true;
+      _pendingCommand = PendingCommand::SelectKwp;
+      _kwpFallbackQueued = false;
+      _nextRequest = millis() + 3000;
+      Serial.println("[OBD PROTOCOL] Queued KWP fallback sent after SPP resynchronization");
+    } else {
+      _nextRequest = millis() + 250;
+    }
+    return;
+  }
   if (_ecuState == EcuState::Failed) {
     Serial.println("[OBD PROTOCOL] Retrying discovery with ATSP0 / AUTO");
     if (client.sendCommand("ATSP0", 3000)) {
       _pending = true; _pendingCommand = PendingCommand::SelectAuto;
       _nextRequest = millis() + 3000;
-    } else _nextRequest = millis() + 250;
-    return;
-  }
-  if (!_supportKnown && _fallbackTried) {
-    if (client.sendCommand("ATSP4", 3000)) {
-      _pending = true; _pendingCommand = PendingCommand::SelectKwp;
-      _nextRequest = millis() + 3000;
-      Serial.println("[OBD PROTOCOL] Retrying ATSP4 after AUTO failure");
     } else _nextRequest = millis() + 250;
     return;
   }

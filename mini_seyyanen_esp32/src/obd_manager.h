@@ -19,6 +19,7 @@ class ObdManager {
   bool _supportKnown{false}, _pending{false};
   bool _wasConnected{false};
   bool _fallbackTried{false};
+  bool _kwpFallbackQueued{false};
   bool _usingKwp{false};
   bool _hasSelectedEcuHeader{false};
   bool _ambiguousEcuSelection{false};

@@ -334,6 +334,42 @@ void testBitmapRediscoveryScenarios() {
   }
 }
 
+void testBitmapTimeoutKeepsKwpFallbackQueued(EcuState startingState) {
+  Harness h;
+  if (startingState == EcuState::ConnectedNoTargets) {
+    h.respondBitmap("410000000000");
+  } else {
+    h.respondBitmap("4100BE3FA813\r\n410000000000");
+  }
+  require(h.obd.ecuState() == startingState, "fallback test did not enter requested ECU state");
+  h.advance(Config::EcuRetryIntervalMs); h.client.tick(); h.obd.tick(h.client);
+  require(h.transport.lastCommand == "0100", "state did not issue its bitmap rediscovery query");
+  const size_t beforeTimeout = h.transport.commands.size();
+  h.advance(Config::EcuResponseTimeoutMs); h.client.tick(); h.obd.tick(h.client);
+  require(h.transport.commands.size() == beforeTimeout,
+          "ATSP4 was sent before the old AUTO response prompt was drained");
+  require(h.obd.ecuState() == EcuState::Searching, "timed-out bitmap did not retain discovery state");
+
+  h.transport.inject("\r>"); // Old AUTO prompt, before the 8-second hard reset.
+  h.client.tick(); h.obd.tick(h.client);
+  h.advance(250); h.client.tick(); h.obd.tick(h.client);
+  require(h.transport.lastCommand == "ATSP4", "queued KWP fallback was not sent after old prompt");
+  require(h.transport.commands.back() == "ATSP4", "normal PID request ran instead of KWP fallback");
+
+  h.answer("OK");
+  require(h.transport.lastCommand == "ATDP", "ATDP did not follow queued ATSP4");
+  h.answer("ISO 14230-4 KWP FAST");
+  require(h.transport.lastCommand == "0100", "KWP bitmap request did not follow ATDP");
+  h.answer("7EA064100BE3FA813");
+  require(h.obd.ecuState() == EcuState::Connected,
+          "KWP bitmap did not complete after queued fallback");
+}
+
+void testBitmapTimeoutFallbackAfterNoTargetsAndAmbiguity() {
+  testBitmapTimeoutKeepsKwpFallbackQueued(EcuState::ConnectedNoTargets);
+  testBitmapTimeoutKeepsKwpFallbackQueued(EcuState::ConnectedAmbiguous);
+}
+
 void testOverflowingPidResponseIsRejectedLocally() {
   Harness h;
   h.respondBitmap();
@@ -392,9 +428,10 @@ int main() {
     testUnexpectedSppDropResetsAndReconnects();
     testSelectedHeaderAndHeaderlessAmbiguity();
     testBitmapRediscoveryScenarios();
+    testBitmapTimeoutFallbackAfterNoTargetsAndAmbiguity();
     testOverflowingPidResponseIsRejectedLocally();
     testPollingTourAndStaleWindow();
-    std::puts("State-machine integration scenarios: 13 groups passed");
+    std::puts("State-machine integration scenarios: 14 groups passed");
     return 0;
   } catch (const std::exception& error) {
     std::fprintf(stderr, "State-machine integration test failed: %s\n", error.what());
