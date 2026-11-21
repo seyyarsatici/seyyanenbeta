@@ -289,6 +289,51 @@ void testSelectedHeaderAndHeaderlessAmbiguity() {
   }
 }
 
+void testBitmapRediscoveryScenarios() {
+  {
+    Harness h;
+    h.respondBitmap("410000000000");
+    require(h.obd.ecuState() == EcuState::ConnectedNoTargets, "empty first bitmap did not enter no-target state");
+    h.advance(Config::EcuRetryIntervalMs); h.client.tick(); h.obd.tick(h.client);
+    require(h.transport.lastCommand == "0100", "no-target state did not re-query bitmap");
+    h.respondBitmap("410008208000"); // Supports 0105, 0111 and 010B.
+    require(h.obd.ecuState() == EcuState::Connected, "rediscovery bitmap was not processed from no-target state");
+    h.sendNextPid("0105"); h.answer("41055F");
+    h.sendNextPid("0111"); h.answer("41112B");
+    h.sendNextPid("010B"); h.answer("410B26");
+    h.obd.snapshot(h.values);
+    require(h.values[0].valid && h.values[1].valid && h.values[2].valid,
+            "rediscovered supported PID set was not polled");
+    require(!h.values[3].valid && !h.values[4].valid,
+            "unsupported PIDs were polled or fabricated after rediscovery");
+  }
+  {
+    Harness h;
+    h.respondBitmap("4100BE3FA813\r\n410000000000");
+    require(h.obd.ecuState() == EcuState::ConnectedAmbiguous, "initial headerless responses not marked ambiguous");
+    h.advance(Config::EcuRetryIntervalMs); h.client.tick(); h.obd.tick(h.client);
+    require(h.transport.lastCommand == "0100", "ambiguous state did not re-query bitmap");
+    h.respondBitmap("7EA064100BE3FA813");
+    require(h.obd.ecuState() == EcuState::Connected, "single compact-header bitmap did not clear ambiguity");
+    h.sendNextPid("0105"); h.answer("7EA0341055F");
+    h.sendNextPid("0111"); h.answer("7EA0341112B");
+    h.sendNextPid("010B"); h.answer("7EA03410B26");
+    h.obd.snapshot(h.values);
+    require(h.values[0].valid && h.values[1].valid && h.values[2].valid,
+            "compact same-header PID responses were not associated with bitmap ECU");
+  }
+  {
+    Harness h;
+    h.respondBitmap("4100BE3FA813\r\n410000000000");
+    require(h.obd.ecuState() == EcuState::ConnectedAmbiguous, "initial ambiguity setup failed");
+    h.advance(Config::EcuRetryIntervalMs); h.client.tick(); h.obd.tick(h.client);
+    h.respondBitmap("4100BE3FA813\r\n410000000000");
+    require(h.obd.ecuState() == EcuState::ConnectedAmbiguous, "repeated headerless ambiguity was cleared incorrectly");
+    h.advance(Config::EcuRetryIntervalMs); h.client.tick(); h.obd.tick(h.client);
+    require(h.transport.lastCommand == "0100", "ambiguous rediscovery started a PID request");
+  }
+}
+
 void testOverflowingPidResponseIsRejectedLocally() {
   Harness h;
   h.respondBitmap();
@@ -346,9 +391,10 @@ int main() {
     testEcuLossTriggersAutoRediscovery();
     testUnexpectedSppDropResetsAndReconnects();
     testSelectedHeaderAndHeaderlessAmbiguity();
+    testBitmapRediscoveryScenarios();
     testOverflowingPidResponseIsRejectedLocally();
     testPollingTourAndStaleWindow();
-    std::puts("State-machine integration scenarios: 12 groups passed");
+    std::puts("State-machine integration scenarios: 13 groups passed");
     return 0;
   } catch (const std::exception& error) {
     std::fprintf(stderr, "State-machine integration test failed: %s\n", error.what());

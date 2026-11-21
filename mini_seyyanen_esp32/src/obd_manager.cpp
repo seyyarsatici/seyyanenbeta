@@ -124,31 +124,17 @@ void ObdManager::failAutoAndSelectKwp(VlinkerClient& client, const String& respo
   }
 }
 
-void ObdManager::consume(const String& response, bool timedOut) {
+void ObdManager::consumeBitmap(const String& response) {
   Result parsed;
   ObdResponseParser::parse(response.c_str(), parsed);
-  if (parsed.overflow)
-    Serial.printf("[OBD PARSER] frame capacity exceeded; raw response may contain additional ECU frames: %s\n",
-                  response.c_str());
-
   if (parsed.overflow) {
-    if (!_supportKnown) {
-      scheduleDiscoveryRetry("0100 response exceeded parser frame capacity; ECU selection is incomplete");
-      return;
-    }
-    const uint8_t index = _nextIndex < Count ? _nextIndex : 0;
-    if (_failures[index] < 255) ++_failures[index];
-    if (_failures[index] >= Config::PidFailureLimit) {
-      portENTER_CRITICAL(&_valueMux); _values[index].valid = false; portEXIT_CRITICAL(&_valueMux);
-    }
-    Serial.printf("[OBD ERROR] PID=01%02X REASON=frame capacity exceeded; refusing partial ECU response RAW=%s\n",
-                  Pids[index], response.c_str());
-    _nextIndex = static_cast<uint8_t>((index + 1) % Count);
+    Serial.printf("[OBD PARSER] frame capacity exceeded in 0100 response; refusing partial ECU selection RAW=%s\n",
+                  response.c_str());
+    scheduleDiscoveryRetry("0100 response exceeded parser frame capacity; ECU selection is incomplete");
     return;
   }
 
-  if (!_supportKnown) {
-    uint8_t candidates[ObdResponseParser::MaxFrames]{};
+  uint8_t candidates[ObdResponseParser::MaxFrames]{};
     uint8_t candidateCount = 0;
     for (uint8_t i = 0; i < parsed.count; ++i) {
       const Frame& frame = parsed.frames[i];
@@ -227,9 +213,22 @@ void ObdManager::consume(const String& response, bool timedOut) {
       Serial.println("[OBD ECU] ECU answered, but none of the five requested PIDs are supported; PID polling is stopped");
     else
       Serial.printf("[OBD ECU] ECU answered; %u of five requested PIDs supported\n", supportedCount);
+}
+
+void ObdManager::consumePid(const String& response, bool timedOut) {
+  Result parsed;
+  ObdResponseParser::parse(response.c_str(), parsed);
+  if (parsed.overflow) {
+    const uint8_t index = _nextIndex < Count ? _nextIndex : 0;
+    if (_failures[index] < 255) ++_failures[index];
+    if (_failures[index] >= Config::PidFailureLimit) {
+      portENTER_CRITICAL(&_valueMux); _values[index].valid = false; portEXIT_CRITICAL(&_valueMux);
+    }
+    Serial.printf("[OBD ERROR] PID=01%02X REASON=frame capacity exceeded; refusing partial ECU response RAW=%s\n",
+                  Pids[index], response.c_str());
+    _nextIndex = static_cast<uint8_t>((index + 1) % Count);
     return;
   }
-
   if (_nextIndex >= Count) _nextIndex = 0;
   const uint8_t index = _nextIndex;
   const uint8_t pid = Pids[index];
@@ -361,17 +360,17 @@ void ObdManager::tick(VlinkerClient& client) {
     const PendingCommand completed = _pendingCommand;
     _pending = false; _pendingCommand = PendingCommand::None;
     if (completed == PendingCommand::BitmapAuto) {
-      if (!responseTimedOut && hasBitmapResponse(response)) consume(response);
+      if (!responseTimedOut && hasBitmapResponse(response)) consumeBitmap(response);
       else failAutoAndSelectKwp(client, response);
     } else if (completed == PendingCommand::BitmapKwp) {
-      if (!responseTimedOut && hasBitmapResponse(response)) consume(response);
+      if (!responseTimedOut && hasBitmapResponse(response)) consumeBitmap(response);
       else {
         Serial.printf("[OBD ERROR] PID=0100 KWP discovery failed reason=%s RAW=%s\n",
                       responseTimedOut ? "timeout before ELM prompt" : responseFailure(response), response.c_str());
         scheduleDiscoveryRetry("AUTO and KWP 0100 both failed");
       }
     } else if (completed == PendingCommand::Pid) {
-      consume(response, responseTimedOut);
+      consumePid(response, responseTimedOut);
     } else if (completed == PendingCommand::SelectKwp || completed == PendingCommand::SelectAuto) {
       const bool selectingKwp = completed == PendingCommand::SelectKwp;
       const bool accepted = protocolSelectionAccepted(response, selectingKwp, responseTimedOut);

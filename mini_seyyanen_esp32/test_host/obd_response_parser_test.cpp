@@ -43,6 +43,15 @@ static void testPidFormsAndEcho() {
   frame = positive("18DAF110 03 41 05 5F", 0x05);
   assert(frame.hasEcuHeader && strcmp(frame.ecuHeader, "18DAF110") == 0);
   assert(frame.payload[0] == 0x5F);
+  frame = positive("7EA0341055F", 0x05);
+  assert(frame.hasEcuHeader && strcmp(frame.ecuHeader, "7EA") == 0);
+  assert(frame.payload[0] == 0x5F);
+  frame = positive("7EF0341055F", 0x05);
+  assert(frame.hasEcuHeader && strcmp(frame.ecuHeader, "7EF") == 0);
+  assert(frame.payload[0] == 0x5F);
+  frame = positive("18DAF110064100BE3FA813", 0x00, 4);
+  assert(frame.hasEcuHeader && strcmp(frame.ecuHeader, "18DAF110") == 0);
+  assert(bitmapValue(frame) == 0xBE3FA813UL);
   frame = positive("SEARCHING...\r\n0105\r\n7E8 03 41 05 5F", 0x05);
   assert(frame.payload[0] == 0x5F);
   assert(strstr(frame.rawLine, "7E8") != 0);
@@ -95,6 +104,19 @@ static void testPositiveAndNegativeAndMultipleEcus() {
   assert(positiveCount == 2 && strcmp(positiveFrame.ecuHeader, "7E9") == 0);
   assert(positiveFrame.payload[0] == 0x59);
   assert(!findPositive(parsed, 0x05, 1, positiveFrame, "7EA"));
+
+  parse("7EA 06 41 00 BE 3F A8 13\r\n7EA 03 41 05 5F", parsed);
+  assert(parsed.count == 2);
+  assert(parsed.frames[0].hasEcuHeader && parsed.frames[1].hasEcuHeader);
+  assert(strcmp(parsed.frames[0].ecuHeader, parsed.frames[1].ecuHeader) == 0);
+  assert(parsed.frames[0].pid == 0x00 && parsed.frames[1].pid == 0x05);
+
+  parse("7EA064100BE3FA813\r\n7EA0341055F", parsed);
+  assert(parsed.count == 2);
+  assert(strcmp(parsed.frames[0].ecuHeader, "7EA") == 0);
+  assert(strcmp(parsed.frames[1].ecuHeader, "7EA") == 0);
+  assert(bitmapValue(parsed.frames[0]) == 0xBE3FA813UL);
+  assert(parsed.frames[1].service == 0x41 && parsed.frames[1].pid == 0x05);
 }
 
 static void testMalformedAndCapacityCases() {

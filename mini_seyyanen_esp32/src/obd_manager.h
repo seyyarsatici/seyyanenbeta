@@ -34,7 +34,8 @@ class ObdManager {
   PendingCommand _pendingCommand{PendingCommand::None};
   std::atomic<EcuState> _ecuState{EcuState::Disconnected};
   mutable portMUX_TYPE _valueMux = portMUX_INITIALIZER_UNLOCKED;
-  void consume(const String& response, bool timedOut = false);
+  void consumeBitmap(const String& response);
+  void consumePid(const String& response, bool timedOut);
   void failAutoAndSelectKwp(VlinkerClient& client, const String& response);
   void scheduleDiscoveryRetry(const char* reason);
   bool requestBitmap(VlinkerClient& client, bool autoProtocol);

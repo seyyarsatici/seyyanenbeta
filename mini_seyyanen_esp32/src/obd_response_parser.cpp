@@ -96,9 +96,18 @@ void parseLine(const char* line, size_t length, Result& result) {
     headerLength = firstTokenLength;
   } else if (!separated && (compactLength & 1U) && compactLength >= 9 &&
              compact[0] == '7' && compact[1] == 'E' &&
-             (compact[2] == '8' || compact[2] == '9')) {
-    // ATH1 + ATS0 commonly arrives compacted as e.g. 7E80341055F.
+             compact[2] >= '8' && compact[2] <= 'F') {
+    // ATH1 + ATS0 compact 11-bit response, e.g. 7EA0341055F.
     headerLength = 3;
+  } else if (!separated && compactLength >= 14 &&
+             ((compactLength - 8) & 1U) == 0 &&
+             ((strncmp(compact, "18DA", 4) == 0) || (strncmp(compact, "18DB", 4) == 0))) {
+    // Compact 29-bit ISO 15765 address. ELM ATH1 output includes the ISO-TP
+    // length byte after the 8-hex-digit address; validate it before use.
+    const size_t payloadBytes = (compactLength - 8) / 2;
+    const uint8_t firstByte = hexByte(compact + 8);
+    if (firstByte > 0x0F || firstByte == payloadBytes - 1)
+      headerLength = 8;
   }
   if (headerLength) {
     memcpy(header, compact, headerLength);
