@@ -23,7 +23,9 @@ void bluetoothTask(void*) {
 }
 void setup() {
   Serial.begin(115200); delay(50);
-  Serial.println("Mini Seyyanen ESP32 starting");
+  Serial.println("[FW] MINI-SEYYANEN-OBD-2026-11-21-R3");
+  Serial.printf("[BOOT] Bluetooth Classic SPP=STARTING adapter=%s ECU protocol=AUTO then KWP fallback\n",
+                Config::VlinkerDisplayName);
   display.begin();
   if(xTaskCreatePinnedToCore(bluetoothTask,"obd-spp",8192,nullptr,1,nullptr,0)!=pdPASS)
     Serial.println("Bluetooth worker task could not start; display remains available");
@@ -50,6 +52,7 @@ void loop() {
     case EcuState::AdapterInitializing: ecuStatus="ECU: ADAPTER"; break;
     case EcuState::Searching: ecuStatus="ECU: SEARCHING"; break;
     case EcuState::Connected: ecuStatus="ECU: CONNECTED"; break;
+    case EcuState::ConnectedNoTargets: ecuStatus="ECU: NO TARGET PID"; break;
     case EcuState::Failed: ecuStatus="ECU: FAILED"; break;
     case EcuState::Disconnected: default: break;
   }

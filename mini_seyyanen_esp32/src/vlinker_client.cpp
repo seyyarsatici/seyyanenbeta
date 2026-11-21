@@ -1,6 +1,7 @@
 #include "vlinker_client.h"
 #include "config.h"
 #include <ctype.h>
+#include <string.h>
 
 namespace {
 constexpr const char* InitCommands[] = {
@@ -8,12 +9,27 @@ constexpr const char* InitCommands[] = {
 };
 constexpr uint8_t InitCommandCount = sizeof(InitCommands) / sizeof(InitCommands[0]);
 
-bool adapterAccepted(const String& response) {
-  String upper=response;
+bool adapterAccepted(const char* command, const String& response) {
+  String upper = response;
   upper.toUpperCase();
   upper.trim();
-  return upper.length() && upper.indexOf('?')<0 &&
-         upper.indexOf("ERROR")<0 && upper.indexOf("UNABLE TO CONNECT")<0;
+  if (!upper.length() || upper.indexOf('?') >= 0 || upper.indexOf("ERROR") >= 0 ||
+      upper.indexOf("UNABLE TO CONNECT") >= 0 || upper.indexOf("NO DATA") >= 0) return false;
+  if (!strcmp(command, "ATZ"))
+    return upper != "ATZ"; // Reset may return firmware text or a plain OK.
+  if (!strcmp(command, "ATE0") || !strcmp(command, "ATL0") ||
+      !strcmp(command, "ATS0") || !strcmp(command, "ATH0"))
+    return upper.indexOf("OK") >= 0;
+  if (!strcmp(command, "ATI"))
+    return upper != "ATI";
+  if (!strcmp(command, "ATDP") || !strcmp(command, "ATSP0"))
+    return upper.indexOf("AUTO") >= 0 || upper.indexOf("ISO") >= 0 ||
+           upper.indexOf("SAE") >= 0 || upper.indexOf("KWP") >= 0 ||
+           upper.indexOf("CAN") >= 0 || upper.indexOf("J1850") >= 0 ||
+           upper.indexOf("PROTOCOL") >= 0 ||
+           upper.indexOf("USER") >= 0 || upper.indexOf("OK") >= 0 ||
+           (upper.length() == 1 && isdigit(static_cast<unsigned char>(upper[0])));
+  return false;
 }
 }
 
@@ -21,6 +37,8 @@ bool VlinkerClient::begin() {
   // BluetoothClassic SPP is available on the original ESP32 used by this board.
   _ready=_bt.begin("Seyyanen-OBD", true);
   _lastConnectAttempt=millis()-5000;
+  Serial.printf("[SPP] Classic SPP master initialization %s; target=%s\n",
+                _ready ? "ready" : "failed", Config::VlinkerName);
   return _ready;
 }
 
@@ -42,7 +60,8 @@ bool VlinkerClient::connectNow() {
   _state=ok?LinkState::Connected:LinkState::Disconnected;
   _lastConnectAttempt=millis();
   _initStep=0; _initCommandInFlight=false; _initialized=false; _initRetryAt=0;
-  _waiting=false; _rx=""; _response=""; _complete=false;
+  _waiting=false; _rx=""; _response=""; _complete=false; _desynchronized=false;
+  _desyncStarted=0; _responseTimedOut=false;
   if(ok) {
     Serial.printf("[SPP] Connected; adapter label='%s'; ECU is not yet connected\n",
                   Config::VlinkerDisplayName);
@@ -53,14 +72,14 @@ bool VlinkerClient::connectNow() {
 }
 
 void VlinkerClient::startCommand(const char* command,uint32_t timeoutMs) {
-  _rx=""; _response=""; _complete=false;
+  _rx=""; _response=""; _complete=false; _responseTimedOut=false;
   _responseStarted=millis(); _responseTimeout=timeoutMs;
   _bt.print(command); _bt.print('\r'); _waiting=true;
   Serial.printf("[SPP TX] %s\n",command);
 }
 
 bool VlinkerClient::sendCommand(const char* command,uint32_t timeoutMs) {
-  if (state()!=LinkState::Connected || !_initialized || _waiting || _complete) return false;
+  if (state()!=LinkState::Connected || !_initialized || _waiting || _complete || _desynchronized) return false;
   startCommand(command,timeoutMs);
   return true;
 }
@@ -73,34 +92,59 @@ void VlinkerClient::tick() {
   }
   if (!_bt.connected()) {
     _state=LinkState::Disconnected;
-    _waiting=false; _complete=false; _initialized=false;
-    _initStep=0; _initCommandInFlight=false;
+    _waiting=false; _complete=false; _initialized=false; _responseTimedOut=false;
+    _initStep=0; _initCommandInFlight=false; _desynchronized=false; _desyncStarted=0; _rx=""; _response="";
     Serial.println("[SPP] Disconnected");
     return;
   }
 
   while (_bt.available()) {
     char c=static_cast<char>(_bt.read());
-    if (c=='>' && _waiting) {
-      _waiting=false; _response=_rx; _complete=true;
+    if (_desynchronized) {
+      // After a timeout, discard the old command's tail through its ELM prompt.
+      // It must never be delivered as the response to the next OBD request.
+      if(c=='>') {
+        _desynchronized=false;
+        Serial.println("[SPP] Drained late response through its prompt; response not delivered to a later command");
+      }
+    } else if(c=='>' && _waiting) {
+      _waiting=false; _response=_rx; _complete=true; _responseTimedOut=false;
       Serial.printf("[SPP RX] %s\n",_response.c_str());
-    } else if (_rx.length()<512) {
+    } else if(_waiting && _rx.length()<512) {
       _rx+=c;
     }
   }
   if (_waiting && (uint32_t)(millis()-_responseStarted)>=_responseTimeout) {
-    _waiting=false; _response=_rx; _complete=true;
+    _waiting=false; _response=_rx; _complete=true; _responseTimedOut=true;
+    _desynchronized=true; _desyncStarted=millis();
     Serial.printf("[SPP TIMEOUT] command response after %lu ms: %s\n",
                   static_cast<unsigned long>(_responseTimeout),_response.c_str());
+  }
+  // Silence does not prove an ELM response boundary. Drain only through the
+  // old prompt; if it never arrives, reset the SPP session to clear its stream.
+  if(_desynchronized && (uint32_t)(millis()-_desyncStarted)>=Config::SppResyncTimeoutMs) {
+    Serial.println("[SPP] Old ELM prompt not received; disconnecting to resynchronize safely");
+    _resyncRecoveryPending = !_initCommandInFlight;
+    _bt.disconnect();
+    _state=LinkState::Disconnected;
+    _lastConnectAttempt=millis();
+    _waiting=false; _complete=false; _initialized=false; _initStep=0;
+    _initCommandInFlight=false; _desynchronized=false; _responseTimedOut=false;
+    _rx=""; _response="";
+    return;
   }
 
   if (_initialized) return; // OBD manager owns responses after adapter setup.
 
   if (_initCommandInFlight && _complete) {
     const char* command=InitCommands[_initStep];
-    bool accepted=adapterAccepted(_response);
-    Serial.printf("[AT INIT %s] %s => %s\n",accepted?"OK":"FAILED",
+    bool accepted=!_responseTimedOut && adapterAccepted(command, _response);
+    Serial.printf("[AT INIT %s] %s => RAW=%s\n",accepted?"OK":"FAILED",
                   command,_response.length()?_response.c_str():"<empty>");
+    if (accepted && !strcmp(command, "ATI"))
+      Serial.printf("[SPP ADAPTER] identity RAW=%s\n", _response.c_str());
+    if (accepted && !strcmp(command, "ATDP"))
+      Serial.printf("[OBD PROTOCOL] adapter reports %s; ECU connection still unverified\n", _response.c_str());
     _complete=false; _initCommandInFlight=false;
     if (!accepted) {
       Serial.printf("[AT INIT] Stopping sequence at %s; retrying from ATZ in 5 s\n",command);
@@ -115,15 +159,17 @@ void VlinkerClient::tick() {
     }
   }
 
-  if (!_initCommandInFlight && !_initialized &&
+  if (!_desynchronized && !_initCommandInFlight && !_initialized &&
       (int32_t)(millis()-_initRetryAt)>=0) {
     startCommand(InitCommands[_initStep],_initStep==0?6000:3000);
     _initCommandInFlight=true;
   }
 }
 
-bool VlinkerClient::takeResponse(String& response) {
+bool VlinkerClient::takeResponse(String& response, bool* timedOut) {
   if (!_complete || !_initialized) return false;
-  response=_response; _complete=false;
+  response=_response;
+  if(timedOut) *timedOut=_responseTimedOut;
+  _complete=false;
   return true;
 }

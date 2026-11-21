@@ -6,7 +6,7 @@
 #include <atomic>
 
 struct ObdValue { const char* name; const char* unit; float value; bool valid; uint32_t updatedAt; };
-enum class EcuState : uint8_t { Disconnected, AdapterInitializing, Searching, Connected, Failed };
+enum class EcuState : uint8_t { Disconnected, AdapterInitializing, Searching, Connected, ConnectedNoTargets, Failed };
 class ObdManager {
  public:
   void tick(VlinkerClient& client);
@@ -19,14 +19,23 @@ class ObdManager {
   bool _supportKnown{false}, _pending{false};
   bool _wasConnected{false};
   bool _fallbackTried{false};
+  bool _usingKwp{false};
+  bool _hasSelectedEcuHeader{false};
+  char _selectedEcuHeader[9]{};
   uint32_t _nextRequest{0};
   uint8_t _nextIndex{0};
+  uint8_t _failures[Count]{};
+  uint8_t _consecutiveTimeouts{0};
   bool _supported[Count]{};
-  enum class PendingCommand : uint8_t { None, Bitmap, Pid, SelectKwp, ReadProtocol };
+  enum class PendingCommand : uint8_t {
+    None, BitmapAuto, BitmapKwp, Pid, SelectAuto, SelectKwp, ReadProtocolKwp
+  };
   PendingCommand _pendingCommand{PendingCommand::None};
   std::atomic<EcuState> _ecuState{EcuState::Disconnected};
   mutable portMUX_TYPE _valueMux = portMUX_INITIALIZER_UNLOCKED;
-  void consume(const String& response);
+  void consume(const String& response, bool timedOut = false);
   void failAutoAndSelectKwp(VlinkerClient& client, const String& response);
-  static bool hasPid(const String& response,uint8_t base,uint8_t pid);
+  void scheduleDiscoveryRetry(const char* reason);
+  bool requestBitmap(VlinkerClient& client, bool autoProtocol);
+  void invalidateValues();
 };

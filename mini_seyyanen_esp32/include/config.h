@@ -28,9 +28,18 @@ constexpr char VlinkerMac[] = "";
 // This label is shown in the dashboard when the adapter is connected.
 constexpr char VlinkerDisplayName[] = "VLINKER MC+";
 constexpr uint32_t PollIntervalMs = 500;
-constexpr uint32_t StaleTimeoutMs = 5000;
-// AUTO protocol search and KWP 5-baud initialization can exceed a short ELM timeout.
-constexpr uint32_t EcuResponseTimeoutMs = 12000;
+// At the requested 700 ms response example + 500 ms inter-request interval,
+// five PIDs take about 6 s. 20 s allows multiple sweeps; actual adapter latency
+// has not been measured on this vehicle.
+constexpr uint32_t StaleTimeoutMs = 20000;
+// AUTO search/KWP initialization can exceed short ELM timeouts; allow 25 s for
+// the initial bitmap response. Physical timing remains unverified.
+constexpr uint32_t EcuResponseTimeoutMs = 25000;
 constexpr uint32_t PidResponseTimeoutMs = 5000;
+constexpr uint32_t EcuRetryIntervalMs = 8000;
+// If a timed-out SPP command never yields its old prompt, disconnect/reconnect
+// the adapter to establish a fresh response stream instead of guessing by silence.
+constexpr uint32_t SppResyncTimeoutMs = 8000;
+constexpr uint8_t PidFailureLimit = 3;
 constexpr uint16_t SwipeThresholdPx = 65;
 }
