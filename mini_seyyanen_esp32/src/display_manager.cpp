@@ -1,5 +1,8 @@
 #include "display_manager.h"
 #include "config.h"
+#include "obd_manager.h"
+#include "vlinker_client.h"
+#include "chevrolet_logo_rgb565.h"
 
 DisplayManager::Display::Display() {
   auto b = _bus.config();
@@ -24,7 +27,14 @@ bool DisplayManager::begin() {
   pinMode(Config::Backlight, OUTPUT); digitalWrite(Config::Backlight, HIGH);
   _tft.init(); _tft.setRotation(1); _tft.setTextWrap(false);
   _touchSpi.begin(Config::TouchSclk, Config::TouchMiso, Config::TouchMosi, Config::TouchCs);
-  _touch.begin(_touchSpi); _touch.setRotation(1); setTheme(Theme::Day);
+  _touch.begin(_touchSpi); _touch.setRotation(1);
+  setTheme(Theme::Day);
+  _screen = Screen::Splash;
+  _screenStartedAt = millis();
+  _tft.fillScreen(0xFFFF);
+  _tft.pushImage((Config::ScreenWidth-ChevroletLogoWidth)/2,
+                 (Config::ScreenHeight-ChevroletLogoHeight)/2,
+                 ChevroletLogoWidth, ChevroletLogoHeight, ChevroletLogoRgb565);
   return true;
 }
 void DisplayManager::setTheme(Theme theme) {
@@ -66,30 +76,76 @@ bool DisplayManager::pollSwipe() {
     int dx=_lastX-_startX, dy=_lastY-_startY;
     bool horizontal=abs(dx)>=Config::SwipeThresholdPx && abs(dx)>abs(dy)*1.3;
     Serial.printf("[TOUCH] up dx=%d dy=%d horizontal=%s\n",dx,dy,horizontal?"yes":"no");
-    if (horizontal) {
+    if (horizontal && _screen == Screen::Dashboard) {
       toggleTheme(); changed=true;
     }
   }
   return changed;
 }
-void DisplayManager::render(const DisplayValue* values, const char* btStatus, const char* ecuStatus) {
-  static char previous[5][24]{}; static char previousBtStatus[40]{}; static char previousEcuStatus[24]{};
+void DisplayManager::render(const DisplayValue* values, LinkState linkState, EcuState ecuState) {
+  if (_screen == Screen::Splash) {
+    if ((uint32_t)(millis()-_screenStartedAt) < 3000) return;
+    _screen = Screen::ConnectionStatus;
+    _previousBtStatus[0] = '\0';
+    _previousEcuStatus[0] = '\0';
+    _tft.fillScreen(0xFFFF);
+    renderConnectionStatus(linkState, ecuState);
+    return;
+  }
+
+  if (_screen == Screen::ConnectionStatus) {
+    if (ecuState == EcuState::Connected) {
+      _screen = Screen::Dashboard;
+      setTheme(Theme::Day);
+      _dirty = true;
+      renderDashboard(values);
+      return;
+    }
+    renderConnectionStatus(linkState, ecuState);
+    return;
+  }
+
+  renderDashboard(values);
+}
+
+void DisplayManager::renderConnectionStatus(LinkState linkState, EcuState ecuState) {
+  const char* btText = "BT: DISCONNECTED";
+  if (linkState == LinkState::Connecting) btText = "BT: CONNECTING";
+  else if (linkState == LinkState::Connected) btText = "BT: CONNECTED";
+
+  const char* ecuText = "ECU: DISCONNECTED";
+  switch (ecuState) {
+    case EcuState::AdapterInitializing:
+    case EcuState::Searching: ecuText = "ECU: CONNECTING"; break;
+    case EcuState::Connected:
+    case EcuState::ConnectedNoTargets:
+    case EcuState::ConnectedAmbiguous: ecuText = "ECU: CONNECTED"; break;
+    case EcuState::Disconnected:
+    case EcuState::Failed: default: break;
+  }
+
+  _tft.setFont(&fonts::Font4); _tft.setTextSize(1); _tft.setTextColor(0x0000,0xFFFF);
+  if (strcmp(_previousBtStatus,btText)!=0) {
+    _tft.fillRect(0,72,Config::ScreenWidth,40,0xFFFF);
+    int width=_tft.textWidth(btText);
+    _tft.setCursor((Config::ScreenWidth-width)/2,78); _tft.print(btText);
+    strlcpy(_previousBtStatus,btText,sizeof(_previousBtStatus));
+  }
+  if (strcmp(_previousEcuStatus,ecuText)!=0) {
+    _tft.fillRect(0,126,Config::ScreenWidth,40,0xFFFF);
+    int width=_tft.textWidth(ecuText);
+    _tft.setCursor((Config::ScreenWidth-width)/2,132); _tft.print(ecuText);
+    strlcpy(_previousEcuStatus,ecuText,sizeof(_previousEcuStatus));
+  }
+}
+
+void DisplayManager::renderDashboard(const DisplayValue* values) {
   if (_dirty) {
     _tft.fillScreen(_bg); _tft.setTextColor(_fg,_bg);
     for(int i=0;i<4;i++) _tft.drawFastHLine(8,65+i*43,304,_line);
-    _dirty=false; for(auto& row:previous) row[0]='\0';
-    previousBtStatus[0]='\0'; previousEcuStatus[0]='\0';
+    _dirty=false; for(auto& row:_previousValues) row[0]='\0';
   }
-  if (strcmp(previousBtStatus,btStatus)!=0 || strcmp(previousEcuStatus,ecuStatus)!=0) {
-    _tft.setFont(&fonts::Font2); _tft.setTextSize(1);
-    _tft.fillRect(0,0,Config::ScreenWidth,21,_bg); _tft.setTextColor(_fg,_bg);
-    _tft.setCursor(8,2); _tft.print(btStatus);
-    int ecuWidth=_tft.textWidth(ecuStatus);
-    _tft.setCursor(Config::ScreenWidth-8-ecuWidth,2); _tft.print(ecuStatus);
-    strlcpy(previousBtStatus,btStatus,sizeof(previousBtStatus));
-    strlcpy(previousEcuStatus,ecuStatus,sizeof(previousEcuStatus));
-  }
-  for(int i=0;i<5;i++) if(strcmp(previous[i],values[i].value)!=0) {
+  for(int i=0;i<5;i++) if(strcmp(_previousValues[i],values[i].value)!=0) {
     int y=23+i*43;
     _tft.fillRect(6,y,308,42,_bg); _tft.setTextColor(_fg,_bg);
     _tft.setFont(&fonts::Font2); _tft.setTextSize(1);
@@ -111,6 +167,6 @@ void DisplayManager::render(const DisplayValue* values, const char* btStatus, co
     } else {
       _tft.setCursor(unitX,y+13); _tft.print(values[i].unit);
     }
-    strlcpy(previous[i],values[i].value,sizeof(previous[i]));
+    strlcpy(_previousValues[i],values[i].value,sizeof(_previousValues[i]));
   }
 }

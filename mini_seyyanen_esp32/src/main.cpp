@@ -41,22 +41,6 @@ void loop() {
     else snprintf(values[i],sizeof(values[i]),"%.1f",latest[i].value);
     rows[i]={latest[i].name,values[i],latest[i].unit};
   }
-  char btStatus[48];
-  if(vlinker.state()==LinkState::Connected)
-    snprintf(btStatus,sizeof(btStatus),"CONNECTED %s",Config::VlinkerDisplayName);
-  else if(vlinker.state()==LinkState::Connecting) strlcpy(btStatus,"CONNECTING",sizeof(btStatus));
-  else strlcpy(btStatus,"DISCONNECTED",sizeof(btStatus));
-
-  const char* ecuStatus="ECU: DISCONNECTED";
-  switch(obd.ecuState()) {
-    case EcuState::AdapterInitializing: ecuStatus="ECU: ADAPTER"; break;
-    case EcuState::Searching: ecuStatus="ECU: SEARCHING"; break;
-    case EcuState::Connected: ecuStatus="ECU: CONNECTED"; break;
-    case EcuState::ConnectedNoTargets: ecuStatus="ECU: NO TARGET PID"; break;
-    case EcuState::ConnectedAmbiguous: ecuStatus="ECU: AMBIGUOUS"; break;
-    case EcuState::Failed: ecuStatus="ECU: FAILED"; break;
-    case EcuState::Disconnected: default: break;
-  }
-  display.render(rows,btStatus,ecuStatus);
+  display.render(rows,vlinker.state(),obd.ecuState());
   delay(8);
 }
