@@ -142,24 +142,24 @@ void DisplayManager::renderConnectionStatus(LinkState linkState, EcuState ecuSta
 void DisplayManager::renderDashboard(const DisplayValue* values) {
   if (_dirty) {
     _tft.fillScreen(_bg); _tft.setTextColor(_fg,_bg);
-    for(int i=0;i<4;i++) _tft.drawFastHLine(8,65+i*43,304,_line);
+    for(int i=0;i<4;i++) _tft.drawFastHLine(8,47+i*48,304,_line);
     _dirty=false; for(auto& row:_previousValues) row[0]='\0';
   }
   for(int i=0;i<5;i++) if(strcmp(_previousValues[i],values[i].value)!=0) {
-    int y=23+i*43;
-    _tft.fillRect(6,y,308,42,_bg); _tft.setTextColor(_fg,_bg);
+    int y=i*48;
+    _tft.fillRect(6,y,308,i==4?48:47,_bg); _tft.setTextColor(_fg,_bg);
     _tft.setFont(&fonts::Font2); _tft.setTextSize(1);
-    _tft.setCursor(8,y+13); _tft.print(values[i].name);
+    _tft.setCursor(8,y+15); _tft.print(values[i].name);
 
-    // Right-align the value and unit as one group. Recompute the group's
-    // origin from the live value so NONE and differently-sized values move together.
+    // Keep the unit adjacent to the live value, including when NONE is shown.
     _tft.setFont(&fonts::Font4);
     int valueWidth=_tft.textWidth(values[i].value);
-    int unitWidth=(i==0)?14:_tft.textWidth(values[i].unit);
     int unitGap=7;
-    int valueX=Config::ScreenWidth-8-valueWidth-unitGap-unitWidth;
-    int unitX=valueX+valueWidth+unitGap;
-    _tft.setCursor(valueX,y+7); _tft.print(values[i].value);
+    // Keep numeric right edges aligned independently of unit width.
+    int valueRight=Config::ScreenWidth-50;
+    int valueX=valueRight-valueWidth;
+    int unitX=valueRight+unitGap;
+    _tft.setCursor(valueX,y+9); _tft.print(values[i].value);
     _tft.setFont(&fonts::Font2);
     if(i==0) {
       _tft.drawCircle(unitX+2,y+22,2,_fg);
