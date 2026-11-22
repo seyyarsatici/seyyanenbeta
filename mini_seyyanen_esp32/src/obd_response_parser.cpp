@@ -1,5 +1,6 @@
 #include "obd_response_parser.h"
 #include <ctype.h>
+#include <stdio.h>
 #include <string.h>
 
 namespace ObdResponseParser {
@@ -27,22 +28,28 @@ uint8_t hexByte(const char* twoChars) {
 }
 
 void storePdu(const uint8_t* bytes, size_t length, const char* rawLine, size_t rawLength,
-              const char* header, bool hasHeader, Result& result) {
+              const char* header, bool hasHeader, Protocol protocol,
+              uint8_t target, uint8_t source, ChecksumStatus checksum, Result& result) {
   size_t cursor = 0;
   while (cursor < length && !result.overflow) {
     const uint8_t service = bytes[cursor];
     if (service == 0x41 && cursor + 1 < length) {
       const uint8_t pid = bytes[cursor + 1];
-      const uint8_t expected = pid == 0x00 ? 4 : 1;
+      const uint8_t expected = pid == 0x00 ? 4 : (pid == 0x0C ? 2 : 1);
       const size_t available = length - (cursor + 2);
       const uint8_t payloadLength = static_cast<uint8_t>(available < expected ? available : expected);
-      if (result.count >= MaxFrames) { result.overflow = true; return; }
+      if (result.count >= MaxFrames) { result.overflow = true; result.error = ParseError::FrameCapacity; return; }
       Frame& frame = result.frames[result.count++];
       const size_t copyLength = rawLength < sizeof(frame.rawLine) - 1 ? rawLength : sizeof(frame.rawLine) - 1;
       memcpy(frame.rawLine, rawLine, copyLength);
       frame.rawLine[copyLength] = '\0';
       frame.hasEcuHeader = hasHeader;
       if (hasHeader) strncpy(frame.ecuHeader, header, sizeof(frame.ecuHeader) - 1);
+      frame.protocol = protocol;
+      frame.targetAddress = target; frame.sourceAddress = source;
+      frame.hasTargetAddress = hasHeader && (protocol == Protocol::KwP || protocol == Protocol::Iso9141);
+      frame.hasSourceAddress = frame.hasTargetAddress;
+      frame.checksum = checksum;
       frame.service = service; frame.pid = pid; frame.payloadLength = payloadLength;
       for (uint8_t i = 0; i < payloadLength; ++i) frame.payload[i] = bytes[cursor + 2 + i];
       cursor += 2 + payloadLength;
@@ -50,13 +57,18 @@ void storePdu(const uint8_t* bytes, size_t length, const char* rawLine, size_t r
     } else if (service == 0x7F && cursor + 1 < length) {
       const uint8_t responseService = bytes[cursor + 1];
       const bool hasNrc = cursor + 2 < length;
-      if (result.count >= MaxFrames) { result.overflow = true; return; }
+      if (result.count >= MaxFrames) { result.overflow = true; result.error = ParseError::FrameCapacity; return; }
       Frame& frame = result.frames[result.count++];
       const size_t copyLength = rawLength < sizeof(frame.rawLine) - 1 ? rawLength : sizeof(frame.rawLine) - 1;
       memcpy(frame.rawLine, rawLine, copyLength);
       frame.rawLine[copyLength] = '\0';
       frame.hasEcuHeader = hasHeader;
       if (hasHeader) strncpy(frame.ecuHeader, header, sizeof(frame.ecuHeader) - 1);
+      frame.protocol = protocol;
+      frame.targetAddress = target; frame.sourceAddress = source;
+      frame.hasTargetAddress = hasHeader && (protocol == Protocol::KwP || protocol == Protocol::Iso9141);
+      frame.hasSourceAddress = frame.hasTargetAddress;
+      frame.checksum = checksum;
       frame.service = service; frame.pid = responseService; frame.negative = true;
       if (hasNrc) { frame.nrc = bytes[cursor + 2]; frame.payload[0] = frame.nrc; frame.payloadLength = 1; }
       cursor += hasNrc ? 3 : 2;
@@ -67,7 +79,77 @@ void storePdu(const uint8_t* bytes, size_t length, const char* rawLine, size_t r
   }
 }
 
-void parseLine(const char* line, size_t length, Result& result) {
+uint8_t additiveChecksum(const uint8_t* bytes, size_t length) {
+  uint16_t sum = 0;
+  for (size_t i = 0; i < length; ++i) sum = static_cast<uint16_t>(sum + bytes[i]);
+  return static_cast<uint8_t>(sum);
+}
+
+bool parseKwpLine(const char* line, size_t length, const char* compact, size_t compactLength,
+                  Protocol hint, Result& result) {
+  if (compactLength < 8 || (compactLength & 1U)) return false;
+  uint8_t bytes[MaxHex / 2]{};
+  const size_t count = compactLength / 2;
+  for (size_t i = 0; i < count; ++i) bytes[i] = hexByte(compact + i * 2);
+  const uint8_t format = bytes[0];
+  const uint8_t addressMode = static_cast<uint8_t>(format & 0xC0);
+  size_t cursor = 1;
+  uint8_t declared = static_cast<uint8_t>(format & 0x3F);
+  // ISO 14230 length counts the data field from the Service ID, excluding
+  // addresses and checksum. CARB exception framing (0x48/0x68) is distinct:
+  // the OBD-style format includes target/source bytes in its length.
+  const bool carbException = addressMode == 0x40;
+  const bool hasAddresses = addressMode == 0x40 || addressMode == 0x80 || addressMode == 0xC0;
+  uint8_t target = 0, source = 0;
+  if (hasAddresses) {
+    if (cursor + 2 > count) { ++result.ignoredTextLines; result.error = ParseError::InvalidLength; return true; }
+    target = bytes[cursor++]; source = bytes[cursor++];
+  }
+  if (carbException) {
+    if (!declared) {
+      if (cursor >= count) { ++result.ignoredTextLines; result.error = ParseError::InvalidLength; return true; }
+      declared = bytes[cursor++];
+    }
+    if (declared < 4) { ++result.ignoredTextLines; result.error = ParseError::InvalidLength; return true; }
+  } else if (!declared) {
+    if (cursor >= count) { ++result.ignoredTextLines; result.error = ParseError::InvalidLength; return true; }
+    declared = bytes[cursor++];
+  }
+  const size_t pduOffset = cursor;
+  const size_t pduLength = carbException ? static_cast<size_t>(declared - 2U) : declared;
+  const size_t declaredEnd = pduOffset + pduLength;
+  if (declared < 2 || declaredEnd > count ||
+      (count != declaredEnd && count != declaredEnd + 1)) {
+    ++result.ignoredTextLines;
+    result.error = ParseError::InvalidLength;
+    return true;
+  }
+  ChecksumStatus checksum = ChecksumStatus::Absent;
+  if (count == declaredEnd + 1) {
+    checksum = additiveChecksum(bytes, declaredEnd) == bytes[declaredEnd]
+                   ? ChecksumStatus::Valid : ChecksumStatus::Invalid;
+    if (checksum == ChecksumStatus::Invalid) {
+      ++result.ignoredTextLines;
+      result.error = ParseError::InvalidChecksum;
+      return true;
+    }
+  }
+  char header[9]{};
+  if (hasAddresses) {
+    // Source address identifies the ECU in a response. Keep the target byte
+    // separately; it identifies the receiver/tester, not a second ECU.
+    snprintf(header, sizeof(header), "K%02X", source);
+  }
+  if (!pduLength) { ++result.ignoredTextLines; result.error = ParseError::UnsupportedFrame; return true; }
+  const uint8_t before = result.count;
+  storePdu(bytes + pduOffset, pduLength, line, length, header, hasAddresses,
+           hint == Protocol::Iso9141 ? Protocol::Iso9141 : Protocol::KwP,
+           target, source, checksum, result);
+  if (before == result.count) ++result.ignoredTextLines;
+  return true;
+}
+
+void parseLine(const char* line, size_t length, Result& result, Protocol hint) {
   if (!length) return;
   char compact[MaxHex + 1]{};
   size_t compactLength = 0;
@@ -83,6 +165,20 @@ void parseLine(const char* line, size_t length, Result& result) {
   }
   if (!compactLength) return;
 
+  // KWP/ISO9141 link-layer frames are recognized before CAN. The address-mode
+  // bits and inline/additional length must agree exactly; checksum-bearing
+  // frames are accepted only after the ISO additive checksum validates.
+  const uint8_t first = hexByte(compact);
+  const bool canResponsePrefix = (compactLength >= 3 && compact[0] == '7' && compact[1] == 'E' &&
+                                  compact[2] >= '8' && compact[2] <= 'F') ||
+                                 (compactLength >= 8 &&
+                                  (strncmp(compact, "18DA", 4) == 0 || strncmp(compact, "18DB", 4) == 0));
+  const bool servicePduPrefix = first == 0x41 || first == 0x7F;
+  const bool mode01CommandEcho = compactLength == 4 && compact[0] == '0' && compact[1] == '1';
+  if (!canResponsePrefix && !servicePduPrefix && !mode01CommandEcho &&
+      (hint == Protocol::KwP || hint == Protocol::Iso9141 || hint == Protocol::Unknown) &&
+      parseKwpLine(line, length, compact, compactLength, hint, result)) return;
+
   char header[9]{};
   size_t headerLength = 0;
   size_t firstTokenStart = 0;
@@ -97,7 +193,7 @@ void parseLine(const char* line, size_t length, Result& result) {
   } else if (!separated && (compactLength & 1U) && compactLength >= 9 &&
              compact[0] == '7' && compact[1] == 'E' &&
              compact[2] >= '8' && compact[2] <= 'F') {
-    // ATH1 + ATS0 compact 11-bit response, e.g. 7EA0341055F.
+    // ATH1 + ATS1 compact 11-bit response, e.g. 7EA 03 41 05 5F.
     headerLength = 3;
   } else if (!separated && compactLength >= 14 &&
              ((compactLength - 8) & 1U) == 0 &&
@@ -116,6 +212,7 @@ void parseLine(const char* line, size_t length, Result& result) {
   }
   if (!compactLength || (compactLength & 1U)) {
     ++result.ignoredTextLines;
+    result.error = ParseError::InvalidLength;
     return;
   }
 
@@ -126,6 +223,7 @@ void parseLine(const char* line, size_t length, Result& result) {
   if (headerLength && bytes[0] <= 0x0F) {
     if (byteCount < 2 || bytes[0] != byteCount - 1) {
       ++result.ignoredTextLines;
+      result.error = ParseError::InvalidLength;
       return;
     }
     pduOffset = 1;
@@ -134,12 +232,13 @@ void parseLine(const char* line, size_t length, Result& result) {
 
   const uint8_t before = result.count;
   storePdu(bytes + pduOffset, byteCount - pduOffset, line, length,
-           header, headerLength != 0, result);
+           header, headerLength != 0, Protocol::Can, 0, 0,
+           ChecksumStatus::NotApplicable, result);
   if (before == result.count) ++result.ignoredTextLines;
 }
 }
 
-void parse(const char* response, Result& result) {
+void parse(const char* response, Result& result, Protocol hint) {
   result = Result{};
   if (!response) return;
   char line[MaxLine]{};
@@ -147,13 +246,14 @@ void parse(const char* response, Result& result) {
   for (const char* p = response;; ++p) {
     const char c = *p;
     if (c == '\r' || c == '\n' || c == '\0') {
-      parseLine(line, length, result);
+      parseLine(line, length, result, hint);
       length = 0;
       if (c == '\0') break;
     } else if (length + 1 < sizeof(line)) {
       line[length++] = c;
     } else {
       ++result.ignoredTextLines;
+      result.error = ParseError::LineTooLong;
       while (*p && *p != '\r' && *p != '\n') ++p;
       length = 0;
       if (!*p) break;

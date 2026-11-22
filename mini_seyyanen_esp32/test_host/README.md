@@ -1,6 +1,6 @@
 # Host-side OBD parser and state-machine tests
 
-The parser test compiles the same parser source used by the firmware. The
+The parser test compiles the production response parser and ECU registry. The
 state-machine test compiles the real `VlinkerClient` and `ObdManager` against a
 small fake Bluetooth transport and Arduino/FreeRTOS compatibility stubs. Tests
 do not access a COM port, Bluetooth adapter, ECU, or display.
@@ -18,6 +18,7 @@ Push-Location $outDir
 try {
   cl /nologo /EHsc /std:c++14 /I"$project\src" `
     "$project\src\obd_response_parser.cpp" `
+    "$project\src\ecu_registry.cpp" `
     "$project\test_host\obd_response_parser_test.cpp" /Fe:"$parserExe"
   if ($LASTEXITCODE -ne 0) { throw 'Parser test build failed' }
   & $parserExe
@@ -26,6 +27,7 @@ try {
   cl /nologo /EHsc /std:c++14 /I"$project\test_host\support" `
     /I"$project\include" /I"$project\src" `
     "$project\src\obd_response_parser.cpp" `
+    "$project\src\ecu_registry.cpp" `
     "$project\src\vlinker_client.cpp" `
     "$project\src\obd_manager.cpp" `
     "$project\test_host\obd_state_machine_test.cpp" /Fe:"$stateExe"
@@ -36,9 +38,9 @@ try {
 finally { Pop-Location }
 ```
 
-Parser coverage includes echoes, spaced/headered/headerless frames, mixed
-positive/negative replies, malformed lengths, oversized lines, frame capacity,
-multiple ECUs, and the five conversions. State-machine coverage uses a fake SPP
-transport for initialization, AUTO/KWP discovery, PID polling/failures, stale
-data, late prompts/resynchronization, reconnect, and ECU ambiguity. Simulations
-do not establish physical VLinker MC+ or Aveo ECU compatibility.
+Parser/registry coverage includes CAN and KWP framing, checksum validation,
+address identity, request identity metadata, positive/negative responses,
+malformed lengths, oversized lines, capacity and PID formulas. State-machine
+coverage uses fake SPP for protocol order, ATTP-to-ATSP compatibility, RPM
+verification, polling, ambiguity, late prompts/resynchronization and reconnect.
+Simulations do not establish physical VLinker MC+ or Aveo ECU compatibility.

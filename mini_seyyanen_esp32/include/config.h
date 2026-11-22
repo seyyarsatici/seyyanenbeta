@@ -37,6 +37,11 @@ constexpr uint32_t StaleTimeoutMs = 20000;
 constexpr uint32_t EcuResponseTimeoutMs = 25000;
 constexpr uint32_t PidResponseTimeoutMs = 5000;
 constexpr uint32_t EcuRetryIntervalMs = 8000;
+// Ordered, target-informed protocol search. ELM numbers: 5=KWP fast, 4=KWP
+// slow/5-baud, 3=ISO9141-2, 0=automatic detection. Reorder here if vehicle
+// measurements show another sequence is preferable.
+constexpr uint8_t ProtocolOrder[] = {5, 4, 3, 0};
+constexpr uint8_t ProtocolOrderCount = sizeof(ProtocolOrder) / sizeof(ProtocolOrder[0]);
 // If a timed-out SPP command never yields its old prompt, disconnect/reconnect
 // the adapter to establish a fresh response stream instead of guessing by silence.
 constexpr uint32_t SppResyncTimeoutMs = 8000;

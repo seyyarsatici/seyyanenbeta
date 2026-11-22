@@ -1,4 +1,5 @@
 #include "obd_response_parser.h"
+#include "ecu_registry.h"
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
@@ -30,6 +31,9 @@ static void testBitmapForms() {
     const uint8_t targets[] = {0x05, 0x11, 0x0B, 0x06, 0x07};
     for (uint8_t pid : targets) assert(bitmapSupports(bitmap, pid));
   }
+  Result echoed;
+  parse("0100\r\n4100BE3FA813", echoed);
+  assert(echoed.error == ParseError::None && echoed.count == 1);
 }
 
 static void testPidFormsAndEcho() {
@@ -155,6 +159,125 @@ static void testConversions() {
   assert(!decodeMode01Byte(0x99, 0, value));
 }
 
+static void testKwpFramingAndChecksum() {
+  Result parsed;
+  parse("48 6B 10 41 00 BE 3F A8 13 BC", parsed, Protocol::KwP);
+  assert(parsed.count == 1);
+  const Frame& bitmap = parsed.frames[0];
+  assert(bitmap.protocol == Protocol::KwP && bitmap.hasEcuHeader);
+  assert(bitmap.hasTargetAddress && bitmap.targetAddress == 0x6B);
+  assert(bitmap.hasSourceAddress && bitmap.sourceAddress == 0x10);
+  assert(strcmp(bitmap.ecuHeader, "K10") == 0);
+  assert(bitmap.checksum == ChecksumStatus::Valid);
+  assert(bitmapValue(bitmap) == 0xBE3FA813UL);
+
+  parse("486B104100BE3FA813BC", parsed, Protocol::KwP);
+  assert(parsed.count == 1 && parsed.frames[0].sourceAddress == 0x10);
+  parse("48 6B 10 41 00 BE 3F A8 13", parsed, Protocol::KwP);
+  assert(parsed.count == 1 && parsed.frames[0].checksum == ChecksumStatus::Absent);
+  parse("06 41 00 BE 3F A8 13 FF", parsed, Protocol::KwP);
+  assert(parsed.count == 1 && !parsed.frames[0].hasEcuHeader && parsed.frames[0].protocol == Protocol::KwP);
+  parse("C0 6B 10 06 41 00 BE 3F A8 13 3A", parsed, Protocol::KwP);
+  assert(parsed.count == 1 && parsed.frames[0].targetAddress == 0x6B && parsed.frames[0].sourceAddress == 0x10);
+  parse("86 6B 10 41 00 BE 3F A8 13 FA", parsed, Protocol::KwP);
+  assert(parsed.count == 1 && parsed.frames[0].checksum == ChecksumStatus::Valid);
+
+  parse("46 6B 10 41 0C 1A F8 20", parsed, Protocol::KwP);
+  assert(parsed.count == 1 && parsed.frames[0].pid == 0x0C && parsed.frames[0].payloadLength == 2);
+  assert(parsed.frames[0].payload[0] == 0x1A && parsed.frames[0].payload[1] == 0xF8);
+  parse("45 6B 10 41 05 5F 65", parsed, Protocol::KwP);
+  assert(parsed.count == 1 && parsed.frames[0].pid == 0x05 && parsed.frames[0].payload[0] == 0x5F);
+  parse("45 6B 10 7F 01 12 52", parsed, Protocol::KwP);
+  Frame kwpNegative{};
+  assert(findNegative(parsed, 0x01, kwpNegative) && kwpNegative.nrc == 0x12);
+  assert(kwpNegative.sourceAddress == 0x10 && kwpNegative.checksum == ChecksumStatus::Valid);
+  parse("48 6B 10 41 00 BE 3F A8 13 BD", parsed, Protocol::KwP);
+  assert(parsed.count == 0); // Invalid additive checksum is rejected.
+  assert(parsed.error == ParseError::InvalidChecksum);
+  parse("48 6B 10 41 00 BE 3F A8 13 BC 00", parsed, Protocol::KwP);
+  assert(parsed.count == 0); // Trailing bytes beyond one frame are rejected.
+  parse("48 6B 10 41 00 BE", parsed, Protocol::KwP);
+  assert(parsed.count == 0); // Declared length exceeds available frame.
+  assert(parsed.error == ParseError::InvalidLength);
+  parse("48 6B 10 41 05 5F", parsed);
+  assert(parsed.count == 0); // Malformed KWP must not fall through as headerless OBD data.
+}
+
+static void testKwpMultipleEcuFramesRemainDistinct() {
+  Result parsed;
+  parse("48 6B 10 41 00 BE 3F A8 13 BC\r\n48 6B 11 41 00 00 00 00 00 05", parsed, Protocol::KwP);
+  assert(parsed.count == 2);
+  assert(parsed.frames[0].sourceAddress == 0x10 && parsed.frames[1].sourceAddress == 0x11);
+  assert(bitmapValue(parsed.frames[0]) == 0xBE3FA813UL);
+  assert(bitmapValue(parsed.frames[1]) == 0);
+}
+
+static void testEcuRegistryIdentityAndVerification() {
+  EcuRegistry::Registry registry;
+  Result parsed;
+  parse("7E8 06 41 00 BE 3F A8 13", parsed);
+  assert(parsed.count == 1 && registry.addBitmap(parsed.frames[0], 100));
+  assert(registry.count() == 1 && registry.uniqueCandidate() == 0);
+  const EcuRegistry::Record& can = registry.at(0);
+  assert(strcmp(can.responseIdentity, "7E8") == 0);
+  assert(can.hasRequestIdentity && strcmp(can.requestIdentity, "7E0") == 0);
+  assert(can.rpmSupported);
+
+  parse("7E8 06 41 00 BE 3F A8 13", parsed);
+  assert(registry.addBitmap(parsed.frames[0], 200) && registry.count() == 1);
+  parse("7E9 06 41 00 08 00 00 00", parsed);
+  assert(registry.addBitmap(parsed.frames[0], 300) && registry.count() == 2);
+  assert(registry.at(0).bitmap == 0xBE3FA813UL && registry.at(1).bitmap == 0x08000000UL);
+  assert(registry.ambiguous() && registry.uniqueCandidate() < 0);
+
+  parse("7EA 03 41 05 5F", parsed);
+  assert(!registry.addResponse(parsed.frames[0], 400)); // Unselected identity cannot verify 7E8.
+  parse("7E8 04 41 0C 1A F8", parsed);
+  assert(registry.addResponse(parsed.frames[0], 500));
+  assert(registry.uniqueRpmResponder() == 0 && !registry.ambiguous());
+
+  EcuRegistry::Registry extendedCan;
+  parse("18DAF110 06 41 00 BE 3F A8 13", parsed);
+  assert(extendedCan.addBitmap(parsed.frames[0], 1));
+  assert(extendedCan.at(0).hasRequestIdentity && strcmp(extendedCan.at(0).requestIdentity, "18DA10F1") == 0);
+
+  EcuRegistry::Registry conflict;
+  parse("7E8 06 41 00 BE 3F A8 13", parsed); assert(conflict.addBitmap(parsed.frames[0], 1));
+  parse("7E8 06 41 00 00 00 00 00", parsed); assert(conflict.addBitmap(parsed.frames[0], 2));
+  assert(conflict.count() == 1 && conflict.at(0).bitmapConflict && conflict.uniqueCandidate() < 0);
+
+  EcuRegistry::Registry kwp;
+  parse("48 6B 10 41 00 BE 3F A8 13 BC", parsed, Protocol::KwP);
+  assert(kwp.addBitmap(parsed.frames[0], 10));
+  assert(kwp.at(0).hasIdentity && strcmp(kwp.at(0).responseIdentity, "K10") == 0);
+  assert(kwp.at(0).hasTargetAddress && kwp.at(0).targetAddress == 0x6B);
+  assert(!kwp.at(0).hasRequestIdentity); // No CAN-style KWP address arithmetic.
+  parse("48 6A 10 41 00 BE 3F A8 13", parsed, Protocol::KwP);
+  assert(kwp.addBitmap(parsed.frames[0], 11) && kwp.count() == 1); // Same ECU source, target is not ECU identity.
+}
+
+static void testDeterministicParserFuzzSmoke() {
+  static const char alphabet[] = "0123456789ABCDEFabcdef :,\t-SEARCHINGNO DATA?";
+  uint32_t state = 0xC0FFEEu;
+  char input[192];
+  for (unsigned sample = 0; sample < 20000; ++sample) {
+    state = state * 1664525u + 1013904223u;
+    const size_t length = state % (sizeof(input) - 1);
+    for (size_t i = 0; i < length; ++i) {
+      state = state * 1664525u + 1013904223u;
+      input[i] = alphabet[state % (sizeof(alphabet) - 1)];
+    }
+    input[length] = '\0';
+    Result parsed;
+    parse(input, parsed);
+    assert(parsed.count <= MaxFrames);
+    for (uint8_t i = 0; i < parsed.count; ++i) {
+      assert(parsed.frames[i].payloadLength <= MaxPayload);
+      assert(memchr(parsed.frames[i].rawLine, '\0', MaxRawLine) != 0);
+    }
+  }
+}
+
 int main() {
   testBitmapForms();
   testPidFormsAndEcho();
@@ -162,6 +285,10 @@ int main() {
   testPositiveAndNegativeAndMultipleEcus();
   testMalformedAndCapacityCases();
   testConversions();
+  testKwpFramingAndChecksum();
+  testKwpMultipleEcuFramesRemainDistinct();
+  testEcuRegistryIdentityAndVerification();
+  testDeterministicParserFuzzSmoke();
   puts("OBD response parser tests passed");
   return 0;
 }

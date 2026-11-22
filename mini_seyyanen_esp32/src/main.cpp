@@ -23,8 +23,8 @@ void bluetoothTask(void*) {
 }
 void setup() {
   Serial.begin(115200); delay(50);
-  Serial.println("[FW] MINI-SEYYANEN-OBD-2026-11-21-R4");
-  Serial.printf("[BOOT] Bluetooth Classic SPP=STARTING adapter=%s ECU protocol=AUTO then KWP fallback\n",
+  Serial.println("[FW] MINI-SEYYANEN-OBD-2026-11-22-R5");
+  Serial.printf("[BOOT] Bluetooth Classic SPP=STARTING adapter=%s ECU discovery=KWP-fast,KWP-5baud,ISO9141,AUTO\n",
                 Config::VlinkerDisplayName);
   display.begin();
   if(xTaskCreatePinnedToCore(bluetoothTask,"obd-spp",8192,nullptr,1,nullptr,0)!=pdPASS)

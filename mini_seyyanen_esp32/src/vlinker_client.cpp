@@ -5,7 +5,7 @@
 
 namespace {
 constexpr const char* InitCommands[] = {
-  "ATZ", "ATE0", "ATL0", "ATS0", "ATH0", "ATSP0", "ATI", "ATDP"
+  "ATZ", "ATE0", "ATL0", "ATS1", "ATH1", "ATI"
 };
 constexpr uint8_t InitCommandCount = sizeof(InitCommands) / sizeof(InitCommands[0]);
 
@@ -26,11 +26,11 @@ bool adapterAccepted(const char* command, const String& response) {
            upper.indexOf("VERSION") >= 0 || upper.indexOf("FW") >= 0;
   }
   if (!strcmp(command, "ATE0") || !strcmp(command, "ATL0") ||
-      !strcmp(command, "ATS0") || !strcmp(command, "ATH0"))
+      !strcmp(command, "ATS1") || !strcmp(command, "ATH1"))
     return upper.indexOf("OK") >= 0;
   if (!strcmp(command, "ATI"))
     return upper != "ATI";
-  if (!strcmp(command, "ATDP") || !strcmp(command, "ATSP0"))
+  if (!strcmp(command, "ATDP") || !strcmp(command, "ATDPN"))
     return upper.indexOf("AUTO") >= 0 || upper.indexOf("ISO") >= 0 ||
            upper.indexOf("SAE") >= 0 || upper.indexOf("KWP") >= 0 ||
            upper.indexOf("CAN") >= 0 || upper.indexOf("J1850") >= 0 ||
@@ -141,8 +141,10 @@ void VlinkerClient::tick() {
   if (_waiting && (uint32_t)(millis()-_responseStarted)>=_responseTimeout) {
     _waiting=false; _response=_rx; _complete=true; _responseTimedOut=true;
     _desynchronized=true; _desyncStarted=millis();
-    Serial.printf("[SPP TIMEOUT] command response after %lu ms: %s\n",
-                  static_cast<unsigned long>(_responseTimeout),_response.c_str());
+    Serial.printf("[SPP TIMEOUT] %s before prompt after %lu ms; bytes=%u RAW=%s\n",
+                  _response.length() ? "incomplete response" : "no response",
+                  static_cast<unsigned long>(_responseTimeout), static_cast<unsigned>(_response.length()),
+                  _response.length() ? _response.c_str() : "<empty>");
   }
   // Silence does not prove an ELM response boundary. Drain only through the
   // old prompt; if it never arrives, reset the SPP session to clear its stream.
