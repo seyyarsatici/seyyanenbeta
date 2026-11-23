@@ -24,7 +24,9 @@ DisplayManager::Display::Display() {
 
 DisplayManager::DisplayManager() : _touch(Config::TouchCs, Config::TouchIrq) {}
 bool DisplayManager::begin() {
-  pinMode(Config::Backlight, OUTPUT); digitalWrite(Config::Backlight, HIGH);
+  ledcSetup(0, 5000, 8);
+  ledcAttachPin(Config::Backlight, 0);
+  ledcWrite(0, 255);
   _tft.init(); _tft.setRotation(1); _tft.setTextWrap(false);
   _touchSpi.begin(Config::TouchSclk, Config::TouchMiso, Config::TouchMosi, Config::TouchCs);
   _touch.begin(_touchSpi); _touch.setRotation(1);
@@ -39,6 +41,7 @@ bool DisplayManager::begin() {
 }
 void DisplayManager::setTheme(Theme theme) {
   _theme = theme;
+  ledcWrite(0, theme == Theme::Day ? 255 : 25);
   if (theme == Theme::Day) { _bg=0xFFFF; _fg=0x0000; _line=0xC618; }
   else {
     _bg=0x0000;
